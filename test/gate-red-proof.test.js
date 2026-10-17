@@ -77,12 +77,15 @@ test('REQ-GATE-33 the node --test globs of testCommand: file arguments only, non
   for (const [pkgText, commands, globs] of cases) assert.deepEqual(commandTestGlobs(pkgText, commands), globs, `${pkgText} ${commands}`);
 });
 
-test('REQ-GATE-33 the value of a node option is not a node --test glob, so a file only coverage names is not targeted', () => {
+test('REQ-GATE-33 the value of a node option is not a node --test glob, so a file only coverage names is not targeted, and `--` or a flag hides no glob', () => {
   const cases = [
     ["node --test --test-coverage-include 'test/unit/**/*.test.js' test/*.test.js", ['test/*.test.js']],
     ['node --import ./test/setup.js --test test/*.test.js', ['test/*.test.js']],
     ['node --test --test-reporter-destination out/report.js test/*.test.js', ['test/*.test.js']],
     ['node --test --experimental-test-coverage --test-coverage-exclude=x/*.js test/*.test.js', ['test/*.test.js']],
+    ['node --test --test-randomize test/*.test.js', ['test/*.test.js']], // a flag takes no value
+    ['node --test -- test/*.test.js', ['test/*.test.js']], // -- ends the options
+    ['node --test --unknown-option test/a/*.test.js test/*.test.js', []], // a flag, or an option and its value?
   ];
   for (const [command, globs] of cases) assert.deepEqual(commandTestGlobs(null, [command]), globs, command);
 });
