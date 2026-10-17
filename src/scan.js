@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { globMatches } from './glob.js';
 
 /** Prose files: no code markers in them, and a change to only these is a doc change (REQ-GATE-25). */
@@ -103,84 +104,29 @@ function scriptWalk(scripts, commands) {
 const TEST_FILTER = /--test-(?:name-pattern|skip-pattern|only|shard)\b/;
 // A file argument: a path, a glob, or a script.
 const FILE_ARG = /[/*]|\.[cm]?[jt]sx?$/;
-// node options written `--opt value` whose value is not a file node --test runs (`--import ./setup.js`,
-// `--test-coverage-include 'x/**'`), and options that take no value. An option in neither list that comes right before a
-// file word is ambiguous, so that command gives no globs and the red proof runs the whole suite (REQ-GATE-33).
-const NODE_VALUE_OPTIONS = new Set(
-  [
-    'import',
-    'require',
-    'loader',
-    'experimental-loader',
-    'env-file',
-    'env-file-if-exists',
-    'conditions',
-    'input-type',
-    'watch-path',
-    'experimental-config-file',
-    'experimental-default-type',
-    'disable-warning',
-    'redirect-warnings',
-    'title',
-    'localstorage-file',
-    'cpu-prof-dir',
-    'heap-prof-dir',
-    'diagnostic-dir',
-    'report-dir',
-    'test-concurrency',
-    'test-coverage-branches',
-    'test-coverage-exclude',
-    'test-coverage-functions',
-    'test-coverage-include',
-    'test-coverage-lines',
-    'test-global-setup',
-    'test-isolation',
-    'test-reporter',
-    'test-reporter-destination',
-    'test-timeout',
-    'test-randomize-seed',
-  ]
-    .map((o) => `--${o}`)
-    .concat(['-r', '-C']),
-);
-const NODE_FLAGS = new Set(
-  [
-    'test',
-    'watch',
-    'watch-preserve-output',
-    'experimental-test-coverage',
-    'experimental-test-module-mocks',
-    'experimental-test-snapshots',
-    'experimental-test-isolation',
-    'test-update-snapshots',
-    'test-force-exit',
-    'test-randomize',
-    'experimental-strip-types',
-    'no-experimental-strip-types',
-    'experimental-transform-types',
-    'experimental-vm-modules',
-    'experimental-require-module',
-    'no-experimental-require-module',
-    'enable-source-maps',
-    'no-warnings',
-    'no-deprecation',
-    'trace-warnings',
-    'trace-deprecation',
-    'trace-uncaught',
-    'expose-gc',
-    'preserve-symlinks',
-    'preserve-symlinks-main',
-    'experimental-sqlite',
-    'experimental-websocket',
-  ].map((o) => `--${o}`),
-);
+let nodeOptions;
+/**
+ * The options that `node --help` of the running node lists, each true when it takes a value written `--opt value`
+ * (`--import=...`), false when it takes none (`--cpu-prof`) or only with `=` (`--inspect[=port]`). Read from node itself,
+ * since a hand list misses options (REQ-GATE-33).
+ */
+function nodeOptionValues() {
+  if (!nodeOptions) {
+    const help = spawnSync(process.execPath, ['--help'], { encoding: 'utf8' });
+    if (help.status !== 0) throw new Error(`node --help failed: ${help.error?.message ?? help.stderr}`);
+    nodeOptions = new Map();
+    for (const [, short, long, value] of help.stdout.matchAll(/^ {2}(?:(-\w), )?(--?[\w-]+)(=)?/gm))
+      for (const name of [short, long]) if (name) nodeOptions.set(name, Boolean(value));
+  }
+  return nodeOptions;
+}
 
 /**
  * The file globs that `node --test` runs in shell command `text` (REQ-GATE-33): the file arguments after `node` in each
  * part of the command that has `--test`. An unquoted `**` is the shell's, which stays in one directory like `*`; a
  * quoted one is node's own, which spans directories; `--` ends the options. None when the command filters tests by name
  * or shard or changes directory, since then a file that matches may not run in full, or the globs are not relative to
- * the repo root, or when an unknown option comes right before a file word, which may be its value.
+ * the repo root, or when an option `node --help` does not list comes right before a file word, which may be its value.
  */
 export function nodeTestGlobs(text) {
   if (untargetable(text)) return [];
@@ -194,10 +140,10 @@ export function nodeTestGlobs(text) {
       const { word, quoted } = args[i];
       if (options && word === '--') options = false;
       else if (options && word.startsWith('-')) {
-        if (word.includes('=') || NODE_FLAGS.has(word)) continue;
-        if (NODE_VALUE_OPTIONS.has(word))
+        const takesValue = word.includes('=') ? false : nodeOptionValues().get(word);
+        if (takesValue)
           i++; // skip the option's value
-        else if (args[i + 1] && FILE_ARG.test(args[i + 1].word)) return []; // a flag, or an option and its value?
+        else if (takesValue === undefined && args[i + 1] && FILE_ARG.test(args[i + 1].word)) return []; // not node's: a flag, or an option and its value?
       } else if (FILE_ARG.test(word)) globs.push(quoted ? word : word.replaceAll('**', '*'));
     }
   }

@@ -83,7 +83,8 @@ test('REQ-GATE-33 the value of a node option is not a node --test glob, so a fil
     ['node --import ./test/setup.js --test test/*.test.js', ['test/*.test.js']],
     ['node --test --test-reporter-destination out/report.js test/*.test.js', ['test/*.test.js']],
     ['node --test --experimental-test-coverage --test-coverage-exclude=x/*.js test/*.test.js', ['test/*.test.js']],
-    ['node --test --test-randomize test/*.test.js', ['test/*.test.js']], // a flag takes no value
+    ['node --test --test-randomize --cpu-prof test/*.test.js', ['test/*.test.js']], // a flag takes no value
+    ['node -r ./test/setup.js --test test/*.test.js', ['test/*.test.js']],
     ['node --test -- test/*.test.js', ['test/*.test.js']], // -- ends the options
     ['node --test --unknown-option test/a/*.test.js test/*.test.js', []], // a flag, or an option and its value?
   ];
