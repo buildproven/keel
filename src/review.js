@@ -340,6 +340,8 @@ export function testEditStage({ repo, from, head, card, config, reviewer, files 
     ...(config.reviewFallback ? fallbackReviewers(config, reviewer).filter((t) => family(t) === family(reviewer)) : []),
   ];
   const { answer, ...spent } = askApproval({ tiers, prompt, repo, ref: head, config });
+  // The tier that answered, else the first one asked, names the spend when no regular review runs (REQ-LED-13).
+  spent.reviewer = answer?.by ?? label(reviewer);
   if (!answer) return result(false, `no approval: ${tiers.map(label).join(', ')} gave no APPROVE or DENY line`, spent);
   const approval = { approved: answer.approved, by: answer.by, reason: answer.reason };
   return answer.approved

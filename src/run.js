@@ -154,9 +154,10 @@ const CORRECTED = new Set(['locked', 'scope']);
 export function reviewSpend(results) {
   const ran = results.filter((r) => r.name === 'review' || (r.name === 'test-edits' && (r.cost !== undefined || r.usage !== undefined)));
   if (!ran.length) return null;
+  const edits = ran.find((r) => r.name === 'test-edits');
   const costs = ran.map((r) => r.cost).filter((c) => typeof c === 'number');
   return {
-    reviewer: ran.find((r) => r.name === 'review')?.reviewer ?? null,
+    reviewer: ran.find((r) => r.name === 'review')?.reviewer ?? edits?.reviewer ?? edits?.approval?.by ?? null,
     reviewCost: costs.length ? costs.reduce((a, b) => a + b, 0) : null,
     reviewUsage: ran.reduce((u, r) => addUsage(u, r.usage ?? null), null),
     reviewUnpriced: ran.some((r) => r.unpriced),
@@ -768,7 +769,8 @@ function runLocked({ repo, card, config, baseSha, baseBranch, branch, wt, pr, me
         if (verdict) {
           Object.assign(row, { reviewCost: verdict.cost, reviewUsage: verdict.usage, reviewUnpriced: Boolean(verdict.unpriced) }); // REQ-LED-13
           if (verdict.approved) {
-            card = { ...card, allowEdits: [...card.allowEdits, ...paths] };
+            // The gate still proves the approved edit (REQ-GATE-44), so it knows which allowEdits were approved.
+            card = { ...card, allowEdits: [...card.allowEdits, ...paths], approvedEdits: [...(card.approvedEdits ?? []), ...paths] };
             approvedEdits.push({ paths, by: verdict.by, reason: verdict.reason });
             row.allowEditsApproved = { paths, by: verdict.by, reason: verdict.reason };
             failure = `Keel approved allowEdits for ${paths.join(', ')} (${verdict.by}: ${verdict.reason}). Continue the card; change those tests only as the card requires.`;

@@ -10,6 +10,7 @@ import {
   realpathSync,
   statSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -99,18 +100,14 @@ const names = (card, path) =>
   new RegExp(`(^|[^\\w./-])(${escapeRe(path)}|${escapeRe(basename(path))})(?![\\w/-]|\\.\\w)`).test(card.text ?? '');
 
 /**
- * Why an edit to an existing test file cannot be proved non-weakening (REQ-GATE-44), or null when it may go on to the
- * per-file red proof and the cross-family verdict: a modified file of a bug or feature card, with `testFilesCommand`
- * and `approveAllowEdits` set, that keeps every test name, adds no skip marker, and has no fewer assertions.
+ * Why the head file may check less than the base file (REQ-GATE-44), or null: a modified file that keeps every test name,
+ * adds no skip marker, and has no fewer assertions. `needTests`: the base file must have a test to compare.
  */
-function testEditBlocker(f, { repo, from, head, card, config }) {
+function shapeBlocker(f, { repo, from, head }, needTests) {
   if (f.status !== 'M') return 'only a modified test file can be proved; a deleted, renamed, or type-changed one cannot';
-  if (!needsProof(card)) return 'only a bug or feature card has a red proof for an edited test';
-  if (!config.approveAllowEdits) return 'approveAllowEdits is off';
-  if (!config.testFilesCommand) return 'needs testFilesCommand to prove the edited file fails on base by itself';
   const before = testShape(showFile(from, f.path, repo) ?? '');
   const after = testShape(showFile(head, f.path, repo) ?? '');
-  if (!before.tests.length) return 'no test found in the base file to compare';
+  if (needTests && !before.tests.length) return 'no test found in the base file to compare';
   const left = [...after.tests];
   for (const name of before.tests) {
     const k = left.indexOf(name);
@@ -122,10 +119,28 @@ function testEditBlocker(f, { repo, from, head, card, config }) {
   return null;
 }
 
+/**
+ * Why an edit to an existing test file cannot be proved non-weakening (REQ-GATE-44), or null when it may go on to the
+ * per-file red proof and the cross-family verdict: a modified file of a bug or feature card, with `testFilesCommand`
+ * and `approveAllowEdits` set, that keeps every test name, adds no skip marker, and has no fewer assertions.
+ */
+function testEditBlocker(f, ctx) {
+  const { card, config } = ctx;
+  if (f.status !== 'M') return 'only a modified test file can be proved; a deleted, renamed, or type-changed one cannot';
+  if (!needsProof(card)) return 'only a bug or feature card has a red proof for an edited test';
+  if (!config.approveAllowEdits) return 'approveAllowEdits is off';
+  if (!config.testFilesCommand) return 'needs testFilesCommand to prove the edited file fails on base by itself';
+  return shapeBlocker(f, ctx, true);
+}
+
+const APPROVED_SHAPE = 'approved allowEdits (REQ-RUN-30) keeps every test name, assertion, and skip marker count';
+
 function staticChecks(ctx) {
   const { repo, base, from, head, card, config, changed } = ctx;
   const isTest = (p) => matchesAny(p, config.testGlobs);
-  const allowed = (p) => matchesAny(p, card.allowEdits);
+  // An allowEdits path the other family approved before the edit (REQ-RUN-30) is still proved after it (REQ-GATE-44).
+  const approved = (p) => matchesAny(p, card.approvedEdits ?? []);
+  const allowed = (p) => matchesAny(p, card.allowEdits) && !approved(p);
   const commands = [...Object.values(config.checks), config.testCommand, config.testFilesCommand, config.heldOutCommand].filter(Boolean);
   // Runner files either side calls stay locked (REQ-GATE-40): the base may call a file the branch's fork point did not.
   const runners = new Set([from, base].flatMap((ref) => scriptPaths(showFile(ref, 'package.json', repo), commands)).map(fold));
@@ -143,9 +158,17 @@ function staticChecks(ctx) {
       locked.push({ rule: 'unsupported-mode', path: f.path });
     if (allowed(f.path)) continue;
     if (isTest(f.path) && f.status !== 'A') {
-      const why = testEditBlocker(f, ctx);
-      lockUnless({ rule: 'existing-test-changed', path: f.path, status: f.status }, why, 'pending test-edit-proof and test-edits');
-      if (why === null) testEdits.push(f.path);
+      const problem = { rule: 'existing-test-changed', path: f.path, status: f.status };
+      if (approved(f.path)) {
+        const why = shapeBlocker(f, ctx, false);
+        const proved = why === null && needsProof(card) && Boolean(config.testFilesCommand);
+        lockUnless(problem, why, proved ? 'pending test-edit-proof and test-edits' : APPROVED_SHAPE);
+        if (proved) testEdits.push(f.path);
+      } else {
+        const why = testEditBlocker(f, ctx);
+        lockUnless(problem, why, 'pending test-edit-proof and test-edits');
+        if (why === null) testEdits.push(f.path);
+      }
     }
     if (locksAny(f.path, config.verificationPaths)) {
       // A workflow the card names may change when it only adds (REQ-GATE-43); any other verification file stays locked.
@@ -370,8 +393,9 @@ function redProof(ctx) {
 }
 
 /**
- * Each edited existing test (REQ-GATE-44) by itself: it passes alone on head, and, overlaid on base, fails alone with a
- * real test failure, so the edit is needed by the change, as REQ-GATE-3 proves for a new test.
+ * Each edited existing test (REQ-GATE-44) by itself: it passes alone on head, and, overlaid alone on base (the other
+ * edited files as on base), fails with a real test failure, so the edit is needed by the change, as REQ-GATE-3 proves
+ * for a new test.
  */
 function testEditProof(ctx) {
   const { repo, base, head, config } = ctx;
@@ -394,16 +418,24 @@ function testEditProof(ctx) {
   return withTempWorktree(repo, base, (dir) => {
     const installed = prepareCheckout(repo, dir, config);
     if (installed) return { ...fail('test-edit-proof', 'install-failed'), output: tail(installed.out) };
+    // One edited file at a time, the others as on base: an edit to one test must not be what makes another fail.
     for (const p of files) {
+      let saved = null; // the base file, put back after the run
       const err = writeInside(dir, p, (t) => {
+        saved = existsSync(t) ? { data: readFileSync(t), mode: statSync(t).mode & 0o777 } : null;
         const blob = showBlob(head, p, repo);
         writeFileSync(t, blob.data);
         chmodSync(t, blob.mode === '100755' ? 0o755 : 0o644);
       });
       if (err) return fail('test-edit-proof', 'unsafe-path', { detail: err });
-    }
-    for (const p of files) {
       const r = shell(filesCommand(config, [p]), dir, config);
+      const restored = writeInside(dir, p, (t) => {
+        if (saved) {
+          writeFileSync(t, saved.data);
+          chmodSync(t, saved.mode);
+        } else unlinkSync(t);
+      });
+      if (restored) return fail('test-edit-proof', 'unsafe-path', { detail: restored });
       if (inconclusive(r)) return { ...fail('test-edit-proof', 'inconclusive', { path: p, code: r.code }), output: tail(r.out) };
       if (r.code === 0) return locked(p, 'passes alone on base, so the change does not need the edit', r.out);
     }
