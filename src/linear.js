@@ -64,8 +64,9 @@ export function pendingFollowUps(repo, maxTries = Infinity) {
 }
 
 /** Append one issue-attempt record, scoped to this repo (REQ-LINEAR-6). */
-export function recordPollAttempt(repo, { issue, outcome, detail }) {
-  appendJsonl(pollLedgerFile(), { repo, issue, outcome, detail: detail ?? null, at: new Date().toISOString() });
+export function recordPollAttempt(repo, { issue, outcome, detail, byHand = false }) {
+  const row = { repo, issue, outcome, detail: detail ?? null, at: new Date().toISOString() };
+  appendJsonl(pollLedgerFile(), byHand ? { ...row, byHand: true } : row); // an `--issue` run (REQ-LINEAR-14)
 }
 
 const LABEL_KIND = { bug: 'bug', feature: 'feature', improvement: 'feature' };
