@@ -7,18 +7,19 @@ export const SIZE_BUDGET = { S: 300, M: 800, L: 1500 };
 
 /**
  * Branches whose unmerged commits HEAD contains (REQ-GATE-30), from git alone: local and remote branches merged into
- * HEAD but not into base, except HEAD's own branch and its remote copies. Each merge of one of them forces the others
- * to merge again.
+ * HEAD but not into base, except HEAD's own branch, its remote copies, and its upstream of any name (empty when there is
+ * none or HEAD is detached). Each merge of one of them forces the others to merge again.
  */
 export function stackWarnings(repo, base) {
   const own = git(['rev-parse', '--abbrev-ref', 'HEAD'], repo).trim();
+  const upstream = git(['for-each-ref', '--format=%(upstream:short)', `refs/heads/${own}`], repo).trim();
   const refs = git(
     ['for-each-ref', '--format=%(refname:short)', '--merged', 'HEAD', '--no-merged', base, 'refs/heads', 'refs/remotes'],
     repo,
   )
     .split('\n')
     .filter(Boolean)
-    .filter((r) => r !== own && !r.endsWith(`/${own}`) && !r.endsWith('/HEAD'));
+    .filter((r) => r !== own && r !== upstream && !r.endsWith(`/${own}`) && !r.endsWith('/HEAD'));
   return refs.map((r) => {
     const n = Number(git(['rev-list', '--count', `${base}..${r}`], repo).trim());
     return `stacked on ${r} (${n} commit${n === 1 ? '' : 's'}): merge ${r} first, or rebase onto ${base}`;
