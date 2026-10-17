@@ -5,6 +5,8 @@ import {
   attemptedIssueIds,
   cardFromIssue,
   filedToday,
+  notKeelIssueIds,
+  notKeelReason,
   pendingFollowUps,
   pickIssue,
   recordPollAttempt,
@@ -636,8 +638,11 @@ export async function poll({
       results.push(stop);
       break;
     }
-    const attempted = attemptedIssueIds(repo);
     const issues = await withTextPrerequisites(await client.listIssues(project), { client, log, states: prereqStates });
+    const attempted = attemptedIssueIds(repo);
+    // A notKeel issue that no longer reads as human work, as when a keel block was added, is picked again (REQ-LINEAR-25).
+    const triaged = notKeelIssueIds(repo);
+    for (const i of issues) if (triaged.has(i.id) && !notKeelReason(i)) attempted.delete(i.id);
     const skipped = new Map();
     const waits = new Map();
     const human = new Map();
