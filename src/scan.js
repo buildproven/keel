@@ -101,8 +101,29 @@ function scriptWalk(scripts, commands) {
 
 // node options that run only some tests of a file, so a file a glob names may still not run in full (REQ-GATE-33).
 const TEST_FILTER = /--test-(?:name-pattern|skip-pattern|only|shard)\b/;
-// A file argument rather than an option value (`--import tsx`, `--test-reporter spec`): a path, a glob, or a script.
+// A file argument: a path, a glob, or a script.
 const FILE_ARG = /[/*]|\.[cm]?[jt]sx?$/;
+// node options that take no value. Any other option written without `=` takes the next word as its value
+// (`--import ./setup.js`, `--test-coverage-include 'x/**'`), which is not a file node --test runs; an unknown flag
+// therefore only hides a glob, and the red proof falls back to the whole suite (REQ-GATE-33).
+const NODE_FLAGS = new Set([
+  '--test',
+  '--watch',
+  '--experimental-test-coverage',
+  '--experimental-test-module-mocks',
+  '--experimental-test-snapshots',
+  '--test-update-snapshots',
+  '--test-force-exit',
+  '--experimental-strip-types',
+  '--no-experimental-strip-types',
+  '--experimental-transform-types',
+  '--experimental-vm-modules',
+  '--enable-source-maps',
+  '--no-warnings',
+  '--trace-warnings',
+  '--trace-uncaught',
+  '--expose-gc',
+]);
 
 /**
  * The file globs that `node --test` runs in shell command `text` (REQ-GATE-33): the file arguments after `node` in each
@@ -117,8 +138,13 @@ export function nodeTestGlobs(text) {
     const words = [...part.matchAll(/'([^']*)'|"([^"]*)"|(\S+)/g)].map((m) => ({ word: m[1] ?? m[2] ?? m[3], quoted: !m[3] }));
     const node = words.findIndex((w) => !w.quoted && w.word === 'node');
     if (node < 0 || !words.slice(node + 1).some((w) => w.word === '--test')) continue;
-    for (const { word, quoted } of words.slice(node + 1))
-      if (!word.startsWith('-') && FILE_ARG.test(word)) globs.push(quoted ? word : word.replaceAll('**', '*'));
+    const args = words.slice(node + 1);
+    for (let i = 0; i < args.length; i++) {
+      const { word, quoted } = args[i];
+      if (word.startsWith('-')) {
+        if (!word.includes('=') && !NODE_FLAGS.has(word)) i++; // skip the option's value
+      } else if (FILE_ARG.test(word)) globs.push(quoted ? word : word.replaceAll('**', '*'));
+    }
   }
   return globs;
 }
