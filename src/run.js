@@ -684,7 +684,11 @@ function runLocked({ repo, card, config, baseSha, baseBranch, branch, wt, pr, me
   if (needsAuthoring(card, config)) {
     const heldDir = join(stateDir(), 'heldout', basename(wt));
     const error = kept && existsSync(heldDir) ? null : authorHeldOut({ repo, card, config, baseSha, runId, heldDir, log });
-    if (error) return { pass: false, stopped: 'held-out-author', branch, worktree: wt, failure: error };
+    if (error) {
+      // No build attempt ran: the worktree and branch this run made hold no work, and would block the next run (REQ-RUN-41).
+      if (!kept) removeParkedWorktree({ repo, path: wt, branch });
+      return { pass: false, stopped: 'held-out-author', branch, worktree: wt, failure: error };
+    }
     card = { ...card, heldOut: heldDir }; // The card text, and so the builder prompt, never carries this path (REQ-GATE-10).
   }
   const ruleTier = startTier(card, config);
