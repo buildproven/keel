@@ -293,12 +293,13 @@ export function scriptsAppendOnly(before, after, commands, testGlobs) {
 }
 
 // Test declarations and assertions by line heuristics, as for skip markers (REQ-GATE-44). Named tests: JS/TS `it`/
-// `test`, Ruby `it '…' do`, Python `def test_*`, Go `func Test*`. Unnamed: Rust `#[test]`, JUnit `@Test`, xUnit.
+// `test`, Ruby `it '…' do`, Python `def test_*`, Go `func Test*`. Unnamed: Rust `#[test]`, JUnit `@Test`, xUnit. Each
+// pattern runs on masked code (see `masked`); a named test's name group is read from the original text at its indices.
 const NAMED_TESTS = [
-  /\b(?:it|test)\s*\(\s*(['"`])((?:\\.|(?!\1).)*)\1/g,
-  /\b(?:it|specify)\s+(['"])((?:\\.|(?!\1).)*)\1\s+do\b/g,
-  /^\s*(?:async\s+)?def\s+()(test\w*)/gm,
-  /^func\s+()(Test\w+)\s*\(/gm,
+  /\b(?:it|test)\s*\(\s*(['"`])((?:\\.|(?!\1).)*)\1/dg,
+  /\b(?:it|specify)\s+(['"])((?:\\.|(?!\1).)*)\1\s+do\b/dg,
+  /^\s*(?:async\s+)?def\s+()(test\w*)/dgm,
+  /^func\s+()(Test\w+)\s*\(/dgm,
 ];
 const UNNAMED_TESTS = [/#\[test\]/g, /@Test\b/g, /\[(?:Test|Fact|Theory|TestMethod)\]/g];
 const ASSERTIONS = [
@@ -306,18 +307,54 @@ const ASSERTIONS = [
   /^\s*assert\s/gm, // Python `assert x`
   /\bt\.(?:Error|Errorf|Fatal|Fatalf|Fail|FailNow)\s*\(/g, // Go
 ];
-/** Code without comments, so a commented-out assertion or test does not count. */
-const uncommented = (text) =>
-  text
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/(^|[^:\\])\/\/.*$/gm, '$1')
-    .replace(/(^|\s)#(?![[!]).*$/gm, '$1');
+
+/**
+ * The code of a test file with comments and the contents of string literals blanked to spaces (newlines kept, so
+ * offsets and lines match the text), so a commented-out check, or a test call or assertion written as text in a string,
+ * does not count (REQ-GATE-44). Comments: `//`, `/* *\/`, and `#` at a line start or after whitespace (not `#[` or
+ * `#!`). Strings: `'…'` and `"…"` end at their line, a triple-quoted one and a template literal may span lines.
+ */
+function masked(text) {
+  const out = [...text];
+  const blank = (from, to) => {
+    for (let k = from; k < to; k++) if (out[k] !== '\n') out[k] = ' ';
+  };
+  const lineEnd = (k) => (text.indexOf('\n', k) < 0 ? text.length : text.indexOf('\n', k));
+  let i = 0;
+  while (i < text.length) {
+    const c = text[i];
+    const two = text.slice(i, i + 2);
+    if (two === '/*') {
+      const end = text.indexOf('*/', i + 2);
+      const stop = end < 0 ? text.length : end + 2;
+      blank(i, stop);
+      i = stop;
+    } else if (two === '//' || (c === '#' && (i === 0 || /\s/.test(text[i - 1])) && !'[!'.includes(text[i + 1] ?? ''))) {
+      const stop = lineEnd(i);
+      blank(i, stop);
+      i = stop;
+    } else if (c === "'" || c === '"' || c === '`') {
+      const triple = c !== '`' && text.startsWith(c.repeat(3), i);
+      const open = triple ? 3 : 1;
+      let k = i + open;
+      while (k < text.length) {
+        if (text[k] === '\\') k += 2;
+        else if (triple ? text.startsWith(c.repeat(3), k) : text[k] === c) break;
+        else if (text[k] === '\n' && c !== '`' && !triple) break;
+        else k++;
+      }
+      blank(i + open, Math.min(k, text.length));
+      i = text[k] === c ? k + open : k;
+    } else i++;
+  }
+  return out.join('');
+}
 const count = (text, patterns) => patterns.reduce((n, p) => n + [...text.matchAll(p)].length, 0);
 
 /** What an existing test file checks (REQ-GATE-44): its test names (unnamed ones as `#unnamed`), assertion count, and skip markers. */
 export function testShape(text) {
-  const code = uncommented(text);
-  const tests = NAMED_TESTS.flatMap((p) => [...code.matchAll(p)].map((m) => m[2]));
+  const code = masked(text);
+  const tests = NAMED_TESTS.flatMap((p) => [...code.matchAll(p)].map((m) => text.slice(...m.indices[2])));
   for (let n = count(code, UNNAMED_TESTS); n > 0; n--) tests.push('#unnamed');
   const lines = text.split('\n').map((t, k) => ({ path: '', line: k + 1, text: t }));
   return { tests, assertions: count(code, ASSERTIONS), skips: findSkipMarkers(lines).length };
