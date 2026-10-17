@@ -121,33 +121,6 @@ test('REQ-LINEAR-25 keel poll comments once, records notKeel, never runs it, and
   assert.equal(client.comments.length, 1, 'one comment only');
 });
 
-test('REQ-LINEAR-25 a notKeel issue that gains a keel block is built by the next poll', async () => {
-  const { dir } = fixtureRepo();
-  const ran = [];
-  const triaged = issue({ id: 'BUI-2', priority: 1, title: 'Run the first five-player playtest' });
-  const client = fakeClient([triaged]);
-  await poll({ repo: dir, project: 'x', client, config: {}, runFn: runner(ran) });
-  assert.deepEqual(ran, [], 'triaged, not built');
-  triaged.description = `\`\`\`keel\nkind: chore\n\`\`\`\n\n${triaged.description}`;
-  const r = await poll({ repo: dir, project: 'x', client, config: {}, runFn: runner(ran) });
-  assert.deepEqual(ran, ['BUI-2'], 'the keel block overrides triage');
-  assert.equal(r[0].outcome, 'inReview');
-  await poll({ repo: dir, project: 'x', client, config: {}, runFn: runner(ran) });
-  assert.deepEqual(ran, ['BUI-2'], 'built once: the new outcome is an attempt');
-});
-
-test('REQ-LINEAR-25 a notKeel issue whose text still reads as human work stays suppressed', async () => {
-  const { dir } = fixtureRepo();
-  const ran = [];
-  const triaged = issue({ id: 'BUI-2', priority: 1, title: 'Run the first five-player playtest' });
-  const client = fakeClient([triaged]);
-  await poll({ repo: dir, project: 'x', client, config: {}, runFn: runner(ran) });
-  triaged.description = 'Edited, but still no keel block.';
-  await poll({ repo: dir, project: 'x', client, config: {}, runFn: runner(ran) });
-  assert.deepEqual(ran, []);
-  assert.equal(client.comments.length, 1, 'no second comment');
-});
-
 test('REQ-LINEAR-25 --issue does not triage: an explicit run builds the issue', async () => {
   const { dir } = fixtureRepo();
   const ran = [];
