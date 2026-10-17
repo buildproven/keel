@@ -383,7 +383,7 @@ async function refineStep({ repo, base, config, client, issue, project, log, ref
         const fields = {
           title: c.title,
           description: `Split by keel from ${issue.id}.\n\n${c.body}\n`,
-          priority: issue.priority || 4,
+          priority: issue.priority, // Linear's 0 (no priority) included (REQ-LINEAR-33)
           blockedBy: children.length ? [children.at(-1)] : [],
           parent: issue.id,
         };
@@ -547,7 +547,8 @@ async function pollOne({ repo, project, client, config, base, pr, merge, log, ru
   const outcome = await runOne({ repo, base, pr, merge, log, config, client, issue, project, runFn, refineFn });
   // A refined card whose paths an open branch holds is not an attempt (REQ-LEASE-3).
   if (outcome.outcome === 'leased') return [outcome];
-  recordPollAttempt(repo, { issue: issue.id, outcome: outcome.outcome, detail: 'explicit --issue retry' });
+  // The outcome keeps its own detail (a NEEDS_HUMAN question, SPLIT child IDs, REQ-LINEAR-33); byHand marks the run.
+  recordPollAttempt(repo, { issue: issue.id, outcome: outcome.outcome, detail: outcome.detail, byHand: true });
   return [outcome, ...filingFailed(await fileFollowUps({ repo, project, config, client, log, base }))];
 }
 

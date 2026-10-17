@@ -31,7 +31,9 @@ const STOPS = new Set([
   'self-merge-failed',
 ]);
 const HUMAN_MERGE = new Set(['inReview']); // Keel moved it to review; a person merged it
-const BY_HAND = 'explicit --issue retry'; // the poll-ledger detail of every `--issue` run (REQ-LINEAR-14)
+// An `--issue` run's poll row has `byHand: true` (REQ-LINEAR-14); rows before 2026-10-17 had this detail instead.
+const LEGACY_BY_HAND = 'explicit --issue retry';
+const byHand = (r) => r.byHand === true || r.detail === LEGACY_BY_HAND;
 // Before `--merge` (2026-10-06) every pass waited for a human merge, and `closed` is an outcome no poll writes any more:
 // neither says anything about Keel today (REQ-LED-16).
 const MERGE_FLAG_SINCE = Date.parse('2026-10-06T00:00:00Z');
@@ -81,12 +83,15 @@ export function githubPrs(repo) {
 }
 
 /** Whether the issue's first run (a deferral is not one) was an `--issue` run: a human start (REQ-LED-16). */
-const startedByHand = (rows) => rows.find((r) => r.outcome !== 'deferred')?.detail === BY_HAND;
+const startedByHand = (rows) => {
+  const first = rows.find((r) => r.outcome !== 'deferred');
+  return Boolean(first && byHand(first));
+};
 
 /** Why a human touched this issue, `pending` while its PR waits to merge, or null when no human did (REQ-LED-14, -16). */
 function touchOf(id, rows, certified, prs) {
   const first = rows.findIndex((r) => r.outcome !== 'deferred');
-  if (rows.some((r, i) => i > first && r.detail === BY_HAND)) return 'retried by hand';
+  if (rows.some((r, i) => i > first && byHand(r))) return 'retried by hand';
   const outcomes = rows.map((r) => r.outcome);
   if (outcomes.some((o) => STOPS.has(o))) return 'stopped for a human';
   if (outcomes.some((o) => HUMAN_MERGE.has(o))) return 'merged by a human';
