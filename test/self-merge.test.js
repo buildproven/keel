@@ -30,8 +30,8 @@ let oldPath;
 
 /**
  * A fake `gh` driven by a JSON state file the test rewrites between polls: `pr view` prints `pr`, `api …actions/runs…`
- * prints `runs`, other `api` calls print `checks` (the required-check count, and the allow_auto_merge answer),
- * `pr merge` exits `mergeExit`. Every call is logged.
+ * prints `runs` (or the pages of `runsPages`), other `api` calls print `checks` (the required-check count, and the
+ * allow_auto_merge answer), `pr merge` exits `mergeExit`, `pr edit` exits `editExit`. Every call is logged.
  */
 function setGh(state) {
   writeFileSync(ghState, JSON.stringify(state));
@@ -51,11 +51,19 @@ const fs = require('fs');
 const a = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(ghLog)}, JSON.stringify(a) + '\\n');
 const s = JSON.parse(fs.readFileSync(${JSON.stringify(ghState)}, 'utf8'));
-if (a[0] === 'api' && a.some((x) => x.includes('actions/runs'))) { console.log(JSON.stringify(s.runs ?? [])); process.exit(s.runsExit ?? 0); }
+if (a[0] === 'api' && a.some((x) => x.includes('actions/runs'))) {
+  // GitHub pages the runs: only --paginate --slurp prints every page, as an array of response objects.
+  const pages = s.runsPages ?? [s.runs ?? []];
+  if (a.includes('--paginate') && a.includes('--slurp')) console.log(JSON.stringify(pages.map((p) => ({ workflow_runs: p }))));
+  else if (a.includes('--jq')) console.log(JSON.stringify(pages[0]));
+  else console.log(JSON.stringify({ workflow_runs: pages[0] }));
+  process.exit(s.runsExit ?? 0);
+}
 if (a[0] === 'api') { console.log(s.checks ?? '1'); process.exit(0); }
 if (a[0] === 'pr' && a[1] === 'view') { console.log(JSON.stringify(s.pr)); process.exit(0); }
 if (a[0] === 'pr' && a[1] === 'create') { console.log(${JSON.stringify(URL_)}); process.exit(0); }
 if (a[0] === 'pr' && a[1] === 'merge') { if (s.mergeExit) console.error('merge refused'); process.exit(s.mergeExit ?? 0); }
+if (a[0] === 'pr' && a[1] === 'edit') { if (s.editExit) console.error('edit refused'); process.exit(s.editExit ?? 0); }
 process.exit(0);
 `,
   );
@@ -353,4 +361,86 @@ test('REQ-MERGE-4 selfMergeTimeoutMinutes defaults to 30 and must be a positive 
     g(dir, 'commit', '-q', '-m', `bad ${bad}`);
     assert.throws(() => loadConfig(dir, 'HEAD'), /"selfMergeTimeoutMinutes" must be a positive number/, String(bad));
   }
+});
+
+test('REQ-MERGE-5 a refused auto-merge call rewrites the PR body: auto-merge off with the reason and the self-merge line', () => {
+  setGh({ mergeExit: 1 });
+  const logs = [];
+  const r = run({
+    repo: repoWithRemote(),
+    card: card(),
+    config: fixtureConfig({ review: true, tiers: [builder, reviewer] }),
+    pr: true,
+    merge: true,
+    log: (l) => logs.push(l),
+  });
+  assert.equal(r.merge.selfMerge, true);
+  const create = prCalls('create')[0];
+  assert.match(create[create.indexOf('--body') + 1], /Auto-merge: on/, 'the body is written before GitHub answers');
+  const edit = prCalls('edit')[0];
+  assert.ok(edit, 'the body is corrected');
+  assert.equal(edit[2], URL_);
+  const body = edit[edit.indexOf('--body') + 1];
+  assert.doesNotMatch(body, /Auto-merge: on/);
+  assert.match(body, /Auto-merge: off — merge refused; keel poll --merge merges this certified SHA itself once every check on it passes/);
+  setGh({ mergeExit: 1, editExit: 1 });
+  run({
+    repo: repoWithRemote(),
+    card: card(),
+    config: fixtureConfig({ review: true, tiers: [builder, reviewer] }),
+    pr: true,
+    merge: true,
+    log: (l) => logs.push(l),
+  });
+  assert.ok(
+    logs.some((l) => /PR body not corrected: edit refused/.test(l)),
+    logs.join('\n'),
+  );
+});
+
+test('REQ-MERGE-6 a branch behind its base fails at once, even while a check is still pending', async () => {
+  const { dir } = fixtureRepo();
+  pending(dir);
+  setGh({
+    pr: green({
+      mergeStateStatus: 'BEHIND',
+      statusCheckRollup: [
+        { __typename: 'StatusContext', context: 'keel/gate', state: 'SUCCESS' },
+        { __typename: 'CheckRun', name: 'ci', status: 'IN_PROGRESS', conclusion: null },
+      ],
+    }),
+  });
+  const client = fakeClient();
+  const results = await pollMerge(dir, client);
+  assert.match(results.find((r) => r.outcome === 'mergeFailed')?.detail ?? '', /behind its base/);
+  assert.ok(pollRows().some((r) => r.outcome === 'self-merge-failed'));
+  assert.equal(pollExitCode(results), 1);
+  assert.match(client.calls[0].body, /keel: not merged: the branch is behind its base/);
+});
+
+test('REQ-MERGE-7 a failed or queued workflow run past the first page of the Actions API blocks the merge', async () => {
+  const page1 = Array.from({ length: 30 }, (_, i) => ({ name: `w${i}`, status: 'completed', conclusion: 'success' }));
+  for (const [late, expect] of [
+    [{ name: 'late', status: 'completed', conclusion: 'failure' }, 'mergeFailed'],
+    [{ name: 'late', status: 'queued', conclusion: null }, 'wait'],
+  ]) {
+    const { dir } = fixtureRepo();
+    pending(dir);
+    setGh({ pr: green(), runsPages: [page1, [late]] });
+    const logs = [];
+    const results = await pollMerge(dir, fakeClient(), { log: (l) => logs.push(l) });
+    assert.ok(!results.some((r) => r.outcome === 'merged'), JSON.stringify(late));
+    if (expect === 'mergeFailed') assert.match(results.find((r) => r.outcome === 'mergeFailed')?.detail ?? '', /workflow late failed/);
+    else
+      assert.ok(
+        logs.some((l) => /self-merge waits for workflow late/.test(l)),
+        logs.join('\n'),
+      );
+  }
+  assert.deepEqual(prCalls('merge'), []);
+  const call = ghCalls().find((a) => a[0] === 'api' && a.some((x) => x.includes('actions/runs')));
+  assert.ok(
+    call.some((x) => x.includes('per_page=100')),
+    JSON.stringify(call),
+  );
 });
