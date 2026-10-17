@@ -281,8 +281,12 @@ export function scriptsAppendOnly(before, after, commands, testGlobs) {
     if (typeof a[name] !== 'string' || !a[name].startsWith(b[name])) return `script ${name} is not its old text with arguments appended`;
     if (!isTestArg(b[name].trim().split(/\s+/).at(-1))) return `script ${name} does not end with a test file, so a new one would narrow it`;
     const suffix = a[name].slice(b[name].length);
-    const added = /^\s/.test(suffix) ? suffix.trim().split(/\s+/) : [suffix];
-    const wrong = added.find((t) => !isTestArg(t));
+    // Text glued to the old last argument is not a new argument: it turns that test file into another path.
+    if (!/^\s/.test(suffix)) return `script ${name} changes its last argument, so it no longer names the same test file`;
+    const wrong = suffix
+      .trim()
+      .split(/\s+/)
+      .find((t) => !isTestArg(t));
     if (wrong !== undefined) return `script ${name} gains ${JSON.stringify(wrong)}, which is not a test file`;
   }
   return null;
