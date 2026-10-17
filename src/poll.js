@@ -587,9 +587,18 @@ async function withTextPrerequisites(issues, { client, log, states }) {
   return out;
 }
 
-/** `--project` wins; otherwise the repo's own keel.json names its Linear project (REQ-LINEAR-10). */
-export function resolveProject(explicit, config) {
-  const project = explicit ?? config.linearProject;
+/**
+ * `--project` wins; otherwise the repo's own keel.json names its Linear project (REQ-LINEAR-10). A `--project`
+ * that differs from that `linearProject` is a usage error: it would build another project's issues in this repo
+ * (REQ-LINEAR-34).
+ */
+export function resolveProject(explicit, config, repo = '.') {
+  const own = config.linearProject;
+  if (explicit && own && explicit !== own)
+    throw new UsageError(
+      `--project ${JSON.stringify(explicit)} differs from "linearProject" ${JSON.stringify(own)} in the keel.json of ${repo}; run keel poll in that project's repo, or drop --project`,
+    );
+  const project = explicit ?? own;
   if (!project) throw new UsageError('poll needs --project <name> or "linearProject" in keel.json');
   return project;
 }
@@ -616,6 +625,8 @@ export async function poll({
   issue: only = null,
   fileOnly = false,
 }) {
+  // A project that is not this repo's stops before Linear is read or a worktree made (REQ-LINEAR-34).
+  resolveProject(project, config, repo);
   // File the queued follow-ups and stop: no issue is built, commented on, or recorded (REQ-LINEAR-31).
   if (fileOnly) return filingFailed(await fileFollowUps({ repo, project, config, client, log, base }));
   const results = [];

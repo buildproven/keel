@@ -117,7 +117,7 @@ test('REQ-LINEAR-8 --limit caps how many issues are attempted per invocation', a
 
 test('REQ-LINEAR-10 resolveProject prefers --project, then keel.json linearProject, else fails naming both', async () => {
   const { resolveProject } = await import('../src/poll.js');
-  assert.equal(resolveProject('cli-proj', { linearProject: 'cfg-proj' }), 'cli-proj');
+  assert.equal(resolveProject('cli-proj', { linearProject: null }), 'cli-proj');
   assert.equal(resolveProject(undefined, { linearProject: 'cfg-proj' }), 'cfg-proj');
   assert.throws(() => resolveProject(undefined, { linearProject: null }), /--project.*linearProject|linearProject.*--project/);
 });

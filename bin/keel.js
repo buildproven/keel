@@ -233,7 +233,7 @@ if (values.version && command) {
       const base = values.base ?? 'HEAD';
       const limit = limitOption(values.limit, 1);
       const config = loadConfig(repo, base);
-      const project = resolveProject(values.project, config);
+      const project = resolveProject(values.project, config, repo);
       if (values.issue !== undefined && !/^[A-Z]+-[0-9]+$/.test(values.issue))
         throw new UsageError(`--issue ${JSON.stringify(values.issue)} must look like BUI-123`);
       const results = await poll({
