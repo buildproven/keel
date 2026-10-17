@@ -44,10 +44,24 @@ function checkState(repo, rollup, sha) {
   if (!gate) waiting.push(GATE_CONTEXT);
   // A workflow run exists before its check runs do; a queued one is waiting, not absent (REQ-MERGE-2). Every page is
   // read, so a run past the first cannot be missed (REQ-MERGE-7).
-  const runs = exec('gh', ['api', '--paginate', '--slurp', `repos/{owner}/{repo}/actions/runs?head_sha=${sha}&per_page=100`], repo);
+  const runs = exec(
+    'gh',
+    [
+      'api',
+      '--paginate',
+      `repos/{owner}/{repo}/actions/runs?head_sha=${sha}&per_page=100`,
+      '--jq',
+      '[.workflow_runs[] | {name, status, conclusion}]',
+    ],
+    repo,
+  );
   if (runs.status !== 0) waiting.push(`workflow runs (gh api: ${out(runs).slice(0, 200)})`);
   else
-    for (const w of JSON.parse(runs.stdout).flatMap((page) => page.workflow_runs)) {
+    // `--paginate --jq` prints one JSON array per page, each on its own line.
+    for (const w of runs.stdout
+      .split('\n')
+      .filter((l) => l.trim())
+      .flatMap((l) => JSON.parse(l))) {
       if (w.status !== 'completed') waiting.push(`workflow ${w.name}`);
       else if (!OK_CONCLUSIONS.has(String(w.conclusion).toUpperCase())) failed.push(`workflow ${w.name}`);
     }
