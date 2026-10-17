@@ -16,10 +16,19 @@ const isItem = (s) => s === '-' || s.startsWith('- ');
 const indentOf = (l) => l.length - l.trimStart().length;
 const blank = (l) => l.trim() === '' || l.trimStart().startsWith('#');
 
-/** Scalars keep how they were written: `p:` plain, `s:` single-, `d:` double-quoted, `b<style><chomp>:` block. */
+/**
+ * Values keep how they were written: `p:` plain, `s:` single-, `d:` double-quoted, `b<style><chomp>:` block. Keys are
+ * stored as the key YAML reads (`"env"`, `'env'`, and `env` are one key), so a quoted spelling cannot hide a key the
+ * checks look up (REQ-GATE-43), and a quoted and a plain spelling of one key are a duplicate.
+ */
 const keyText = (k, n) => {
   if (k.startsWith('"') && k.includes('\\')) bad(n, 'an escape in a double-quoted key');
-  return k.startsWith('"') ? `d:${k.slice(1, -1)}` : k.startsWith("'") ? `s:${k.slice(1, -1)}` : k;
+  return k.startsWith('"') ? k.slice(1, -1) : k.startsWith("'") ? k.slice(1, -1).replaceAll("''", "'") : k;
+};
+/** A flow mapping key (a parsed scalar) as the key YAML reads; a collection as a key is outside the subset. */
+const flowKey = (k, n) => {
+  if (typeof k !== 'string') bad(n, 'a flow mapping key that is not a scalar');
+  return k.startsWith('s:') ? k.slice(2).replaceAll("''", "'") : k.slice(2);
 };
 
 /** A plain scalar ends at ` #` (a comment); a `: ` inside one is not YAML in block context. */
@@ -54,7 +63,7 @@ function flow(s, i, n) {
         if (i >= s.length) bad(n, 'a flow collection that does not end on its line');
         if (close === ']') list.push(node());
         else {
-          const k = node();
+          const k = flowKey(node(), n);
           ws();
           if (s[i] !== ':') bad(n, 'a flow mapping entry without ":"');
           i++;
@@ -232,7 +241,7 @@ const STEP_KEYS = new Set(['name', 'run', 'shell', 'working-directory', 'timeout
  */
 function addedStepRisk(step, where) {
   if (!isMap(step)) return `${where} is not a mapping`;
-  if (!step.has('run')) return `${where} is not a run step`;
+  if (typeof step.get('run') !== 'string') return `${where} is not a run step`;
   const extra = [...step.keys()].find((k) => !STEP_KEYS.has(k));
   if (extra) return `${where} sets ${extra}`;
   if ([...step.values()].some((v) => typeof v === 'string' && v.includes('${{'))) return `${where} has a \${{ }} expression`;
@@ -243,6 +252,16 @@ function addedStepRisk(step, where) {
 const scalars = (v) => (Array.isArray(v) ? v.flatMap(scalars) : isMap(v) ? [...v].flatMap(([k, x]) => [k, ...scalars(x)]) : v ? [v] : []);
 
 /**
+ * The command lines of a parsed `run` value: each line of its text, trimmed; a folded (`>`) block is one line, as YAML
+ * joins it. A configured command counts as run only when a line starts with it (REQ-GATE-43), so text that merely
+ * names it (`echo 'npm test is disabled'`, a `# npm test` comment) does not.
+ */
+function commandLines(run) {
+  const text = run.slice(run.indexOf(':') + 1);
+  return (run.startsWith('b>') ? [text.replace(/\n/g, ' ')] : text.split('\n')).map((l) => l.trim());
+}
+
+/**
  * Why a step added to base job `job` could reach more than the candidate's code already reaches in that job, or null.
  * The job must already run a configured command (`commands`: the test command and checks) in a base run step, so
  * candidate code already runs there with the job's environment and token; and neither the job nor the workflow may
@@ -251,11 +270,12 @@ const scalars = (v) => (Array.isArray(v) ? v.flatMap(scalars) : isMap(v) ? [...v
  */
 function jobRisk(top, job, id, commands) {
   const steps = Array.isArray(job.get('steps')) ? job.get('steps') : [];
-  const runs = steps
+  const lines = steps
     .filter(isMap)
     .map((s) => s.get('run'))
-    .filter((r) => typeof r === 'string');
-  if (!runs.some((r) => commands.some((c) => c && r.includes(c))))
+    .filter((r) => typeof r === 'string')
+    .flatMap(commandLines);
+  if (!lines.some((l) => commands.some((c) => c && (l === c || l.startsWith(`${c} `)))))
     return `job ${id} runs no configured check or test command, so an added step would run candidate code where none ran`;
   // Any expression outside `if` could put a secret or the token (in any spelling) where a later step reads it: env,
   // GITHUB_ENV, a checkout's git config. Fail closed rather than list spellings.

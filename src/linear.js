@@ -4,7 +4,7 @@ import { appendJsonl, readJsonl, stateDir } from './ledger.js';
 
 export const pollLedgerFile = () => join(stateDir(), 'poll-ledger.jsonl');
 
-/** Poll-ledger rows of the self-merge path (REQ-MERGE-1..4); none is an attempt of the issue (REQ-MERGE-2). */
+/** Poll-ledger rows of the self-merge path (REQ-MERGE-1..7); none is an attempt of the issue (REQ-MERGE-2). */
 export const SELF_MERGE_ROWS = ['self-merge', 'self-merged', 'self-merge-failed', 'self-merge-closed'];
 
 // A `refined` row (REQ-LINEAR-33) is the step before a build, not an attempt; the build's own outcome follows it.
@@ -15,10 +15,20 @@ export function attemptedIssueIds(repo) {
   // Each issue's latest outcome decides: deferred is retried (REQ-LINEAR-19), also after an earlier outcome, as when a
   // conflicting PR is closed to build again (REQ-LINEAR-23). Found-work rows are not attempts (REQ-LINEAR-22), nor are
   // self-merge rows (REQ-MERGE-2).
+  return new Set([...latestOutcomes(repo)].filter(([, outcome]) => outcome !== 'deferred').map(([id]) => id));
+}
+
+/** Each issue's latest attempt outcome for this repo, by issue id. */
+function latestOutcomes(repo) {
   const last = new Map();
   for (const r of readJsonl(pollLedgerFile()))
     if (r.repo === repo && ![...SKIP_ROWS, ...SELF_MERGE_ROWS].includes(r.outcome)) last.set(r.issue, r.outcome);
-  return new Set([...last].filter(([, outcome]) => outcome !== 'deferred').map(([id]) => id));
+  return last;
+}
+
+/** Issues whose latest poll outcome for this repo is `notKeel` (REQ-LINEAR-25): human work until a keel block (REQ-LINEAR-25). */
+export function notKeelIssueIds(repo) {
+  return new Set([...latestOutcomes(repo)].filter(([, outcome]) => outcome === 'notKeel').map(([id]) => id));
 }
 
 /** Follow-up issues filed for this repo today, UTC (REQ-LINEAR-22). */
