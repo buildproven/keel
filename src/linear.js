@@ -4,7 +4,7 @@ import { appendJsonl, readJsonl, stateDir } from './ledger.js';
 
 export const pollLedgerFile = () => join(stateDir(), 'poll-ledger.jsonl');
 
-/** Poll-ledger rows of the self-merge path (REQ-MERGE-1..4); none is an attempt of the issue (REQ-MERGE-2). */
+/** Poll-ledger rows of the self-merge path (REQ-MERGE-1..7); none is an attempt of the issue (REQ-MERGE-2). */
 export const SELF_MERGE_ROWS = ['self-merge', 'self-merged', 'self-merge-failed', 'self-merge-closed'];
 
 // A `refined` row (REQ-LINEAR-33) is the step before a build, not an attempt; the build's own outcome follows it.

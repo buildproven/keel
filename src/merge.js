@@ -42,15 +42,26 @@ function checkState(repo, rollup, sha) {
     }
   }
   if (!gate) waiting.push(GATE_CONTEXT);
-  // A workflow run exists before its check runs do; a queued one is waiting, not absent (REQ-MERGE-2).
+  // A workflow run exists before its check runs do; a queued one is waiting, not absent (REQ-MERGE-2). Every page is
+  // read, so a run past the first cannot be missed (REQ-MERGE-7).
   const runs = exec(
     'gh',
-    ['api', `repos/{owner}/{repo}/actions/runs?head_sha=${sha}`, '--jq', '[.workflow_runs[] | {name, status, conclusion}]'],
+    [
+      'api',
+      '--paginate',
+      `repos/{owner}/{repo}/actions/runs?head_sha=${sha}&per_page=100`,
+      '--jq',
+      '[.workflow_runs[] | {name, status, conclusion}]',
+    ],
     repo,
   );
   if (runs.status !== 0) waiting.push(`workflow runs (gh api: ${out(runs).slice(0, 200)})`);
   else
-    for (const w of JSON.parse(runs.stdout || '[]')) {
+    // `--paginate --jq` prints one JSON array per page, each on its own line.
+    for (const w of runs.stdout
+      .split('\n')
+      .filter((l) => l.trim())
+      .flatMap((l) => JSON.parse(l))) {
       if (w.status !== 'completed') waiting.push(`workflow ${w.name}`);
       else if (!OK_CONCLUSIONS.has(String(w.conclusion).toUpperCase())) failed.push(`workflow ${w.name}`);
     }
@@ -58,7 +69,7 @@ function checkState(repo, rollup, sha) {
 }
 
 /**
- * What to do with one pending self-merge now (REQ-MERGE-2..4): `{ act: 'merge' }`, `{ act: 'wait', why }`,
+ * What to do with one pending self-merge now (REQ-MERGE-2..7): `{ act: 'merge' }`, `{ act: 'wait', why }`,
  * `{ act: 'fail', reason }`, `{ act: 'settle', outcome }`, or `{ act: 'skip', why }`.
  */
 function decide(repo, p, timeoutMinutes, now) {
@@ -75,16 +86,17 @@ function decide(repo, p, timeoutMinutes, now) {
   if (pr.isDraft) return { act: 'fail', reason: 'the PR is a draft' };
   const { failed, waiting } = checkState(repo, pr.statusCheckRollup, p.sha);
   if (failed.length) return { act: 'fail', reason: `check ${failed.join(', ')} failed` };
-  if (waiting.length) return wait(waiting.join(', '));
-  // Keel never moves the certified head, so a branch that must be up to date cannot become mergeable by waiting.
+  // Keel never moves the certified head, so a branch that must be up to date cannot become mergeable by waiting,
+  // even for a check still pending (REQ-MERGE-6).
   if (pr.mergeStateStatus === 'BEHIND')
     return { act: 'fail', reason: 'the branch is behind its base, and Keel never changes the certified head' };
+  if (waiting.length) return wait(waiting.join(', '));
   if (!MERGEABLE_STATES.has(pr.mergeStateStatus)) return wait(`merge state ${pr.mergeStateStatus}`);
   return { act: 'merge' };
 }
 
 /**
- * Finish pending self-merges (REQ-MERGE-2..4), at the start of `keel poll --merge`: merge each whose checks are all
+ * Finish pending self-merges (REQ-MERGE-2..7), at the start of `keel poll --merge`: merge each whose checks are all
  * green with `gh pr merge --squash --match-head-commit <certified sha>`, report each that cannot merge on the PR and
  * the issue, and leave the rest pending for a later poll, so no repo's poll waits on CI. Returns poll results:
  * `merged` and `mergeFailed` (the poll then exits 1).

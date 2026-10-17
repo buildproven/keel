@@ -457,11 +457,17 @@ function mergePolicy({ wt, baseBranch, config, receipt, needsReview }) {
 
 const SELF_MERGE_LINE = '; keel poll --merge merges this certified SHA itself once every check on it passes';
 
+/** The PR body's `Auto-merge:` line for a merge state (REQ-RUN-20, REQ-MERGE-1); empty without `--merge`. */
+const autoMergeLine = (m) =>
+  m ? `\n\nAuto-merge: ${m.state === 'auto' ? 'on' : `off — ${m.reason}${m.selfMerge ? SELF_MERGE_LINE : ''}`}` : '';
+
+/** The PR URL: the last line `gh pr create` printed. */
+const prUrl = (prResult) => prResult.out.trim().split('\n').at(-1);
+
 /** GitHub merges exactly the certified commit, and only after the required checks pass (REQ-RUN-20). */
 function enableAutoMerge(wt, prResult, head) {
   if (!prResult?.ok) return { state: 'failed', reason: 'the PR was not opened' };
-  const url = prResult.out.trim().split('\n').at(-1);
-  const r = exec('gh', ['pr', 'merge', url, '--auto', '--squash', '--match-head-commit', head], wt);
+  const r = exec('gh', ['pr', 'merge', prUrl(prResult), '--auto', '--squash', '--match-head-commit', head], wt);
   // GitHub refused auto-merge on an open PR: `keel poll --merge` may still merge the certified SHA itself (REQ-MERGE-1).
   return r.status === 0
     ? { state: 'auto', reason: null }
@@ -893,13 +899,18 @@ function runLocked({ repo, card, config, baseSha, baseBranch, branch, wt, pr, me
         : status && !status.ok
           ? { state: 'failed', reason: `${GATE_CONTEXT} status not posted: ${status.out.slice(-500)}` }
           : mergePolicy({ wt, baseBranch, config, receipt, needsReview });
-      const autoLine = mergeState
-        ? `\n\nAuto-merge: ${mergeState.state === 'auto' ? 'on' : `off — ${mergeState.reason}${mergeState.selfMerge ? SELF_MERGE_LINE : ''}`}`
-        : '';
-      const body = prBody({ card, receipt, tier: { index: tier, ...t }, attempt, cost: runCost }) + autoLine;
+      const prText = prBody({ card, receipt, tier: { index: tier, ...t }, attempt, cost: runCost });
+      const body = prText + autoMergeLine(mergeState);
       const draft = needsReview && mergeState?.state !== 'auto' && !mergeState?.selfMerge;
       const prResult = pushed && (pushed.ok ? openPr(wt, { branch, baseBranch, card, draft, body }) : pushed);
-      if (mergeState?.state === 'auto') mergeState = enableAutoMerge(wt, prResult, receipt.head);
+      if (mergeState?.state === 'auto') {
+        mergeState = enableAutoMerge(wt, prResult, receipt.head);
+        // The body said auto-merge was on before GitHub answered; a refusal corrects it (REQ-MERGE-5).
+        if (mergeState.selfMerge) {
+          const edit = exec('gh', ['pr', 'edit', prUrl(prResult), '--body', prText + autoMergeLine(mergeState)], wt);
+          if (edit.status !== 0) log(`PR body not corrected: ${`${edit.stdout}${edit.stderr}`.trim().slice(-500)}`);
+        }
+      }
       if (mergeState) log(`auto-merge: ${mergeState.state}${mergeState.reason ? ` (${mergeState.reason})` : ''}`);
       return {
         pass: true,
