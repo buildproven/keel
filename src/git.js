@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 const MAX_BUFFER = 64 * 1024 * 1024;
 
@@ -37,19 +37,6 @@ export const trackedContentDirty = (cwd) => git(['status', '--porcelain=v1', '--
 
 /** The main worktree of the repo at cwd: the parent of the git common dir (REQ-GATE-48). Equals cwd's top in the main one. */
 export const mainWorktree = (cwd) => dirname(resolve(cwd, git(['rev-parse', '--git-common-dir'], cwd).trim()));
-
-/**
- * True when a `.gitignore` file in the repo ignores dir `name`, whether or not it exists (REQ-GATE-49). Other ignore
- * sources do not count: `keel run` writes shared dirs to info/exclude, and a global excludes file says nothing about
- * what this project needs.
- */
-export function ignoresDir(name, cwd) {
-  const r = exec('git', ['check-ignore', '-v', '--no-index', '--', `${name}/`], cwd);
-  if (r.status === 1) return false;
-  if (r.status !== 0) throw new Error(`git check-ignore ${name} failed: ${(r.stderr ?? r.error?.message ?? '').trim()}`);
-  const source = r.stdout.split(':')[0];
-  return !isAbsolute(source) && !source.startsWith('..') && basename(source) === '.gitignore';
-}
 
 /** Files changed base..head as [{status, path}], NUL-delimited so any file name parses. Renames = delete + add. */
 export function changedFiles(base, head, cwd) {

@@ -24,7 +24,6 @@ import {
   exec,
   fileMode,
   git,
-  ignoresDir,
   isDirty,
   mainWorktree,
   revParse,
@@ -68,10 +67,11 @@ export function linkShared(from, to, dirs) {
   }
 }
 
-/** Ignored shared dirs that neither the repo nor its main worktree has, so no checkout could run (REQ-GATE-49). */
+/** shareDirs that keel.json writes and neither the repo nor its main worktree has, so no checkout could run (REQ-GATE-49). */
 function missingShared(repo, config) {
+  if (!config.shareDirsRequired) return [];
   const roots = sharedRoots(repo);
-  return linkedDirs(config).filter((d) => !roots.some((r) => existsSync(resolve(r, d))) && ignoresDir(d, repo));
+  return linkedDirs(config).filter((d) => !roots.some((r) => existsSync(resolve(r, d))));
 }
 
 /**
