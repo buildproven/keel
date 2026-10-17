@@ -230,6 +230,11 @@ Open source
 - **REQ-OSS-3** `docs/DESIGN.md` shall say in one line that `BUI-` and `KEEL-` ids are internal tracker ids.
 - **REQ-OSS-4** The README shall give the command that links a skill: `ln -s "$PWD/skills/<name>" ~/.claude/skills/<name>`.
 
+Benchmark (`bench/swebench/`)
+
+- **REQ-BENCH-1** When `bench/swebench/test.sh` runs the tests, it shall start the container with a name (`keel-bench-<pid>-<time>`) and a time limit (env `KEEL_BENCH_TEST_TIMEOUT`, default 1800 s; a value that is not a positive integer is an error, exit 2): the command in the container runs under `timeout`, and a host-side watchdog kills the named container when the limit is hit. The script shall then exit non-zero. Rationale: on 2026-10-16, five SWE-bench containers with a hung `bin/test` under qemu were still running 3.5 days after they started, because `docker run --rm` had no name and no limit (BUI-1323).
+- **REQ-BENCH-2** When the process that ran `test.sh` is terminated (TERM, INT, HUP), the script shall kill the container it started (by name) within 30 s and exit non-zero.
+
 Traceability (V-model, checked by machine)
 
 - **REQ-CLEAN-3** Each `keel poll` pass and each `keel run` start shall first remove, across every repo, each parked worktree under the state dir that is safe and finished, with its branch, the way `keel clean --force` does (REQ-CLEAN-2). Safe: its HEAD is its own `keel/<card id>` branch, no live run holds its run lock (REQ-RUN-10), it has no uncommitted change (tracked or untracked), and every commit on it that no other branch outside `keel/*` and no remote-tracking ref holds is a Keel commit `chore(<card id>): keel attempt <n> leftovers` (REQ-RUN-7). Finished: no commit is only there (its tip is in the base or another branch, or was pushed; a merged PR's branch stays in its remote-tracking ref), or the card's last activity (its newest ledger row in that repo, else the tip's commit time) is more than `worktreeKeepDays` days old (keel.json of the owning repo at HEAD: an integer ≥ 0, default 7). Nothing younger than one hour is removed, so a run that just ended is left to its own poll. It logs `removed <path> (<why>)`. Rationale: on 2026-10-14, 31 parked worktrees had piled up across 8 repos (BUI-1253); a kept worktree also stops a retry of its card with `worktree exists`.
