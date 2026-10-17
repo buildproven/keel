@@ -107,7 +107,7 @@ const FILE_ARG = /[/*]|\.[cm]?[jt]sx?$/;
 let nodeOptions;
 /**
  * The options that `node --help` of the running node lists, each true when it takes a value written `--opt value`
- * (`--import=...`), false when it takes none (`--cpu-prof`) or only with `=` (`--inspect[=port]`). Read from node itself,
+ * (`--import=...`, `--print [...]`), false when it takes none (`--cpu-prof`) or only with `=` (`--inspect[=port]`). Read from node itself,
  * since a hand list misses options (REQ-GATE-33).
  */
 function nodeOptionValues() {
@@ -115,8 +115,12 @@ function nodeOptionValues() {
     const help = spawnSync(process.execPath, ['--help'], { encoding: 'utf8' });
     if (help.status !== 0) throw new Error(`node --help failed: ${help.error?.message ?? help.stderr}`);
     nodeOptions = new Map();
-    for (const [, short, long, value] of help.stdout.matchAll(/^ {2}(?:(-\w), )?(--?[\w-]+)(=)?/gm))
-      for (const name of [short, long]) if (name) nodeOptions.set(name, Boolean(value));
+    // `  -r, --require=...   desc`, `  --loader, --experimental-loader=...`, `  -p, --print [...]`, `  --inspect[=port]`:
+    // the aliases share the value of the last one.
+    for (const [, column] of help.stdout.matchAll(/^ {2}(-\S.*?)(?: {2,}|$)/gm)) {
+      const value = /(?<!\[)=| \[/.test(column);
+      for (const alias of column.split(', ')) nodeOptions.set(alias.match(/^--?[\w-]+/)[0], value);
+    }
   }
   return nodeOptions;
 }
