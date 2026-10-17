@@ -15,10 +15,20 @@ export function attemptedIssueIds(repo) {
   // Each issue's latest outcome decides: deferred is retried (REQ-LINEAR-19), also after an earlier outcome, as when a
   // conflicting PR is closed to build again (REQ-LINEAR-23). Found-work rows are not attempts (REQ-LINEAR-22), nor are
   // self-merge rows (REQ-MERGE-2).
+  return new Set([...latestOutcomes(repo)].filter(([, outcome]) => outcome !== 'deferred').map(([id]) => id));
+}
+
+/** Each issue's latest attempt outcome for this repo, by issue id. */
+function latestOutcomes(repo) {
   const last = new Map();
   for (const r of readJsonl(pollLedgerFile()))
     if (r.repo === repo && ![...SKIP_ROWS, ...SELF_MERGE_ROWS].includes(r.outcome)) last.set(r.issue, r.outcome);
-  return new Set([...last].filter(([, outcome]) => outcome !== 'deferred').map(([id]) => id));
+  return last;
+}
+
+/** Issues whose latest poll outcome for this repo is `notKeel` (REQ-LINEAR-25): human work until a keel block (REQ-LINEAR-25). */
+export function notKeelIssueIds(repo) {
+  return new Set([...latestOutcomes(repo)].filter(([, outcome]) => outcome === 'notKeel').map(([id]) => id));
 }
 
 /** Follow-up issues filed for this repo today, UTC (REQ-LINEAR-22). */
