@@ -1,0 +1,35 @@
+{
+ "instance_id": "django__django-16950",
+ "pass": true,
+ "exit": 0,
+ "patch": "diff --git a/django/forms/models.py b/django/forms/models.py\nindex 3fa04b821f..7ca084e974 100644\n--- a/django/forms/models.py\n+++ b/django/forms/models.py\n@@ -1177,7 +1177,12 @@ class BaseInlineFormSet(BaseModelFormSet):\n                 to_field = self.instance._meta.get_field(kwargs[\"to_field\"])\n             else:\n                 to_field = self.instance._meta.pk\n-            if to_field.has_default():\n+            if to_field.has_default() and (\n+                # Don't ignore a parent's auto-generated key if it's not the\n+                # parent model's pk and form data is provided.\n+                to_field.attname == self.fk.remote_field.model._meta.pk.name\n+                or not form.data\n+            ):\n                 setattr(self.instance, to_field.attname, None)\n \n         form.fields[name] = InlineForeignKeyField(self.instance, **kwargs)\ndiff --git a/tests/model_formsets/test_inline_alternate_key_default.py b/tests/model_formsets/test_inline_alternate_key_default.py\nnew file mode 100644\nindex 0000000000..1ba315a0db\n--- /dev/null\n+++ b/tests/model_formsets/test_inline_alternate_key_default.py\n@@ -0,0 +1,25 @@\n+from django.forms.models import inlineformset_factory\n+from django.test import TestCase\n+\n+from .models import ChildRelatedViaAK, ParentWithUUIDAlternateKey\n+\n+\n+class InlineAlternateKeyDefaultTests(TestCase):\n+    def test_django_16950_parent_alternate_key_default_kept(self):\n+        FormSet = inlineformset_factory(\n+            ParentWithUUIDAlternateKey, ChildRelatedViaAK, fields=\"__all__\", extra=1\n+        )\n+        parent = ParentWithUUIDAlternateKey(name=\"p\")\n+        data = {\n+            \"childrelatedviaak_set-TOTAL_FORMS\": \"1\",\n+            \"childrelatedviaak_set-INITIAL_FORMS\": \"0\",\n+            \"childrelatedviaak_set-MIN_NUM_FORMS\": \"0\",\n+            \"childrelatedviaak_set-MAX_NUM_FORMS\": \"1000\",\n+            \"childrelatedviaak_set-0-name\": \"c\",\n+        }\n+        formset = FormSet(data, instance=parent)\n+        self.assertTrue(formset.is_valid(), formset.errors)\n+        parent.save()\n+        formset.save()\n+        self.assertIsNotNone(parent.uuid)\n+        self.assertEqual(ChildRelatedViaAK.objects.get().parent_id, parent.uuid)\n",
+ "seconds": 126,
+ "cost": 0.2226,
+ "unpriced": 0,
+ "attempts": [
+  {
+   "attempt": 1,
+   "tier": 0,
+   "provider": "claude",
+   "model": "claude-sonnet-5-5",
+   "effort": "low",
+   "workerStatus": "ok",
+   "gatePass": true,
+   "cost": 0.0950255,
+   "reviewCost": 0.1275602,
+   "role": null
+  }
+ ],
+ "receipts": [
+  {
+   "pass": true,
+   "failedStage": null,
+   "rules": [],
+   "reviewer": "claude/claude-opus-5-5/high",
+   "fallback": {
+    "from": "codex/gpt-5.6-sol/high",
+    "status": "quota"
+   }
+  }
+ ]
+}

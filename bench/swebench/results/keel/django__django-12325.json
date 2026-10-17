@@ -1,0 +1,35 @@
+{
+ "instance_id": "django__django-12325",
+ "pass": true,
+ "exit": 0,
+ "patch": "diff --git a/django/db/models/base.py b/django/db/models/base.py\nindex 8ea6c05ef9..24453e218a 100644\n--- a/django/db/models/base.py\n+++ b/django/db/models/base.py\n@@ -202,7 +202,7 @@ class ModelBase(type):\n                 continue\n             # Locate OneToOneField instances.\n             for field in base._meta.local_fields:\n-                if isinstance(field, OneToOneField):\n+                if isinstance(field, OneToOneField) and field.remote_field.parent_link:\n                     related = resolve_relation(new_class, field.remote_field.model)\n                     parent_links[make_model_tuple(related)] = field\n \ndiff --git a/tests/model_inheritance/test_multiple_o2o_parent_link.py b/tests/model_inheritance/test_multiple_o2o_parent_link.py\nnew file mode 100644\nindex 0000000000..4ec24abb1c\n--- /dev/null\n+++ b/tests/model_inheritance/test_multiple_o2o_parent_link.py\n@@ -0,0 +1,21 @@\n+from django.db import models\n+from django.test import SimpleTestCase\n+\n+\n+class MultipleO2OParentLinkTests(SimpleTestCase):\n+    def test_django_12325_parent_link_order_independent(self):\n+        \"\"\"django__django-12325: explicit parent_link wins regardless of order.\"\"\"\n+        class Document(models.Model):\n+            class Meta:\n+                app_label = 'model_inheritance'\n+\n+        class Picking(Document):\n+            document_ptr = models.OneToOneField(\n+                Document, models.CASCADE, parent_link=True, related_name='+')\n+            origin = models.OneToOneField(\n+                Document, models.PROTECT, related_name='picking')\n+\n+            class Meta:\n+                app_label = 'model_inheritance'\n+\n+        self.assertEqual(Picking._meta.parents[Document].name, 'document_ptr')\n",
+ "seconds": 148,
+ "cost": 0.2415,
+ "unpriced": 0,
+ "attempts": [
+  {
+   "attempt": 1,
+   "tier": 0,
+   "provider": "claude",
+   "model": "claude-sonnet-5-5",
+   "effort": "low",
+   "workerStatus": "ok",
+   "gatePass": true,
+   "cost": 0.08022220000000002,
+   "reviewCost": 0.161283,
+   "role": null
+  }
+ ],
+ "receipts": [
+  {
+   "pass": true,
+   "failedStage": null,
+   "rules": [],
+   "reviewer": "claude/claude-opus-5-5/high",
+   "fallback": {
+    "from": "codex/gpt-5.6-sol/high",
+    "status": "quota"
+   }
+  }
+ ]
+}

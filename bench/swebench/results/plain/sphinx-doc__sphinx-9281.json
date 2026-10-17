@@ -1,0 +1,7 @@
+{
+ "instance_id": "sphinx-doc__sphinx-9281",
+ "exit": 0,
+ "patch": "diff --git a/sphinx/util/inspect.py b/sphinx/util/inspect.py\nindex a415a7074..9616784cf 100644\n--- a/sphinx/util/inspect.py\n+++ b/sphinx/util/inspect.py\n@@ -457,6 +457,9 @@ def object_description(object: Any) -> str:\n         else:\n             return \"frozenset({%s})\" % \", \".join(object_description(x)\n                                                  for x in sorted_values)\n+    if isinstance(object, enum.Enum):\n+        return \"%s.%s\" % (object.__class__.__name__, object.name)\n+\n     try:\n         s = repr(object)\n     except Exception as exc:\ndiff --git a/tests/test_util_inspect.py b/tests/test_util_inspect.py\nindex de4ad9236..a8e677814 100644\n--- a/tests/test_util_inspect.py\n+++ b/tests/test_util_inspect.py\n@@ -10,6 +10,7 @@\n \n import ast\n import datetime\n+import enum\n import functools\n import sys\n import types\n@@ -478,6 +479,14 @@ def test_dictionary_sorting():\n     assert description == \"{'a': 1, 'b': 4, 'c': 3, 'd': 2}\"\n \n \n+def test_object_description_enum():\n+    class MyEnum(enum.Enum):\n+        FOO = 1\n+        BAR = 2\n+\n+    assert inspect.object_description(MyEnum.FOO) == \"MyEnum.FOO\"\n+\n+\n def test_set_sorting():\n     set_ = set(\"gfedcba\")\n     description = inspect.object_description(set_)\n",
+ "seconds": 98,
+ "cost": 0.1258398
+}

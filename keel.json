@@ -1,0 +1,11 @@
+{
+  "checks": {
+    "lint": "npm run lint",
+    "format": "npm run format:check",
+    "test": "npm test"
+  },
+  "testCommand": "npm test",
+  "bypassAllow": ["src/scan.js", "test/**", "bench/swebench/results/**", "bench/swebench/tamper.py"],
+  "linearProject": "keel",
+  "dailyBudgetUsd": 5
+}

@@ -1,0 +1,56 @@
+{
+ "instance_id": "pylint-dev__pylint-4604",
+ "pass": true,
+ "exit": 0,
+ "patch": "diff --git a/pylint/checkers/variables.py b/pylint/checkers/variables.py\nindex 3ddafd599..309a7752d 100644\n--- a/pylint/checkers/variables.py\n+++ b/pylint/checkers/variables.py\n@@ -1826,6 +1826,11 @@ class VariablesChecker(BaseChecker):\n             self._type_annotation_names.append(type_annotation.name)\n             return\n \n+        if isinstance(type_annotation, astroid.Attribute):\n+            names = list(type_annotation.nodes_of_class(astroid.Name))\n+            self._type_annotation_names.extend(name.name for name in names)\n+            return\n+\n         if not isinstance(type_annotation, astroid.Subscript):\n             return\n \ndiff --git a/tests/checkers/test_variables_type_comment_4604.py b/tests/checkers/test_variables_type_comment_4604.py\nnew file mode 100644\nindex 000000000..90779e039\n--- /dev/null\n+++ b/tests/checkers/test_variables_type_comment_4604.py\n@@ -0,0 +1,23 @@\n+\"\"\"Regression test for pylint-dev__pylint-4604.\"\"\"\n+import astroid\n+\n+from pylint.checkers import variables\n+from pylint.testutils import CheckerTestCase\n+\n+\n+class TestTypeCommentAttributeImport(CheckerTestCase):\n+    \"\"\"pylint-dev__pylint-4604: module used in a type comment is used.\"\"\"\n+\n+    CHECKER_CLASS = variables.VariablesChecker\n+\n+    def test_pylint_dev__pylint_4604_module_in_type_comment(self):\n+        node = astroid.parse(\n+            \"\"\"\n+        import abc\n+        from abc import ABC\n+        X = ...  # type: abc.ABC\n+        Y = ...  # type: ABC\n+        \"\"\"\n+        )\n+        with self.assertNoMessages():\n+            self.walk(node)\n",
+ "seconds": 497,
+ "cost": 0.3494,
+ "unpriced": 0,
+ "attempts": [
+  {
+   "attempt": 1,
+   "tier": 0,
+   "provider": "claude",
+   "model": "claude-sonnet-5-5",
+   "effort": "low",
+   "workerStatus": "ok",
+   "gatePass": false,
+   "cost": 0.0665989,
+   "reviewCost": null,
+   "role": null
+  },
+  {
+   "attempt": 2,
+   "tier": 1,
+   "provider": "claude",
+   "model": "claude-sonnet-5-5",
+   "effort": "high",
+   "workerStatus": "ok",
+   "gatePass": true,
+   "cost": 0.0785057,
+   "reviewCost": 0.20426060000000001,
+   "role": null
+  }
+ ],
+ "receipts": [
+  {
+   "pass": false,
+   "failedStage": "red-proof",
+   "rules": [
+    "test-passes-on-base"
+   ],
+   "reviewer": null,
+   "fallback": null
+  },
+  {
+   "pass": true,
+   "failedStage": null,
+   "rules": [],
+   "reviewer": "claude/claude-opus-5-5/high",
+   "fallback": {
+    "from": "codex/gpt-5.6-sol/high",
+    "status": "quota"
+   }
+  }
+ ]
+}

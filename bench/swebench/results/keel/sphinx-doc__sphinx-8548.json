@@ -1,0 +1,75 @@
+{
+ "instance_id": "sphinx-doc__sphinx-8548",
+ "pass": true,
+ "exit": 0,
+ "patch": "diff --git a/CHANGES b/CHANGES\nindex b4dbf1ef7..1254d41c5 100644\n--- a/CHANGES\n+++ b/CHANGES\n@@ -53,6 +53,8 @@ Features added\n Bugs fixed\n ----------\n \n+* #741: autodoc: inherited-members option does not document attributes (data\n+  members) inherited from base classes\n * #7613: autodoc: autodoc does not respect __signature__ of the class\n * #4606: autodoc: the location of the warning is incorrect for inherited method\n * #8105: autodoc: the signature of class constructor is incorrect if the class\ndiff --git a/sphinx/ext/autodoc/__init__.py b/sphinx/ext/autodoc/__init__.py\nindex ddfd2b365..6fd8cdea0 100644\n--- a/sphinx/ext/autodoc/__init__.py\n+++ b/sphinx/ext/autodoc/__init__.py\n@@ -276,16 +276,32 @@ class ObjectMember(tuple):\n         return super().__new__(cls, (name, obj))  # type: ignore\n \n     def __init__(self, name: str, obj: Any, docstring: Optional[str] = None,\n-                 skipped: bool = False) -> None:\n+                 skipped: bool = False, class_: Any = None) -> None:\n         self.__name__ = name\n         self.object = obj\n         self.docstring = docstring\n         self.skipped = skipped\n+        self.class_ = class_\n \n \n ObjectMembers = Union[List[ObjectMember], List[Tuple[str, Any]]]\n \n \n+def find_inherited_attr_doc(cls: Any, name: str) -> Optional[List[str]]:\n+    \"\"\"Find the doc-comment of attribute *name* in the base classes of *cls*.\"\"\"\n+    for base in inspect.getmro(cls)[1:]:\n+        try:\n+            module = safe_getattr(base, '__module__')\n+            qualname = safe_getattr(base, '__qualname__')\n+            analyzer = ModuleAnalyzer.for_module(module)\n+            analyzer.analyze()\n+        except (AttributeError, PycodeError):\n+            continue\n+        if (qualname, name) in analyzer.attr_docs:\n+            return list(analyzer.attr_docs[(qualname, name)])\n+    return None\n+\n+\n class Documenter:\n     \"\"\"\n     A Documenter knows how to autodocument a single object type.  When\n@@ -598,11 +614,15 @@ class Documenter:\n             attr_docs = self.analyzer.find_attr_docs()\n             if self.objpath:\n                 key = ('.'.join(self.objpath[:-1]), self.objpath[-1])\n-                if key in attr_docs:\n+                inherited = None\n+                if (key not in attr_docs and self.config.autodoc_inherit_docstrings and\n+                        inspect.isclass(self.parent)):\n+                    inherited = find_inherited_attr_doc(self.parent, self.objpath[-1])\n+                if key in attr_docs or inherited:\n                     no_docstring = True\n                     # make a copy of docstring for attributes to avoid cache\n                     # the change of autodoc-process-docstring event.\n-                    docstrings = [list(attr_docs[key])]\n+                    docstrings = [list(attr_docs[key] if key in attr_docs else inherited)]\n \n                     for i, line in enumerate(self.process_doc(docstrings)):\n                         self.add_line(line, sourcename, i)\n@@ -666,7 +686,7 @@ class Documenter:\n         The user can override the skipping decision by connecting to the\n         ``autodoc-skip-member`` event.\n         \"\"\"\n-        def is_filtered_inherited_member(name: str) -> bool:\n+        def is_filtered_inherited_member(name: str, obj: Any = None) -> bool:\n             if inspect.isclass(self.object):\n                 for cls in self.object.__mro__:\n                     if cls.__name__ == self.options.inherited_members and cls != self.object:\n@@ -676,6 +696,8 @@ class Documenter:\n                         return False\n                     elif name in self.get_attr(cls, '__annotations__', {}):\n                         return False\n+                    elif isinstance(obj, ObjectMember) and obj.class_ is cls:\n+                        return False\n \n             return False\n \n@@ -740,7 +762,7 @@ class Documenter:\n                 if self.options.special_members and membername in self.options.special_members:\n                     if membername == '__doc__':\n                         keep = False\n-                    elif is_filtered_inherited_member(membername):\n+                    elif is_filtered_inherited_member(membername, obj):\n                         keep = False\n                     else:\n                         keep = has_doc or self.options.undoc_members\n@@ -760,14 +782,15 @@ class Documenter:\n                 if has_doc or self.options.undoc_members:\n                     if self.options.private_members is None:\n                         keep = False\n-                    elif is_filtered_inherited_member(membername):\n+                    elif is_filtered_inherited_member(membername, obj):\n                         keep = False\n                     else:\n                         keep = membername in self.options.private_members\n                 else:\n                     keep = False\n             else:\n-                if self.options.members is ALL and is_filtered_inherited_member(membername):\n+                if (self.options.members is ALL and\n+                        is_filtered_inherited_member(membername, obj)):\n                     keep = False\n                 else:\n                     # ignore undocumented members if :undoc-members: is not given\n@@ -1593,18 +1616,28 @@ class ClassDocumenter(DocstringSignatureMixin, ModuleLevelDocumenter):  # type:\n             for name in self.options.members:  # type: str\n                 if name in members:\n                     selected.append(ObjectMember(name, members[name].value,\n-                                                 docstring=members[name].docstring))\n+                                                 docstring=members[name].docstring,\n+                                                 class_=members[name].class_))\n                 else:\n                     logger.warning(__('missing attribute %s in object %s') %\n                                    (name, self.fullname), type='autodoc')\n             return False, selected\n         elif self.options.inherited_members:\n-            return False, [ObjectMember(m.name, m.value, docstring=m.docstring)\n+            return False, [ObjectMember(m.name, m.value, docstring=self._member_docstring(m),\n+                                        class_=m.class_)\n                            for m in members.values()]\n         else:\n-            return False, [ObjectMember(m.name, m.value, docstring=m.docstring)\n+            return False, [ObjectMember(m.name, m.value, docstring=m.docstring,\n+                                        class_=m.class_)\n                            for m in members.values() if m.class_ == self.object]\n \n+    def _member_docstring(self, member: Any) -> Optional[str]:\n+        \"\"\"Return the doc-comment of *member*, ignoring one inherited from a base class\n+        if autodoc_inherit_docstrings is disabled.\"\"\"\n+        if member.class_ is not self.object and not self.config.autodoc_inherit_docstrings:\n+            return None\n+        return member.docstring\n+\n     def get_doc(self, encoding: str = None, ignore: int = None) -> List[List[str]]:\n         if encoding is not None:\n             warnings.warn(\"The 'encoding' argument to autodoc.%s.get_doc() is deprecated.\"\ndiff --git a/sphinx/ext/autodoc/importer.py b/sphinx/ext/autodoc/importer.py\nindex d6e73d36a..532f2c652 100644\n--- a/sphinx/ext/autodoc/importer.py\n+++ b/sphinx/ext/autodoc/importer.py\n@@ -14,7 +14,7 @@ import warnings\n from typing import Any, Callable, Dict, List, Mapping, NamedTuple, Optional, Tuple\n \n from sphinx.deprecation import RemovedInSphinx40Warning, deprecated_alias\n-from sphinx.pycode import ModuleAnalyzer\n+from sphinx.pycode import ModuleAnalyzer, PycodeError\n from sphinx.util import logging\n from sphinx.util.inspect import (getannotations, getmro, getslots, isclass, isenumclass,\n                                  safe_getattr)\n@@ -300,6 +300,11 @@ def get_class_members(subject: Any, objpath: List[str], attrgetter: Callable,\n     # annotation only member (ex. attr: int)\n     for cls in getmro(subject):\n         try:\n+            # a class without own annotations exposes the ones of its base class;\n+            # they are collected with the base class that declares them\n+            if '__annotations__' not in attrgetter(cls, '__dict__', {}):\n+                continue\n+\n             for name in getannotations(cls):\n                 name = unmangle(cls, name)\n                 if name and name not in members:\n@@ -315,6 +320,25 @@ def get_class_members(subject: Any, objpath: List[str], attrgetter: Callable,\n                 members[name] = ClassAttribute(subject, name, INSTANCEATTR,\n                                                '\\n'.join(docstring))\n \n+    # doc-comments of attributes defined in the base classes\n+    for cls in getmro(subject)[1:]:\n+        try:\n+            base_analyzer = ModuleAnalyzer.for_module(safe_getattr(cls, '__module__'))\n+            base_analyzer.analyze()\n+            qualname = safe_getattr(cls, '__qualname__')\n+        except (AttributeError, PycodeError):\n+            continue\n+\n+        for (ns, name), docstring in base_analyzer.attr_docs.items():\n+            if ns != qualname:\n+                continue\n+            elif name not in members:\n+                members[name] = ClassAttribute(cls, name, INSTANCEATTR, '\\n'.join(docstring))\n+            elif members[name].class_ in (None, cls) and members[name].docstring is None:\n+                # inherited attribute (class_ is None) or annotation-only attribute\n+                # declared in this base class (ex. attr: int)\n+                members[name].docstring = '\\n'.join(docstring)\n+\n     return members\n \n \ndiff --git a/tests/roots/test-ext-autodoc/target/inherited_attr.py b/tests/roots/test-ext-autodoc/target/inherited_attr.py\nnew file mode 100644\nindex 000000000..f0a52da4d\n--- /dev/null\n+++ b/tests/roots/test-ext-autodoc/target/inherited_attr.py\n@@ -0,0 +1,14 @@\n+class Base:\n+    #: documented in base\n+    attr = 1\n+\n+    #: annotation-only attribute documented in base\n+    anno_attr: int\n+\n+    def __init__(self):\n+        #: instance attribute documented in base\n+        self.inst_attr = 2\n+\n+\n+class Derived(Base):\n+    pass\ndiff --git a/tests/test_ext_autodoc_inherited_attr.py b/tests/test_ext_autodoc_inherited_attr.py\nnew file mode 100644\nindex 000000000..976df94e2\n--- /dev/null\n+++ b/tests/test_ext_autodoc_inherited_attr.py\n@@ -0,0 +1,50 @@\n+\"\"\"\n+    test_ext_autodoc_inherited_attr\n+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n+\n+    Requirement sphinx-doc__sphinx-8548: inherited-members covers inherited attributes.\n+\"\"\"\n+\n+import pytest\n+\n+from .test_ext_autodoc import do_autodoc\n+\n+\n+@pytest.mark.sphinx('html', testroot='ext-autodoc')\n+def test_sphinx_doc__sphinx_8548_inherited_attribute(app):\n+    options = {'members': None, 'inherited-members': None}\n+    actual = do_autodoc(app, 'class', 'target.inherited_attr.Derived', options)\n+    assert '   .. py:attribute:: Derived.attr' in actual\n+    assert '      documented in base' in actual\n+\n+\n+@pytest.mark.sphinx('html', testroot='ext-autodoc')\n+def test_sphinx_doc__sphinx_8548_inherited_instance_attribute(app):\n+    options = {'members': None, 'inherited-members': None}\n+    actual = do_autodoc(app, 'class', 'target.inherited_attr.Derived', options)\n+    assert '   .. py:attribute:: Derived.inst_attr' in actual\n+    assert '      instance attribute documented in base' in actual\n+\n+\n+@pytest.mark.sphinx('html', testroot='ext-autodoc')\n+def test_sphinx_doc__sphinx_8548_inherited_annotation_only_attribute(app):\n+    options = {'members': None, 'inherited-members': None}\n+    actual = do_autodoc(app, 'class', 'target.inherited_attr.Derived', options)\n+    assert '   .. py:attribute:: Derived.anno_attr' in actual\n+    assert '      annotation-only attribute documented in base' in actual\n+\n+\n+@pytest.mark.sphinx('html', testroot='ext-autodoc')\n+def test_sphinx_doc__sphinx_8548_not_inherited_without_option(app):\n+    actual = do_autodoc(app, 'class', 'target.inherited_attr.Derived', {'members': None})\n+    assert 'Derived.attr' not in '\\n'.join(actual)\n+    assert 'Derived.inst_attr' not in '\\n'.join(actual)\n+    assert 'Derived.anno_attr' not in '\\n'.join(actual)\n+\n+\n+@pytest.mark.sphinx('html', testroot='ext-autodoc',\n+                    confoverrides={'autodoc_inherit_docstrings': False})\n+def test_sphinx_doc__sphinx_8548_inherit_docstrings_disabled(app):\n+    options = {'members': None, 'inherited-members': None}\n+    actual = '\\n'.join(do_autodoc(app, 'class', 'target.inherited_attr.Derived', options))\n+    assert 'documented in base' not in actual\n",
+ "seconds": 1582,
+ "cost": 1.1862,
+ "unpriced": 0,
+ "attempts": [
+  {
+   "attempt": 1,
+   "tier": 0,
+   "provider": "claude",
+   "model": "claude-sonnet-5-5",
+   "effort": "low",
+   "workerStatus": "ok",
+   "gatePass": false,
+   "cost": 0.22371220000000003,
+   "reviewCost": null,
+   "role": null
+  },
+  {
+   "attempt": 2,
+   "tier": 1,
+   "provider": "claude",
+   "model": "claude-sonnet-5-5",
+   "effort": "high",
+   "workerStatus": "ok",
+   "gatePass": false,
+   "cost": 0.45415079999999997,
+   "reviewCost": null,
+   "role": null
+  },
+  {
+   "attempt": 3,
+   "tier": 2,
+   "provider": "claude",
+   "model": "claude-opus-5-5",
+   "effort": "high",
+   "workerStatus": "ok",
+   "gatePass": true,
+   "cost": 0.5083842,
+   "reviewCost": null,
+   "role": null
+  }
+ ],
+ "receipts": [
+  {
+   "pass": false,
+   "failedStage": "review",
+   "rules": [
+    "review-finding"
+   ],
+   "reviewer": "codex/gpt-5.6-sol/high",
+   "fallback": null
+  },
+  {
+   "pass": true,
+   "failedStage": null,
+   "rules": [],
+   "reviewer": "codex/gpt-5.6-sol/high",
+   "fallback": null
+  },
+  {
+   "pass": false,
+   "failedStage": "review",
+   "rules": [
+    "review-finding",
+    "review-finding"
+   ],
+   "reviewer": "codex/gpt-5.6-sol/high",
+   "fallback": null
+  }
+ ]
+}

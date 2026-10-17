@@ -1,0 +1,44 @@
+{
+ "instance_id": "pytest-dev__pytest-5809",
+ "pass": true,
+ "exit": 0,
+ "patch": "diff --git a/changelog/5806.bugfix.rst b/changelog/5806.bugfix.rst\nnew file mode 100644\nindex 000000000..c217216ad\n--- /dev/null\n+++ b/changelog/5806.bugfix.rst\n@@ -0,0 +1 @@\n+Use the text lexer for --pastebin uploads, since console output is not Python code (fixes HTTP 400 errors).\ndiff --git a/src/_pytest/pastebin.py b/src/_pytest/pastebin.py\nindex 41576a615..79b0d9d40 100644\n--- a/src/_pytest/pastebin.py\n+++ b/src/_pytest/pastebin.py\n@@ -79,7 +79,7 @@ def create_new_paste(contents):\n \n     params = {\n         \"code\": contents,\n-        \"lexer\": \"python3\" if sys.version_info[0] >= 3 else \"python\",\n+        \"lexer\": \"text\",\n         \"expiry\": \"1week\",\n     }\n     url = \"https://bpaste.net\"\ndiff --git a/testing/test_pastebin.py b/testing/test_pastebin.py\nindex bac8f9802..aac0b651e 100644\n--- a/testing/test_pastebin.py\n+++ b/testing/test_pastebin.py\n@@ -126,8 +126,7 @@ class TestPaste(object):\n         assert len(mocked_urlopen) == 1\n         url, data = mocked_urlopen[0]\n         assert type(data) is bytes\n-        lexer = \"python3\" if sys.version_info[0] >= 3 else \"python\"\n         assert url == \"https://bpaste.net\"\n-        assert \"lexer=%s\" % lexer in data.decode()\n+        assert \"lexer=text\" in data.decode()\n         assert \"code=full-paste-contents\" in data.decode()\n         assert \"expiry=1week\" in data.decode()\ndiff --git a/testing/test_pastebin_lexer.py b/testing/test_pastebin_lexer.py\nnew file mode 100644\nindex 000000000..38f4ee860\n--- /dev/null\n+++ b/testing/test_pastebin_lexer.py\n@@ -0,0 +1,28 @@\n+import pytest\n+\n+\n+class TestPastebinLexer(object):\n+    def test_pytest_5809_lexer_is_text(self, monkeypatch):\n+        \"\"\"pytest-dev__pytest-5809: uploaded console output uses the text lexer.\"\"\"\n+        from _pytest.pastebin import create_new_paste\n+\n+        captured = {}\n+\n+        class Resp(object):\n+            def read(self):\n+                return b'href=\"/raw/abc\"'\n+\n+        def fake_urlopen(url, data):\n+            captured[\"data\"] = data\n+            return Resp()\n+\n+        try:\n+            import urllib.request as ur\n+\n+            monkeypatch.setattr(ur, \"urlopen\", fake_urlopen)\n+        except ImportError:\n+            import urllib\n+\n+            monkeypatch.setattr(urllib, \"urlopen\", fake_urlopen)\n+        create_new_paste(b\"hello\")\n+        assert b\"lexer=text\" in captured[\"data\"]\n",
+ "seconds": 268,
+ "cost": 0.2522,
+ "unpriced": 0,
+ "attempts": [
+  {
+   "attempt": 1,
+   "tier": 0,
+   "provider": "claude",
+   "model": "claude-sonnet-5-5",
+   "effort": "low",
+   "workerStatus": "approved",
+   "gatePass": false,
+   "cost": 0.1953374,
+   "reviewCost": null,
+   "role": null
+  },
+  {
+   "attempt": 2,
+   "tier": 0,
+   "provider": "claude",
+   "model": "claude-sonnet-5-5",
+   "effort": "low",
+   "workerStatus": "ok",
+   "gatePass": true,
+   "cost": 0.056816,
+   "reviewCost": null,
+   "role": null
+  }
+ ],
+ "receipts": [
+  {
+   "pass": true,
+   "failedStage": null,
+   "rules": [],
+   "reviewer": "codex/gpt-5.6-sol/high",
+   "fallback": null
+  }
+ ]
+}

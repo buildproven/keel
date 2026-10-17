@@ -1,0 +1,56 @@
+{
+ "instance_id": "sympy__sympy-13974",
+ "pass": true,
+ "exit": 0,
+ "patch": "diff --git a/sympy/core/power.py b/sympy/core/power.py\nindex 02ec6480cb..2a096f430c 100644\n--- a/sympy/core/power.py\n+++ b/sympy/core/power.py\n@@ -811,6 +811,13 @@ def _eval_transpose(self):\n             if expanded != self:\n                 return transpose(expanded)\n \n+    def _eval_expand_tensorproduct(self, **hints):\n+        # Let the base evaluate its own power, e.g. TensorProduct.\n+        evaluate = getattr(self.base, '_eval_expand_tensorproduct_power', None)\n+        if evaluate is None:\n+            return self\n+        return evaluate(self.exp)\n+\n     def _eval_expand_power_exp(self, **hints):\n         \"\"\"a**(n+m) -> a**n*a**m\"\"\"\n         b = self.base\ndiff --git a/sympy/physics/quantum/tensorproduct.py b/sympy/physics/quantum/tensorproduct.py\nindex 9dd10d219e..8df544642d 100644\n--- a/sympy/physics/quantum/tensorproduct.py\n+++ b/sympy/physics/quantum/tensorproduct.py\n@@ -257,6 +257,10 @@ def _eval_expand_tensorproduct(self, **hints):\n         else:\n             return self\n \n+    def _eval_expand_tensorproduct_power(self, exp):\n+        \"\"\"Evaluate ``self**exp`` as a TensorProduct of powers.\"\"\"\n+        return tensor_product_simp_Pow(Pow(self, exp))\n+\n     def _eval_trace(self, **kwargs):\n         indices = kwargs.get('indices', None)\n         exp = tensor_product_simp(self)\n@@ -268,6 +272,33 @@ def _eval_trace(self, **kwargs):\n                          for idx, value in enumerate(exp.args)])\n \n \n+def _is_tensor_product_pow(e):\n+    return isinstance(e, Pow) and isinstance(e.base, TensorProduct)\n+\n+\n+def tensor_product_simp_Pow(e):\n+    \"\"\"Simplify a ``Pow`` with a ``TensorProduct`` base.\n+\n+    The power of a ``TensorProduct`` is the ``TensorProduct`` of the powers of\n+    its arguments. Any other expression is returned unchanged.\n+\n+    Examples\n+    ========\n+\n+    >>> from sympy.physics.quantum.tensorproduct import \\\n+    ...     tensor_product_simp_Pow, TensorProduct\n+    >>> from sympy import Symbol\n+    >>> A = Symbol('A', commutative=False)\n+    >>> B = Symbol('B', commutative=False)\n+    >>> tensor_product_simp_Pow(TensorProduct(A, B)**2)\n+    (A**2)x(B**2)\n+\n+    \"\"\"\n+    if not _is_tensor_product_pow(e):\n+        return e\n+    return TensorProduct(*[arg**e.exp for arg in e.base.args])\n+\n+\n def tensor_product_simp_Mul(e):\n     \"\"\"Simplify a Mul with TensorProducts.\n \n@@ -315,9 +346,15 @@ def tensor_product_simp_Mul(e):\n     if not isinstance(e, Mul):\n         return e\n     c_part, nc_part = e.args_cnc()\n+    # Powers of TensorProducts are TensorProducts of powers.\n+    has_pow = any(_is_tensor_product_pow(f) for f in nc_part)\n+    if has_pow:\n+        nc_part = [tensor_product_simp_Pow(f) for f in nc_part]\n     n_nc = len(nc_part)\n-    if n_nc == 0 or n_nc == 1:\n+    if n_nc == 0:\n         return e\n+    elif n_nc == 1:\n+        return Mul(*c_part) * nc_part[0] if has_pow else e\n     elif e.has(TensorProduct):\n         current = nc_part[0]\n         if not isinstance(current, TensorProduct):\n@@ -335,6 +372,9 @@ def tensor_product_simp_Mul(e):\n                 for i in range(len(new_args)):\n                     new_args[i] = new_args[i] * next.args[i]\n             else:\n+                if has_pow:\n+                    raise TypeError(\n+                        'TensorProduct expected, got: %r' % next)\n                 # this won't quite work as we don't want next in the\n                 # TensorProduct\n                 for i in range(len(new_args)):\n@@ -382,7 +422,7 @@ def tensor_product_simp(e, **hints):\n     if isinstance(e, Add):\n         return Add(*[tensor_product_simp(arg) for arg in e.args])\n     elif isinstance(e, Pow):\n-        return tensor_product_simp(e.base) ** e.exp\n+        return tensor_product_simp_Pow(tensor_product_simp(e.base) ** e.exp)\n     elif isinstance(e, Mul):\n         return tensor_product_simp_Mul(e)\n     elif isinstance(e, Commutator):\ndiff --git a/sympy/physics/quantum/tests/test_tensorproduct_pow.py b/sympy/physics/quantum/tests/test_tensorproduct_pow.py\nnew file mode 100644\nindex 0000000000..d79d797640\n--- /dev/null\n+++ b/sympy/physics/quantum/tests/test_tensorproduct_pow.py\n@@ -0,0 +1,33 @@\n+from sympy import Symbol, Abs\n+from sympy.physics.quantum import TensorProduct as tp, tensor_product_simp as tps\n+from sympy.physics.paulialgebra import Pauli\n+from sympy.utilities.pytest import raises\n+\n+a = Symbol('a', commutative=False)\n+A = Symbol('A', commutative=False)\n+B = Symbol('B', commutative=False)\n+C = Symbol('C', commutative=False)\n+D = Symbol('D', commutative=False)\n+x = Symbol('x')\n+\n+\n+def test_sympy_13974_tensor_product_simp_powers():\n+    assert tps(tp(1, 1)*tp(1, 1)) == tp(1, 1)\n+    assert tps(tp(1, 1)**2) == tp(1, 1)\n+    assert tps(tp(1, Pauli(3))*tp(1, Pauli(3))) == tp(1, 1)\n+    assert tps(tp(a, a)**2) == tp(a**2, a**2)\n+    assert tps(tp(A, B)**x) == tp(A**x, B**x)\n+    assert tps(tp(A, B)**2*tp(C, D)) == tp(A**2*C, B**2*D)\n+\n+\n+def test_sympy_13974_expand_tensorproduct_powers():\n+    assert (tp(1, 1)*tp(1, 1)).expand(tensorproduct=True) == tp(1, 1)\n+    t2 = tp(1, Pauli(3))*tp(1, Pauli(3))\n+    assert t2.expand(tensorproduct=True) == tp(1, 1)\n+    assert (x**2).expand(tensorproduct=True) == x**2\n+\n+\n+def test_sympy_13974_scalar_and_unsupported_factors():\n+    scalar = Abs(tp(A, B))\n+    assert tps(scalar*tp(C, D)) == scalar*tp(C, D)\n+    raises(TypeError, lambda: tps(tp(A, B)**2*C))\n",
+ "seconds": 837,
+ "cost": 0.395,
+ "unpriced": 0,
+ "attempts": [
+  {
+   "attempt": 1,
+   "tier": 0,
+   "provider": "claude",
+   "model": "claude-sonnet-5-5",
+   "effort": "low",
+   "workerStatus": "ok",
+   "gatePass": false,
+   "cost": 0.1345645,
+   "reviewCost": null,
+   "role": null
+  },
+  {
+   "attempt": 2,
+   "tier": 1,
+   "provider": "claude",
+   "model": "claude-sonnet-5-5",
+   "effort": "high",
+   "workerStatus": "ok",
+   "gatePass": true,
+   "cost": 0.2604721,
+   "reviewCost": null,
+   "role": null
+  }
+ ],
+ "receipts": [
+  {
+   "pass": false,
+   "failedStage": "review",
+   "rules": [
+    "review-finding",
+    "review-finding",
+    "review-finding",
+    "review-finding"
+   ],
+   "reviewer": "codex/gpt-5.6-sol/high",
+   "fallback": null
+  },
+  {
+   "pass": true,
+   "failedStage": null,
+   "rules": [],
+   "reviewer": "codex/gpt-5.6-sol/high",
+   "fallback": null
+  }
+ ]
+}

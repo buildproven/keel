@@ -1,0 +1,56 @@
+{
+ "instance_id": "sphinx-doc__sphinx-8459",
+ "pass": true,
+ "exit": 0,
+ "patch": "diff --git a/sphinx/ext/autodoc/typehints.py b/sphinx/ext/autodoc/typehints.py\nindex 70cbc3ba1..e6451b52c 100644\n--- a/sphinx/ext/autodoc/typehints.py\n+++ b/sphinx/ext/autodoc/typehints.py\n@@ -27,7 +27,7 @@ def record_typehints(app: Sphinx, objtype: str, name: str, obj: Any,\n         if callable(obj):\n             annotations = app.env.temp_data.setdefault('annotations', {})\n             annotation = annotations.setdefault(name, OrderedDict())\n-            sig = inspect.signature(obj)\n+            sig = inspect.signature(obj, type_aliases=app.config.autodoc_type_aliases)\n             for param in sig.parameters.values():\n                 if param.annotation is not param.empty:\n                     annotation[param.name] = typing.stringify(param.annotation)\ndiff --git a/tests/test_ext_autodoc_typehints_aliases.py b/tests/test_ext_autodoc_typehints_aliases.py\nnew file mode 100644\nindex 000000000..caf058ba8\n--- /dev/null\n+++ b/tests/test_ext_autodoc_typehints_aliases.py\n@@ -0,0 +1,15 @@\n+\"\"\"Regression test sphinx-doc__sphinx-8459: type aliases with typehints=description.\"\"\"\n+\n+import pytest\n+\n+from sphinx.ext.autodoc.typehints import record_typehints\n+\n+\n+@pytest.mark.sphinx('text', testroot='ext-autodoc',\n+                    confoverrides={'autodoc_typehints': 'description',\n+                                   'autodoc_type_aliases': {'myint': 'myint'}})\n+def test_sphinx_doc_8459_type_aliases_in_description(app):\n+    from target.annotations import sum\n+    record_typehints(app, 'function', 'target.annotations.sum', sum, {}, '', '')\n+    annotations = app.env.temp_data['annotations']['target.annotations.sum']\n+    assert annotations == {'x': 'myint', 'y': 'myint', 'return': 'myint'}\n",
+ "seconds": 147,
+ "cost": 0.2377,
+ "unpriced": 0,
+ "attempts": [
+  {
+   "attempt": 1,
+   "tier": 0,
+   "provider": "claude",
+   "model": "claude-sonnet-5-5",
+   "effort": "low",
+   "workerStatus": "ok",
+   "gatePass": false,
+   "cost": 0.0793761,
+   "reviewCost": null,
+   "role": null
+  },
+  {
+   "attempt": 2,
+   "tier": 1,
+   "provider": "claude",
+   "model": "claude-sonnet-5-5",
+   "effort": "high",
+   "workerStatus": "ok",
+   "gatePass": true,
+   "cost": 0.0517388,
+   "reviewCost": 0.1066068,
+   "role": null
+  }
+ ],
+ "receipts": [
+  {
+   "pass": true,
+   "failedStage": null,
+   "rules": [],
+   "reviewer": "claude/claude-opus-5-5/high",
+   "fallback": {
+    "from": "codex/gpt-5.6-sol/high",
+    "status": "quota"
+   }
+  },
+  {
+   "pass": false,
+   "failedStage": "skip-markers",
+   "rules": [
+    "skip-marker"
+   ],
+   "reviewer": null,
+   "fallback": null
+  }
+ ]
+}

@@ -1,0 +1,35 @@
+{
+ "instance_id": "psf__requests-6028",
+ "pass": true,
+ "exit": 0,
+ "patch": "diff --git a/requests/utils.py b/requests/utils.py\nindex 1c2ae4e0..d009e267 100644\n--- a/requests/utils.py\n+++ b/requests/utils.py\n@@ -974,6 +974,9 @@ def prepend_scheme_if_needed(url, new_scheme):\n     if not netloc:\n         netloc, path = path, netloc\n \n+    if auth:\n+        # parse_url's netloc excludes the userinfo, so restore it.\n+        netloc = '@'.join([auth, netloc])\n     if scheme is None:\n         scheme = new_scheme\n     if path is None:\ndiff --git a/tests/test_psf_requests_6028.py b/tests/test_psf_requests_6028.py\nnew file mode 100644\nindex 00000000..5af742dc\n--- /dev/null\n+++ b/tests/test_psf_requests_6028.py\n@@ -0,0 +1,12 @@\n+import pytest\n+\n+from requests.utils import prepend_scheme_if_needed\n+\n+\n+@pytest.mark.parametrize('url, expected', (\n+    ('http://user:pass@proxy.example:8080', 'http://user:pass@proxy.example:8080'),\n+    ('proxy.example:8080', 'http://proxy.example:8080'),\n+))\n+def test_psf_requests_6028_prepend_scheme_keeps_auth(url, expected):\n+    \"\"\"psf__requests-6028: proxy credentials must survive scheme prepending.\"\"\"\n+    assert prepend_scheme_if_needed(url, 'http') == expected\n",
+ "seconds": 92,
+ "cost": 0.2158,
+ "unpriced": 0,
+ "attempts": [
+  {
+   "attempt": 1,
+   "tier": 0,
+   "provider": "claude",
+   "model": "claude-sonnet-5-5",
+   "effort": "low",
+   "workerStatus": "ok",
+   "gatePass": true,
+   "cost": 0.11142970000000002,
+   "reviewCost": 0.10434220000000001,
+   "role": null
+  }
+ ],
+ "receipts": [
+  {
+   "pass": true,
+   "failedStage": null,
+   "rules": [],
+   "reviewer": "claude/claude-opus-5-5/high",
+   "fallback": {
+    "from": "codex/gpt-5.6-sol/high",
+    "status": "quota"
+   }
+  }
+ ]
+}

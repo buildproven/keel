@@ -1,0 +1,35 @@
+{
+ "instance_id": "django__django-12304",
+ "pass": true,
+ "exit": 0,
+ "patch": "diff --git a/django/db/models/enums.py b/django/db/models/enums.py\nindex f48143ddaf..7b473e5e54 100644\n--- a/django/db/models/enums.py\n+++ b/django/db/models/enums.py\n@@ -31,6 +31,8 @@ class ChoicesMeta(enum.EnumMeta):\n         # that is passed in as \"self\" as the value to use when looking up the\n         # label in the choices.\n         cls.label = property(lambda self: cls._value2label_map_.get(self.value))\n+        # Templates must not call the class (it requires a value argument).\n+        cls.do_not_call_in_templates = True\n         return enum.unique(cls)\n \n     def __contains__(cls, member):\ndiff --git a/tests/model_enums/test_templates.py b/tests/model_enums/test_templates.py\nnew file mode 100644\nindex 0000000000..08ce3a245a\n--- /dev/null\n+++ b/tests/model_enums/test_templates.py\n@@ -0,0 +1,20 @@\n+from django.db import models\n+from django.template import Context, Template\n+from django.test import SimpleTestCase\n+\n+\n+class YearInSchool(models.TextChoices):\n+    FRESHMAN = 'FR'\n+    SENIOR = 'SR'\n+\n+\n+class Medal(models.IntegerChoices):\n+    GOLD = 1\n+\n+\n+class EnumTemplateTests(SimpleTestCase):\n+    def test_django_12304_choices_usable_in_templates(self):\n+        t = Template('{% if y == YearInSchool.FRESHMAN %}yes{% endif %}'\n+                     '{% if m == Medal.GOLD %}gold{% endif %}')\n+        out = t.render(Context({'y': 'FR', 'm': 1, 'YearInSchool': YearInSchool, 'Medal': Medal}))\n+        self.assertEqual(out, 'yesgold')\n",
+ "seconds": 85,
+ "cost": 0.1649,
+ "unpriced": 0,
+ "attempts": [
+  {
+   "attempt": 1,
+   "tier": 0,
+   "provider": "claude",
+   "model": "claude-sonnet-5-5",
+   "effort": "low",
+   "workerStatus": "ok",
+   "gatePass": true,
+   "cost": 0.06322830000000002,
+   "reviewCost": 0.1016666,
+   "role": null
+  }
+ ],
+ "receipts": [
+  {
+   "pass": true,
+   "failedStage": null,
+   "rules": [],
+   "reviewer": "claude/claude-opus-5-5/high",
+   "fallback": {
+    "from": "codex/gpt-5.6-sol/high",
+    "status": "quota"
+   }
+  }
+ ]
+}

@@ -1,0 +1,35 @@
+{
+ "instance_id": "django__django-16485",
+ "pass": true,
+ "exit": 0,
+ "patch": "diff --git a/django/template/defaultfilters.py b/django/template/defaultfilters.py\nindex 23c3a08c67..3032a36f76 100644\n--- a/django/template/defaultfilters.py\n+++ b/django/template/defaultfilters.py\n@@ -183,7 +183,7 @@ def floatformat(text, arg=-1):\n     tupl = d.as_tuple()\n     units = len(tupl[1])\n     units += -tupl[2] if m else tupl[2]\n-    prec = abs(p) + units + 1\n+    prec = max(1, abs(p) + units + 1)\n \n     # Avoid conversion to scientific notation by accessing `sign`, `digits`,\n     # and `exponent` from Decimal.as_tuple() directly.\ndiff --git a/tests/template_tests/filter_tests/test_floatformat_zero_prec.py b/tests/template_tests/filter_tests/test_floatformat_zero_prec.py\nnew file mode 100644\nindex 0000000000..ab029b05ca\n--- /dev/null\n+++ b/tests/template_tests/filter_tests/test_floatformat_zero_prec.py\n@@ -0,0 +1,10 @@\n+from decimal import Decimal\n+\n+from django.template.defaultfilters import floatformat\n+from django.test import SimpleTestCase\n+\n+\n+class FloatformatZeroPrecTests(SimpleTestCase):\n+    def test_django_16485_zero_with_zero_places(self):\n+        self.assertEqual(floatformat(\"0.00\", 0), \"0\")\n+        self.assertEqual(floatformat(Decimal(\"0.00\"), 0), \"0\")\n",
+ "seconds": 92,
+ "cost": 0.1864,
+ "unpriced": 0,
+ "attempts": [
+  {
+   "attempt": 1,
+   "tier": 0,
+   "provider": "claude",
+   "model": "claude-sonnet-5-5",
+   "effort": "low",
+   "workerStatus": "ok",
+   "gatePass": true,
+   "cost": 0.058120099999999994,
+   "reviewCost": 0.1282384,
+   "role": null
+  }
+ ],
+ "receipts": [
+  {
+   "pass": true,
+   "failedStage": null,
+   "rules": [],
+   "reviewer": "claude/claude-opus-5-5/high",
+   "fallback": {
+    "from": "codex/gpt-5.6-sol/high",
+    "status": "quota"
+   }
+  }
+ ]
+}

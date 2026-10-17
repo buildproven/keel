@@ -1,0 +1,35 @@
+{
+ "instance_id": "sphinx-doc__sphinx-9673",
+ "pass": true,
+ "exit": 0,
+ "patch": "diff --git a/sphinx/ext/autodoc/typehints.py b/sphinx/ext/autodoc/typehints.py\nindex af4b47bb0..97fe2d670 100644\n--- a/sphinx/ext/autodoc/typehints.py\n+++ b/sphinx/ext/autodoc/typehints.py\n@@ -149,7 +149,7 @@ def augment_descriptions_with_types(\n         elif parts[0] == 'type':\n             name = ' '.join(parts[1:])\n             has_type.add(name)\n-        elif parts[0] == 'return':\n+        elif parts[0] in ('return', 'returns'):\n             has_description.add('return')\n         elif parts[0] == 'rtype':\n             has_type.add('return')\ndiff --git a/tests/test_ext_autodoc_typehints_napoleon_returns.py b/tests/test_ext_autodoc_typehints_napoleon_returns.py\nnew file mode 100644\nindex 000000000..379ce673f\n--- /dev/null\n+++ b/tests/test_ext_autodoc_typehints_napoleon_returns.py\n@@ -0,0 +1,16 @@\n+\"\"\"Regression test for sphinx-doc__sphinx-9673 (napoleon ':returns:' with 'documented' target).\"\"\"\n+from docutils import nodes\n+\n+from sphinx.ext.autodoc.typehints import augment_descriptions_with_types\n+\n+\n+def test_sphinx_doc__sphinx_9673_returns_field_gets_rtype():\n+    node = nodes.field_list()\n+    field = nodes.field()\n+    field += nodes.field_name('', 'returns')\n+    field += nodes.field_body('', nodes.paragraph('', 'The returned value.'))\n+    node += field\n+\n+    augment_descriptions_with_types(node, {'return': 'int'})\n+\n+    assert [f[0].astext() for f in node] == ['returns', 'rtype']\n",
+ "seconds": 120,
+ "cost": 0.1877,
+ "unpriced": 0,
+ "attempts": [
+  {
+   "attempt": 1,
+   "tier": 0,
+   "provider": "claude",
+   "model": "claude-sonnet-5-5",
+   "effort": "low",
+   "workerStatus": "ok",
+   "gatePass": true,
+   "cost": 0.0702904,
+   "reviewCost": 0.1174118,
+   "role": null
+  }
+ ],
+ "receipts": [
+  {
+   "pass": true,
+   "failedStage": null,
+   "rules": [],
+   "reviewer": "claude/claude-opus-5-5/high",
+   "fallback": {
+    "from": "codex/gpt-5.6-sol/high",
+    "status": "quota"
+   }
+  }
+ ]
+}

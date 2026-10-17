@@ -1,0 +1,35 @@
+{
+ "instance_id": "django__django-13028",
+ "pass": true,
+ "exit": 0,
+ "patch": "diff --git a/django/db/models/sql/query.py b/django/db/models/sql/query.py\nindex ce18098fd2..d65141b834 100644\n--- a/django/db/models/sql/query.py\n+++ b/django/db/models/sql/query.py\n@@ -1124,7 +1124,10 @@ class Query(BaseExpression):\n \n     def check_filterable(self, expression):\n         \"\"\"Raise an error if expression cannot be used in a WHERE clause.\"\"\"\n-        if not getattr(expression, 'filterable', True):\n+        if (\n+            hasattr(expression, 'resolve_expression') and\n+            not getattr(expression, 'filterable', True)\n+        ):\n             raise NotSupportedError(\n                 expression.__class__.__name__ + ' is disallowed in the filter '\n                 'clause.'\ndiff --git a/tests/queries/test_filterable_attribute.py b/tests/queries/test_filterable_attribute.py\nnew file mode 100644\nindex 0000000000..62212b5e8b\n--- /dev/null\n+++ b/tests/queries/test_filterable_attribute.py\n@@ -0,0 +1,16 @@\n+from django.db import models\n+from django.db.models.sql.query import Query\n+from django.test import SimpleTestCase\n+\n+\n+class FilterableMetaType(models.Model):\n+    filterable = models.BooleanField(default=False)\n+\n+    class Meta:\n+        app_label = 'queries'\n+\n+\n+class FilterableAttributeTests(SimpleTestCase):\n+    def test_django_13028_model_instance_with_filterable_field(self):\n+        obj = FilterableMetaType(filterable=False)\n+        Query(FilterableMetaType).check_filterable(obj)\n",
+ "seconds": 78,
+ "cost": 0.1593,
+ "unpriced": 0,
+ "attempts": [
+  {
+   "attempt": 1,
+   "tier": 0,
+   "provider": "claude",
+   "model": "claude-sonnet-5-5",
+   "effort": "low",
+   "workerStatus": "ok",
+   "gatePass": true,
+   "cost": 0.057139800000000004,
+   "reviewCost": 0.102164,
+   "role": null
+  }
+ ],
+ "receipts": [
+  {
+   "pass": true,
+   "failedStage": null,
+   "rules": [],
+   "reviewer": "claude/claude-opus-5-5/high",
+   "fallback": {
+    "from": "codex/gpt-5.6-sol/high",
+    "status": "quota"
+   }
+  }
+ ]
+}

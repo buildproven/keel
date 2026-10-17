@@ -1,0 +1,53 @@
+{
+ "instance_id": "sympy__sympy-20428",
+ "pass": true,
+ "exit": 0,
+ "patch": "diff --git a/sympy/polys/densearith.py b/sympy/polys/densearith.py\nindex bce08bb356..7f7a88b10a 100644\n--- a/sympy/polys/densearith.py\n+++ b/sympy/polys/densearith.py\n@@ -269,7 +269,7 @@ def dup_mul_ground(f, c, K):\n     if not c or not f:\n         return []\n     else:\n-        return [ cf * c for cf in f ]\n+        return dup_strip([ cf * c for cf in f ])\n \n \n def dmp_mul_ground(f, c, u, K):\n@@ -291,7 +291,7 @@ def dmp_mul_ground(f, c, u, K):\n \n     v = u - 1\n \n-    return [ dmp_mul_ground(cf, c, v, K) for cf in f ]\n+    return dmp_strip([ dmp_mul_ground(cf, c, v, K) for cf in f ], u)\n \n \n def dup_quo_ground(f, c, K):\ndiff --git a/sympy/polys/tests/test_clear_denoms_zero.py b/sympy/polys/tests/test_clear_denoms_zero.py\nnew file mode 100644\nindex 0000000000..55d70c9bc0\n--- /dev/null\n+++ b/sympy/polys/tests/test_clear_denoms_zero.py\n@@ -0,0 +1,22 @@\n+from sympy import Poly, EX, sqrt, symbols\n+\n+x = symbols('x')\n+\n+\n+def test_sympy_20428_clear_denoms_strips_zero():\n+    # req sympy__sympy-20428\n+    e = 1/(1 + sqrt(2)) - (sqrt(2) - 1)\n+    f = Poly(e, x, domain=EX)\n+    coeff, p = f.clear_denoms()\n+    assert p.is_zero\n+    assert p.rep.rep == []\n+\n+\n+def test_sympy_20428_clear_denoms_strips_zero_multivariate():\n+    # req sympy__sympy-20428\n+    y = symbols('y')\n+    e = 1/(1 + sqrt(2)) - (sqrt(2) - 1)\n+    f = Poly(e, x, y, domain=EX)\n+    coeff, p = f.clear_denoms()\n+    assert p.is_zero\n+    assert p.rep.rep == [[]]\n",
+ "seconds": 474,
+ "cost": 0.2343,
+ "unpriced": 0,
+ "attempts": [
+  {
+   "attempt": 1,
+   "tier": 0,
+   "provider": "claude",
+   "model": "claude-sonnet-5-5",
+   "effort": "low",
+   "workerStatus": "ok",
+   "gatePass": false,
+   "cost": 0.0925243,
+   "reviewCost": null,
+   "role": null
+  },
+  {
+   "attempt": 2,
+   "tier": 1,
+   "provider": "claude",
+   "model": "claude-sonnet-5-5",
+   "effort": "high",
+   "workerStatus": "ok",
+   "gatePass": true,
+   "cost": 0.14174380000000003,
+   "reviewCost": null,
+   "role": null
+  }
+ ],
+ "receipts": [
+  {
+   "pass": false,
+   "failedStage": "review",
+   "rules": [
+    "review-finding"
+   ],
+   "reviewer": "codex/gpt-5.6-sol/high",
+   "fallback": null
+  },
+  {
+   "pass": true,
+   "failedStage": null,
+   "rules": [],
+   "reviewer": "codex/gpt-5.6-sol/high",
+   "fallback": null
+  }
+ ]
+}

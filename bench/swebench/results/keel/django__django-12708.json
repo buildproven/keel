@@ -1,0 +1,35 @@
+{
+ "instance_id": "django__django-12708",
+ "pass": true,
+ "exit": 0,
+ "patch": "diff --git a/django/db/backends/base/schema.py b/django/db/backends/base/schema.py\nindex 61f88401ab..1f521cfc5c 100644\n--- a/django/db/backends/base/schema.py\n+++ b/django/db/backends/base/schema.py\n@@ -393,7 +393,7 @@ class BaseDatabaseSchemaEditor:\n         news = {tuple(fields) for fields in new_index_together}\n         # Deleted indexes\n         for fields in olds.difference(news):\n-            self._delete_composed_index(model, fields, {'index': True}, self.sql_delete_index)\n+            self._delete_composed_index(model, fields, {'index': True, 'unique': False}, self.sql_delete_index)\n         # Created indexes\n         for field_names in news.difference(olds):\n             fields = [model._meta.get_field(field) for field in field_names]\ndiff --git a/tests/schema/test_index_together_unique.py b/tests/schema/test_index_together_unique.py\nnew file mode 100644\nindex 0000000000..33de553ac1\n--- /dev/null\n+++ b/tests/schema/test_index_together_unique.py\n@@ -0,0 +1,17 @@\n+from django.db import connection\n+from django.test import TransactionTestCase\n+\n+from .models import Author\n+\n+\n+class IndexTogetherWithUniqueTogetherTests(TransactionTestCase):\n+    available_apps = []\n+\n+    def test_django_12708_remove_index_together_with_unique_together(self):\n+        with connection.schema_editor() as editor:\n+            editor.create_model(Author)\n+            fields = ('name', 'height')\n+            editor.alter_unique_together(Author, set(), {fields})\n+            editor.alter_index_together(Author, set(), {fields})\n+            editor.alter_index_together(Author, {fields}, set())\n+            editor.delete_model(Author)\n",
+ "seconds": 150,
+ "cost": 0.2046,
+ "unpriced": 0,
+ "attempts": [
+  {
+   "attempt": 1,
+   "tier": 0,
+   "provider": "claude",
+   "model": "claude-sonnet-5-5",
+   "effort": "low",
+   "workerStatus": "ok",
+   "gatePass": true,
+   "cost": 0.06806569999999999,
+   "reviewCost": 0.13654,
+   "role": null
+  }
+ ],
+ "receipts": [
+  {
+   "pass": true,
+   "failedStage": null,
+   "rules": [],
+   "reviewer": "claude/claude-opus-5-5/high",
+   "fallback": {
+    "from": "codex/gpt-5.6-sol/high",
+    "status": "quota"
+   }
+  }
+ ]
+}

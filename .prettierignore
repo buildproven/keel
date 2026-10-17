@@ -1,0 +1,5 @@
+node_modules
+package-lock.json
+cards
+bench/swebench/results
+bench/swebench/tasks.json

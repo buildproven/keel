@@ -1,0 +1,35 @@
+{
+ "instance_id": "django__django-14404",
+ "pass": true,
+ "exit": 0,
+ "patch": "diff --git a/django/contrib/admin/sites.py b/django/contrib/admin/sites.py\nindex 59a4a0364d..4effd75415 100644\n--- a/django/contrib/admin/sites.py\n+++ b/django/contrib/admin/sites.py\n@@ -427,7 +427,7 @@ class AdminSite:\n                 pass\n             else:\n                 if getattr(match.func, 'should_append_slash', True):\n-                    return HttpResponsePermanentRedirect(path)\n+                    return HttpResponsePermanentRedirect('%s/' % request.path)\n         raise Http404\n \n     def _build_app_dict(self, request, label=None):\ndiff --git a/tests/admin_views/test_catch_all_script_name.py b/tests/admin_views/test_catch_all_script_name.py\nnew file mode 100644\nindex 0000000000..a2190b68b5\n--- /dev/null\n+++ b/tests/admin_views/test_catch_all_script_name.py\n@@ -0,0 +1,20 @@\n+from django.contrib.auth.models import User\n+from django.test import TestCase, override_settings\n+from django.urls import reverse\n+\n+\n+@override_settings(\n+    ROOT_URLCONF='admin_views.urls', APPEND_SLASH=True,\n+    FORCE_SCRIPT_NAME='/prefix',\n+)\n+class CatchAllForceScriptNameTests(TestCase):\n+    def test_django_14404_redirect_includes_script_name(self):\n+        user = User.objects.create_user(\n+            username='staff', password='secret', email='s@example.com',\n+            is_staff=True,\n+        )\n+        self.client.force_login(user)\n+        url = reverse('admin:admin_views_section_changelist')\n+        response = self.client.get(url[:-1])\n+        self.assertEqual(response.status_code, 301)\n+        self.assertEqual(response.url, '/prefix' + url)\n",
+ "seconds": 540,
+ "cost": 0.2748,
+ "unpriced": 0,
+ "attempts": [
+  {
+   "attempt": 1,
+   "tier": 0,
+   "provider": "claude",
+   "model": "claude-sonnet-5-5",
+   "effort": "low",
+   "workerStatus": "ok",
+   "gatePass": true,
+   "cost": 0.1266141,
+   "reviewCost": 0.14817539999999998,
+   "role": null
+  }
+ ],
+ "receipts": [
+  {
+   "pass": true,
+   "failedStage": null,
+   "rules": [],
+   "reviewer": "claude/claude-opus-5-5/high",
+   "fallback": {
+    "from": "codex/gpt-5.6-sol/high",
+    "status": "quota"
+   }
+  }
+ ]
+}

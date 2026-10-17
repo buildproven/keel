@@ -1,0 +1,57 @@
+{
+ "instance_id": "sphinx-doc__sphinx-11510",
+ "pass": true,
+ "exit": 0,
+ "patch": "diff --git a/sphinx/directives/other.py b/sphinx/directives/other.py\nindex 19f7c0a8d..ee8e6125c 100644\n--- a/sphinx/directives/other.py\n+++ b/sphinx/directives/other.py\n@@ -1,5 +1,6 @@\n from __future__ import annotations\n \n+import os\n import re\n from typing import TYPE_CHECKING, Any, cast\n \n@@ -376,7 +377,25 @@ class Include(BaseInclude, SphinxDirective):\n         rel_filename, filename = self.env.relfn2path(self.arguments[0])\n         self.arguments[0] = filename\n         self.env.note_included(filename)\n-        return super().run()\n+\n+        # emit \"source-read\" for the included text so extensions can modify it\n+        state_machine = self.state_machine\n+        orig_insert_input = state_machine.insert_input\n+\n+        def insert_input(include_lines: list[str], path: str) -> None:\n+            # the last two lines are docutils' end-of-include markers\n+            text = '\\n'.join(include_lines[:-2])\n+            docname = self.env.path2doc(os.path.abspath(path))\n+            arg = [text]\n+            self.env.app.events.emit('source-read', docname, arg)\n+            include_lines = arg[0].splitlines() + include_lines[-2:]\n+            orig_insert_input(include_lines, path)\n+\n+        setattr(state_machine, 'insert_input', insert_input)\n+        try:\n+            return super().run()\n+        finally:\n+            setattr(state_machine, 'insert_input', orig_insert_input)\n \n \n def setup(app: Sphinx) -> dict[str, Any]:\ndiff --git a/tests/roots/test-source-read-include/conf.py b/tests/roots/test-source-read-include/conf.py\nnew file mode 100644\nindex 000000000..92518cc03\n--- /dev/null\n+++ b/tests/roots/test-source-read-include/conf.py\n@@ -0,0 +1,3 @@\n+extensions = ['ext']\n+import sys, os\n+sys.path.insert(0, os.path.abspath('.'))\ndiff --git a/tests/roots/test-source-read-include/ext.py b/tests/roots/test-source-read-include/ext.py\nnew file mode 100644\nindex 000000000..224d463e8\n--- /dev/null\n+++ b/tests/roots/test-source-read-include/ext.py\n@@ -0,0 +1,7 @@\n+def replace(app, docname, source):\n+    source[0] = source[0].replace('&REPLACE_ME;', 'REPLACED')\n+\n+\n+def setup(app):\n+    app.connect('source-read', replace)\n+    return {'parallel_read_safe': True}\ndiff --git a/tests/roots/test-source-read-include/inc.txt b/tests/roots/test-source-read-include/inc.txt\nnew file mode 100644\nindex 000000000..9d629e0e3\n--- /dev/null\n+++ b/tests/roots/test-source-read-include/inc.txt\n@@ -0,0 +1,4 @@\n+Included\n+--------\n+\n+&REPLACE_ME;\ndiff --git a/tests/roots/test-source-read-include/index.rst b/tests/roots/test-source-read-include/index.rst\nnew file mode 100644\nindex 000000000..0f7deb2dc\n--- /dev/null\n+++ b/tests/roots/test-source-read-include/index.rst\n@@ -0,0 +1,6 @@\n+Title\n+=====\n+\n+.. include:: inc.txt\n+\n+&REPLACE_ME;\ndiff --git a/tests/test_source_read_include.py b/tests/test_source_read_include.py\nnew file mode 100644\nindex 000000000..665740ea7\n--- /dev/null\n+++ b/tests/test_source_read_include.py\n@@ -0,0 +1,10 @@\n+\"\"\"Regression test for sphinx-doc__sphinx-11510.\"\"\"\n+import pytest\n+\n+\n+@pytest.mark.sphinx('html', testroot='source-read-include')\n+def test_sphinx_doc__sphinx_11510_source_read_included(app):\n+    app.build(force_all=True)\n+    html = (app.outdir / 'index.html').read_text(encoding='utf8')\n+    assert 'REPLACE_ME' not in html\n+    assert html.count('REPLACED') == 2\n",
+ "seconds": 192,
+ "cost": 0.3672,
+ "unpriced": 0,
+ "attempts": [
+  {
+   "attempt": 1,
+   "tier": 0,
+   "provider": "claude",
+   "model": "claude-sonnet-5-5",
+   "effort": "low",
+   "workerStatus": "ok",
+   "gatePass": false,
+   "cost": 0.10320490000000002,
+   "reviewCost": null,
+   "role": null
+  },
+  {
+   "attempt": 2,
+   "tier": 1,
+   "provider": "claude",
+   "model": "claude-sonnet-5-5",
+   "effort": "high",
+   "workerStatus": "ok",
+   "gatePass": true,
+   "cost": 0.072458,
+   "reviewCost": 0.19149200000000002,
+   "role": null
+  }
+ ],
+ "receipts": [
+  {
+   "pass": true,
+   "failedStage": null,
+   "rules": [],
+   "reviewer": "claude/claude-opus-5-5/high",
+   "fallback": {
+    "from": "codex/gpt-5.6-sol/high",
+    "status": "quota"
+   }
+  },
+  {
+   "pass": false,
+   "failedStage": "bypass",
+   "rules": [
+    "bypass-marker",
+    "bypass-marker"
+   ],
+   "reviewer": null,
+   "fallback": null
+  }
+ ]
+}

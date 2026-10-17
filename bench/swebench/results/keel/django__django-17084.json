@@ -1,0 +1,35 @@
+{
+ "instance_id": "django__django-17084",
+ "pass": true,
+ "exit": 0,
+ "patch": "diff --git a/django/db/models/sql/query.py b/django/db/models/sql/query.py\nindex 13a6809dd8..1608d19480 100644\n--- a/django/db/models/sql/query.py\n+++ b/django/db/models/sql/query.py\n@@ -403,6 +403,7 @@ class Query(BaseExpression):\n         # Store annotation mask prior to temporarily adding aggregations for\n         # resolving purpose to facilitate their subsequent removal.\n         refs_subquery = False\n+        refs_window = False\n         replacements = {}\n         annotation_select_mask = self.annotation_select_mask\n         for alias, aggregate_expr in aggregate_exprs.items():\n@@ -419,6 +420,10 @@ class Query(BaseExpression):\n                 getattr(self.annotations[ref], \"subquery\", False)\n                 for ref in aggregate.get_refs()\n             )\n+            refs_window |= any(\n+                getattr(self.annotations[ref], \"contains_over_clause\", True)\n+                for ref in aggregate.get_refs()\n+            )\n             aggregate = aggregate.replace_expressions(replacements)\n             self.annotations[alias] = aggregate\n             replacements[Ref(alias, aggregate)] = aggregate\n@@ -451,6 +456,7 @@ class Query(BaseExpression):\n             or self.is_sliced\n             or has_existing_aggregation\n             or refs_subquery\n+            or refs_window\n             or qualify\n             or self.distinct\n             or self.combinator\ndiff --git a/tests/aggregation/test_window_aggregate_17084.py b/tests/aggregation/test_window_aggregate_17084.py\nnew file mode 100644\nindex 0000000000..1d6b16c55d\n--- /dev/null\n+++ b/tests/aggregation/test_window_aggregate_17084.py\n@@ -0,0 +1,19 @@\n+from django.db.models import F, Sum, Window\n+from django.db.models.functions import Coalesce\n+from django.test import TestCase\n+\n+from .models import Author\n+\n+\n+class AggregateOverWindowTests(TestCase):\n+    @classmethod\n+    def setUpTestData(cls):\n+        for age in (1, 2, 3):\n+            Author.objects.create(name=f\"a{age}\", age=age)\n+\n+    def test_django_17084_aggregate_over_window(self):\n+        qs = Author.objects.annotate(\n+            cumul=Coalesce(Window(Sum(\"age\"), order_by=F(\"pk\").asc()), 0)\n+        )\n+        result = qs.aggregate(total=Sum(\"age\"), cumul_total=Sum(\"cumul\"))\n+        self.assertEqual(result, {\"total\": 6, \"cumul_total\": 1 + 3 + 6})\n",
+ "seconds": 142,
+ "cost": 0.2528,
+ "unpriced": 0,
+ "attempts": [
+  {
+   "attempt": 1,
+   "tier": 0,
+   "provider": "claude",
+   "model": "claude-sonnet-5-5",
+   "effort": "low",
+   "workerStatus": "ok",
+   "gatePass": true,
+   "cost": 0.0830246,
+   "reviewCost": 0.16976519999999998,
+   "role": null
+  }
+ ],
+ "receipts": [
+  {
+   "pass": true,
+   "failedStage": null,
+   "rules": [],
+   "reviewer": "claude/claude-opus-5-5/high",
+   "fallback": {
+    "from": "codex/gpt-5.6-sol/high",
+    "status": "quota"
+   }
+  }
+ ]
+}

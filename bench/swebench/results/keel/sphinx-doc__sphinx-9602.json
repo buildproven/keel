@@ -1,0 +1,76 @@
+{
+ "instance_id": "sphinx-doc__sphinx-9602",
+ "pass": true,
+ "exit": 0,
+ "patch": "diff --git a/sphinx/domains/python.py b/sphinx/domains/python.py\nindex 9875a9f4b..cef287207 100644\n--- a/sphinx/domains/python.py\n+++ b/sphinx/domains/python.py\n@@ -109,6 +109,26 @@ def type_to_xref(text: str, env: BuildEnvironment = None) -> addnodes.pending_xr\n \n def _parse_annotation(annotation: str, env: BuildEnvironment = None) -> List[Node]:\n     \"\"\"Parse type annotation.\"\"\"\n+    def unparse_literal(node: ast.AST) -> List[Node]:\n+        \"\"\"Unparse the values of ``Literal[...]``; they are not types.\"\"\"\n+        if isinstance(node, ast.Index):  # Python 3.8 and below\n+            return unparse_literal(node.value)\n+        elif isinstance(node, ast.Tuple) and node.elts:\n+            result: List[Node] = []\n+            for elem in node.elts:\n+                result.extend(unparse_literal(elem))\n+                result.append(addnodes.desc_sig_punctuation('', ', '))\n+            result.pop()\n+            return result\n+\n+        try:\n+            # str, bytes, bool, None and (negative) numbers\n+            return [nodes.literal('', '', nodes.Text(repr(ast.literal_eval(node))))]\n+        except ValueError:\n+            # other values (ex. enum members); keep their text, but not as a type\n+            return [nodes.literal('', '', subnode) if isinstance(subnode, nodes.Text)\n+                    else subnode for subnode in unparse(node)]\n+\n     def unparse(node: ast.AST) -> List[Node]:\n         if isinstance(node, ast.Attribute):\n             return [nodes.Text(\"%s.%s\" % (unparse(node.value)[0], node.attr))]\n@@ -147,7 +167,10 @@ def _parse_annotation(annotation: str, env: BuildEnvironment = None) -> List[Nod\n         elif isinstance(node, ast.Subscript):\n             result = unparse(node.value)\n             result.append(addnodes.desc_sig_punctuation('', '['))\n-            result.extend(unparse(node.slice))\n+            if result[0] in ('Literal', 'typing.Literal'):\n+                result.extend(unparse_literal(node.slice))\n+            else:\n+                result.extend(unparse(node.slice))\n             result.append(addnodes.desc_sig_punctuation('', ']'))\n             return result\n         elif isinstance(node, ast.Tuple):\n@@ -179,7 +202,9 @@ def _parse_annotation(annotation: str, env: BuildEnvironment = None) -> List[Nod\n         tree = ast_parse(annotation)\n         result = unparse(tree)\n         for i, node in enumerate(result):\n-            if isinstance(node, nodes.Text) and node.strip():\n+            if isinstance(node, nodes.literal):\n+                result[i] = node[0]\n+            elif isinstance(node, nodes.Text) and node.strip():\n                 result[i] = type_to_xref(str(node), env)\n         return result\n     except SyntaxError:\ndiff --git a/tests/test_domain_py_literal_9602.py b/tests/test_domain_py_literal_9602.py\nnew file mode 100644\nindex 000000000..9b7057422\n--- /dev/null\n+++ b/tests/test_domain_py_literal_9602.py\n@@ -0,0 +1,66 @@\n+\"\"\"Regression tests for sphinx-doc__sphinx-9602: Literal values are not classes.\"\"\"\n+import re\n+\n+import pytest\n+from docutils import nodes\n+\n+from sphinx import addnodes\n+from sphinx.addnodes import desc_sig_punctuation, pending_xref\n+from sphinx.domains.python import _parse_annotation\n+from sphinx.testing.util import assert_node, strip_escseq\n+\n+\n+def test_sphinx_9602_parse_annotation_Literal(app):\n+    doctree = _parse_annotation(\"Literal[True, False]\", app.env)\n+    assert_node(doctree, ([pending_xref, \"Literal\"],\n+                          [desc_sig_punctuation, \"[\"],\n+                          \"True\",\n+                          [desc_sig_punctuation, \", \"],\n+                          \"False\",\n+                          [desc_sig_punctuation, \"]\"]))\n+\n+    doctree = _parse_annotation(\"typing.Literal[0, -4, 'abc', b'x', None]\", app.env)\n+    assert_node(doctree, ([pending_xref, \"typing.Literal\"],\n+                          [desc_sig_punctuation, \"[\"],\n+                          \"0\",\n+                          [desc_sig_punctuation, \", \"],\n+                          \"-4\",\n+                          [desc_sig_punctuation, \", \"],\n+                          \"'abc'\",\n+                          [desc_sig_punctuation, \", \"],\n+                          \"b'x'\",\n+                          [desc_sig_punctuation, \", \"],\n+                          \"None\",\n+                          [desc_sig_punctuation, \"]\"]))\n+\n+\n+def test_sphinx_9602_forward_reference_is_still_a_type(app):\n+    doctree = _parse_annotation(\"List['Foo']\", app.env)\n+    assert_node(doctree, ([pending_xref, \"List\"],\n+                          [desc_sig_punctuation, \"[\"],\n+                          [pending_xref, \"Foo\"],\n+                          [desc_sig_punctuation, \"]\"]))\n+\n+\n+@pytest.mark.sphinx(confoverrides={'python_use_unqualified_type_names': True})\n+def test_sphinx_9602_Literal_with_unqualified_type_names(app):\n+    doctree = _parse_annotation(\"Literal[True]\", app.env)\n+    refs = [n for n in doctree if isinstance(n, addnodes.pending_xref)]\n+    assert [n['reftarget'] for n in refs] == ['Literal']\n+    assert_node(doctree[2], nodes.Text)\n+    assert doctree[2] == \"True\"\n+\n+\n+@pytest.mark.sphinx('html', testroot='root',\n+                    confoverrides={'nitpicky': True,\n+                                   'python_use_unqualified_type_names': True})\n+def test_sphinx_9602_Literal_no_nitpick_warning(app, status, warning):\n+    text = (\".. py:function:: foo(x: typing.Literal[True], y: Literal[-4, 'a'])\\n\"\n+            \"   :module: example\\n\")\n+    (app.srcdir / 'index.rst').write_text(text)\n+    app.builder.build_all()\n+    targets = re.findall(r'py:class reference target not found: (\\S+)',\n+                         strip_escseq(warning.getvalue()))\n+    for value in ('True', '-4', \"'a'\", 'a'):\n+        assert value not in targets\n+    assert not [t for t in targets if 'Literal' in t]\n",
+ "seconds": 855,
+ "cost": 0.7262,
+ "unpriced": 0,
+ "attempts": [
+  {
+   "attempt": 1,
+   "tier": 0,
+   "provider": "claude",
+   "model": "claude-sonnet-5-5",
+   "effort": "low",
+   "workerStatus": "ok",
+   "gatePass": false,
+   "cost": 0.0788607,
+   "reviewCost": null,
+   "role": null
+  },
+  {
+   "attempt": 2,
+   "tier": 1,
+   "provider": "claude",
+   "model": "claude-sonnet-5-5",
+   "effort": "high",
+   "workerStatus": "ok",
+   "gatePass": false,
+   "cost": 0.057958899999999994,
+   "reviewCost": null,
+   "role": null
+  },
+  {
+   "attempt": 3,
+   "tier": 2,
+   "provider": "claude",
+   "model": "claude-opus-5-5",
+   "effort": "high",
+   "workerStatus": "ok",
+   "gatePass": true,
+   "cost": 0.5894284000000001,
+   "reviewCost": null,
+   "role": null
+  }
+ ],
+ "receipts": [
+  {
+   "pass": false,
+   "failedStage": "bypass",
+   "rules": [
+    "bypass-marker"
+   ],
+   "reviewer": null,
+   "fallback": null
+  },
+  {
+   "pass": false,
+   "failedStage": "review",
+   "rules": [
+    "review-finding",
+    "review-finding",
+    "review-finding"
+   ],
+   "reviewer": "codex/gpt-5.6-sol/high",
+   "fallback": null
+  },
+  {
+   "pass": true,
+   "failedStage": null,
+   "rules": [],
+   "reviewer": "codex/gpt-5.6-sol/high",
+   "fallback": null
+  }
+ ]
+}

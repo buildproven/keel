@@ -1,0 +1,35 @@
+{
+ "instance_id": "pydata__xarray-4629",
+ "pass": true,
+ "exit": 0,
+ "patch": "diff --git a/xarray/core/merge.py b/xarray/core/merge.py\nindex ca4e29b6..dff00804 100644\n--- a/xarray/core/merge.py\n+++ b/xarray/core/merge.py\n@@ -501,7 +501,7 @@ def merge_attrs(variable_attrs, combine_attrs):\n     if combine_attrs == \"drop\":\n         return {}\n     elif combine_attrs == \"override\":\n-        return variable_attrs[0]\n+        return dict(variable_attrs[0])\n     elif combine_attrs == \"no_conflicts\":\n         result = dict(variable_attrs[0])\n         for attrs in variable_attrs[1:]:\ndiff --git a/xarray/tests/test_merge_override_attrs.py b/xarray/tests/test_merge_override_attrs.py\nnew file mode 100644\nindex 00000000..4657894f\n--- /dev/null\n+++ b/xarray/tests/test_merge_override_attrs.py\n@@ -0,0 +1,10 @@\n+import xarray as xr\n+\n+\n+def test_xarray_4629_merge_override_copies_attrs():\n+    xds1 = xr.Dataset(attrs={\"a\": \"b\"})\n+    xds2 = xr.Dataset(attrs={\"a\": \"c\"})\n+    xds3 = xr.merge([xds1, xds2], combine_attrs=\"override\")\n+    xds3.attrs[\"a\"] = \"d\"\n+    assert xds1.attrs[\"a\"] == \"b\"\n+    assert xds2.attrs[\"a\"] == \"c\"\n",
+ "seconds": 179,
+ "cost": 0.1554,
+ "unpriced": 0,
+ "attempts": [
+  {
+   "attempt": 1,
+   "tier": 0,
+   "provider": "claude",
+   "model": "claude-sonnet-5-5",
+   "effort": "low",
+   "workerStatus": "ok",
+   "gatePass": true,
+   "cost": 0.060294299999999995,
+   "reviewCost": 0.0950874,
+   "role": null
+  }
+ ],
+ "receipts": [
+  {
+   "pass": true,
+   "failedStage": null,
+   "rules": [],
+   "reviewer": "claude/claude-opus-5-5/high",
+   "fallback": {
+    "from": "codex/gpt-5.6-sol/high",
+    "status": "quota"
+   }
+  }
+ ]
+}

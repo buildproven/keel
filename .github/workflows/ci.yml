@@ -1,0 +1,33 @@
+name: ci
+# Minutes: the keel gate already ran every check on this exact commit before the PR opened (keel/gate is required), so
+# CI runs once per PR head, never again on the push to main, and a newer push cancels the older run.
+# Failover: the runner comes from the repo variable CI_RUNS_ON (JSON), e.g. '["self-hosted","keel-local"]' when
+# GitHub-hosted runners are blocked (billing, outage); unset means ubuntu-latest. The keel-local runners are Linux
+# containers with no host mounts. A PR from a fork never runs there: it always gets ubuntu-latest. The job name `test`
+# is the required check either way.
+on:
+  pull_request:
+  workflow_dispatch:
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+# Candidate code runs here: keep this job secret-free and read-only.
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm ci
+      - run: python -m pip install pytest # REQ-PROJ-5 fixtures; Go must be on the runner (preinstalled on ubuntu-latest)
+      - run: npm test
+      - run: npm run lint
+      - run: npm run format:check

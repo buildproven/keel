@@ -1,0 +1,32 @@
+{
+ "instance_id": "sympy__sympy-13615",
+ "pass": true,
+ "exit": 0,
+ "patch": "diff --git a/sympy/sets/sets.py b/sympy/sets/sets.py\nindex 917717bb74..25146a4917 100644\n--- a/sympy/sets/sets.py\n+++ b/sympy/sets/sets.py\n@@ -217,7 +217,19 @@ def _complement(self, other):\n             return S.EmptySet\n \n         elif isinstance(other, FiniteSet):\n-            return FiniteSet(*[el for el in other if self.contains(el) != True])\n+            unknown = []\n+            for el in other:\n+                c = sympify(self.contains(el))\n+                if c is not S.true and c is not S.false:\n+                    unknown.append(el)\n+            known = [el for el in other\n+                     if sympify(self.contains(el)) is S.false]\n+            if not unknown:\n+                return FiniteSet(*known)\n+            rest = Complement(FiniteSet(*unknown), self, evaluate=False)\n+            if not known:\n+                return rest\n+            return Union(FiniteSet(*known), rest, evaluate=False)\n \n     def symmetric_difference(self, other):\n         \"\"\"\ndiff --git a/sympy/sets/tests/test_complement_mixed.py b/sympy/sets/tests/test_complement_mixed.py\nnew file mode 100644\nindex 0000000000..2616149ba4\n--- /dev/null\n+++ b/sympy/sets/tests/test_complement_mixed.py\n@@ -0,0 +1,9 @@\n+from sympy import FiniteSet, Interval, Complement, Symbol\n+\n+\n+def test_sympy_13615_complement_mixed_symbols_numbers():\n+    x, y = Symbol('x'), Symbol('y')\n+    a = FiniteSet(x, y, 2)\n+    b = Interval(-10, 10)\n+    assert Complement(a, b) == Complement(FiniteSet(x, y), b, evaluate=False)\n+    assert Complement(FiniteSet(x, 20), b) is not None\n",
+ "seconds": 783,
+ "cost": 0.302,
+ "unpriced": 0,
+ "attempts": [
+  {
+   "attempt": 1,
+   "tier": 0,
+   "provider": "claude",
+   "model": "claude-sonnet-5-5",
+   "effort": "low",
+   "workerStatus": "ok",
+   "gatePass": true,
+   "cost": 0.3019727,
+   "reviewCost": null,
+   "role": null
+  }
+ ],
+ "receipts": [
+  {
+   "pass": true,
+   "failedStage": null,
+   "rules": [],
+   "reviewer": "codex/gpt-5.6-sol/high",
+   "fallback": null
+  }
+ ]
+}

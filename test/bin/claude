@@ -1,0 +1,4 @@
+#!/bin/sh
+# REQ-TRACE-4: tests never reach a real model CLI; npm test puts this stand-in first on PATH.
+echo "claude: real model CLI blocked in keel tests (REQ-TRACE-4)" >&2
+exit 97

@@ -1,0 +1,35 @@
+{
+ "instance_id": "django__django-11880",
+ "pass": true,
+ "exit": 0,
+ "patch": "diff --git a/django/forms/fields.py b/django/forms/fields.py\nindex 03cd8af8d7..171a36187e 100644\n--- a/django/forms/fields.py\n+++ b/django/forms/fields.py\n@@ -200,6 +200,7 @@ class Field:\n         memo[id(self)] = result\n         result.widget = copy.deepcopy(self.widget, memo)\n         result.validators = self.validators[:]\n+        result.error_messages = self.error_messages.copy()\n         return result\n \n \ndiff --git a/tests/forms_tests/tests/test_field_deepcopy_error_messages.py b/tests/forms_tests/tests/test_field_deepcopy_error_messages.py\nnew file mode 100644\nindex 0000000000..34f145abde\n--- /dev/null\n+++ b/tests/forms_tests/tests/test_field_deepcopy_error_messages.py\n@@ -0,0 +1,13 @@\n+import copy\n+\n+from django.forms import CharField\n+from django.test import SimpleTestCase\n+\n+\n+class FieldDeepcopyErrorMessagesTests(SimpleTestCase):\n+    def test_django_11880_error_messages_not_shared(self):\n+        field = CharField()\n+        field_copy = copy.deepcopy(field)\n+        field_copy.error_messages['required'] = 'changed'\n+        self.assertEqual(field.error_messages['required'], 'This field is required.')\n+        self.assertIsNot(field.error_messages, field_copy.error_messages)\n",
+ "seconds": 100,
+ "cost": 0.1648,
+ "unpriced": 0,
+ "attempts": [
+  {
+   "attempt": 1,
+   "tier": 0,
+   "provider": "claude",
+   "model": "claude-sonnet-5-5",
+   "effort": "low",
+   "workerStatus": "ok",
+   "gatePass": true,
+   "cost": 0.0596,
+   "reviewCost": 0.10516579999999999,
+   "role": null
+  }
+ ],
+ "receipts": [
+  {
+   "pass": true,
+   "failedStage": null,
+   "rules": [],
+   "reviewer": "claude/claude-opus-5-5/high",
+   "fallback": {
+    "from": "codex/gpt-5.6-sol/high",
+    "status": "quota"
+   }
+  }
+ ]
+}

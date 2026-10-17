@@ -1,0 +1,71 @@
+{
+ "instance_id": "django__django-14608",
+ "pass": true,
+ "exit": 0,
+ "patch": "diff --git a/django/forms/formsets.py b/django/forms/formsets.py\nindex a89c35599f..1b0d4554e0 100644\n--- a/django/forms/formsets.py\n+++ b/django/forms/formsets.py\n@@ -333,7 +333,7 @@ class BaseFormSet:\n         self._non_form_errors.\n         \"\"\"\n         self._errors = []\n-        self._non_form_errors = self.error_class()\n+        self._non_form_errors = self.error_class(error_class='nonform')\n         empty_forms_count = 0\n \n         if not self.is_bound:  # Stop further processing.\n@@ -380,7 +380,7 @@ class BaseFormSet:\n             # Give self.clean() a chance to do cross-form validation.\n             self.clean()\n         except ValidationError as e:\n-            self._non_form_errors = self.error_class(e.error_list)\n+            self._non_form_errors = self.error_class(e.error_list, error_class='nonform')\n \n     def clean(self):\n         \"\"\"\ndiff --git a/docs/topics/forms/index.txt b/docs/topics/forms/index.txt\nindex e55b6d7bf2..04e4f1334d 100644\n--- a/docs/topics/forms/index.txt\n+++ b/docs/topics/forms/index.txt\n@@ -616,6 +616,9 @@ errors. For example, ``{{ form.non_field_errors }}`` would look like:\n         <li>Generic validation error</li>\n     </ul>\n \n+Non-form errors in a formset are rendered with an additional class of\n+``nonform`` in the same way.\n+\n See :doc:`/ref/forms/api` for more on errors, styling, and working with form\n attributes in templates.\n \ndiff --git a/tests/admin_views/tests.py b/tests/admin_views/tests.py\nindex 880ba0b85f..2d5bf6887e 100644\n--- a/tests/admin_views/tests.py\n+++ b/tests/admin_views/tests.py\n@@ -3348,7 +3348,7 @@ class AdminViewListEditable(TestCase):\n         response = self.client.post(reverse('admin:admin_views_person_changelist'), data)\n         non_form_errors = response.context['cl'].formset.non_form_errors()\n         self.assertIsInstance(non_form_errors, ErrorList)\n-        self.assertEqual(str(non_form_errors), str(ErrorList([\"Grace is not a Zombie\"])))\n+        self.assertEqual(str(non_form_errors), str(ErrorList([\"Grace is not a Zombie\"], error_class='nonform')))\n \n     def test_list_editable_ordering(self):\n         collector = Collector.objects.create(id=1, name=\"Frederick Clegg\")\ndiff --git a/tests/forms_tests/tests/test_formsets_nonform_class.py b/tests/forms_tests/tests/test_formsets_nonform_class.py\nnew file mode 100644\nindex 0000000000..8daef89a9d\n--- /dev/null\n+++ b/tests/forms_tests/tests/test_formsets_nonform_class.py\n@@ -0,0 +1,21 @@\n+from django.forms import Form, formset_factory\n+from django.test import SimpleTestCase\n+\n+\n+class NonFormCssClassTests(SimpleTestCase):\n+    def test_django_14608_nonform_css_class(self):\n+        FormSet = formset_factory(Form, validate_max=True, max_num=1, extra=2)\n+        formset = FormSet(data={\n+            'form-TOTAL_FORMS': '2', 'form-INITIAL_FORMS': '0',\n+            'form-MIN_NUM_FORMS': '0', 'form-MAX_NUM_FORMS': '1',\n+        })\n+        self.assertFalse(formset.is_valid())\n+        self.assertIn('class=\"errorlist nonform\"', str(formset.non_form_errors()))\n+\n+    def test_django_14608_nonform_class_on_empty_errors(self):\n+        FormSet = formset_factory(Form)\n+        formset = FormSet(data={\n+            'form-TOTAL_FORMS': '0', 'form-INITIAL_FORMS': '0',\n+        })\n+        formset.full_clean()\n+        self.assertEqual(formset.non_form_errors().error_class, 'errorlist nonform')\n",
+ "seconds": 1191,
+ "cost": 0.5623,
+ "unpriced": 0,
+ "attempts": [
+  {
+   "attempt": 1,
+   "tier": 0,
+   "provider": "claude",
+   "model": "claude-sonnet-5-5",
+   "effort": "low",
+   "workerStatus": "ok",
+   "gatePass": false,
+   "cost": 0.07574140000000001,
+   "reviewCost": 0.1832456,
+   "role": null
+  },
+  {
+   "attempt": 2,
+   "tier": 1,
+   "provider": "claude",
+   "model": "claude-sonnet-5-5",
+   "effort": "high",
+   "workerStatus": "approved",
+   "gatePass": false,
+   "cost": 0.0460531,
+   "reviewCost": 0.065908,
+   "role": null
+  },
+  {
+   "attempt": 3,
+   "tier": 1,
+   "provider": "claude",
+   "model": "claude-sonnet-5-5",
+   "effort": "high",
+   "workerStatus": "ok",
+   "gatePass": true,
+   "cost": 0.0917963,
+   "reviewCost": 0.099542,
+   "role": null
+  }
+ ],
+ "receipts": [
+  {
+   "pass": false,
+   "failedStage": "review",
+   "rules": [
+    "review-finding"
+   ],
+   "reviewer": "claude/claude-opus-5-5/high",
+   "fallback": {
+    "from": "codex/gpt-5.6-sol/high",
+    "status": "quota"
+   }
+  },
+  {
+   "pass": true,
+   "failedStage": null,
+   "rules": [],
+   "reviewer": "claude/claude-opus-5-5/high",
+   "fallback": {
+    "from": "codex/gpt-5.6-sol/high",
+    "status": "quota"
+   }
+  }
+ ]
+}

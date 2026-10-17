@@ -1,0 +1,35 @@
+{
+ "instance_id": "django__django-16595",
+ "pass": true,
+ "exit": 0,
+ "patch": "diff --git a/django/db/migrations/operations/fields.py b/django/db/migrations/operations/fields.py\nindex cd3aab43ad..4f3d4c7fcc 100644\n--- a/django/db/migrations/operations/fields.py\n+++ b/django/db/migrations/operations/fields.py\n@@ -251,6 +251,10 @@ class AlterField(FieldOperation):\n             operation\n         ):\n             return [operation]\n+        elif isinstance(operation, AlterField) and self.is_same_field_operation(\n+            operation\n+        ):\n+            return [operation]\n         elif (\n             isinstance(operation, RenameField)\n             and self.is_same_field_operation(operation)\ndiff --git a/tests/migrations/test_optimizer_alterfield_django_16595.py b/tests/migrations/test_optimizer_alterfield_django_16595.py\nnew file mode 100644\nindex 0000000000..f8bb3f4af2\n--- /dev/null\n+++ b/tests/migrations/test_optimizer_alterfield_django_16595.py\n@@ -0,0 +1,27 @@\n+from django.db import migrations, models\n+from django.db.migrations.optimizer import MigrationOptimizer\n+from django.test import SimpleTestCase\n+\n+\n+class AlterFieldReduceTests(SimpleTestCase):\n+    def test_django_16595_multiple_alterfield_reduced(self):\n+        operations = [\n+            migrations.AlterField(\n+                \"book\", \"title\", models.CharField(max_length=128, null=True)\n+            ),\n+            migrations.AlterField(\n+                \"book\",\n+                \"title\",\n+                models.CharField(max_length=128, null=True, help_text=\"help\"),\n+            ),\n+            migrations.AlterField(\n+                \"book\",\n+                \"title\",\n+                models.CharField(\n+                    max_length=128, null=True, help_text=\"help\", default=None\n+                ),\n+            ),\n+        ]\n+        result = MigrationOptimizer().optimize(operations, \"books\")\n+        self.assertEqual(len(result), 1)\n+        self.assertIs(result[0], operations[-1])\n",
+ "seconds": 154,
+ "cost": 0.1925,
+ "unpriced": 0,
+ "attempts": [
+  {
+   "attempt": 1,
+   "tier": 0,
+   "provider": "claude",
+   "model": "claude-sonnet-5-5",
+   "effort": "low",
+   "workerStatus": "ok",
+   "gatePass": true,
+   "cost": 0.0541661,
+   "reviewCost": 0.13831100000000002,
+   "role": null
+  }
+ ],
+ "receipts": [
+  {
+   "pass": true,
+   "failedStage": null,
+   "rules": [],
+   "reviewer": "claude/claude-opus-5-5/high",
+   "fallback": {
+    "from": "codex/gpt-5.6-sol/high",
+    "status": "quota"
+   }
+  }
+ ]
+}
