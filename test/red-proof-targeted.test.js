@@ -96,10 +96,13 @@ test('REQ-GATE-33 testFilesCommand must be null or a command with a {files} plac
   assert.equal(loadConfig(dir, 'HEAD').testFilesCommand, 'pytest -q {files}');
 });
 
-test('REQ-GATE-33 keel init proposes testFilesCommand for vitest and jest, whose passing output names files, and none for the others', () => {
+test('REQ-GATE-33 keel init proposes testFilesCommand for vitest and jest, whose passing output names files, for node --test over explicit globs, and none for the others', () => {
   const cases = [
     [{ 'pyproject.toml': '[project]\nname = "x"\n', 'uv.lock': '' }, undefined],
-    [{ 'package.json': JSON.stringify({ scripts: { test: 'node --test test/*.test.js' } }), 'package-lock.json': '{}' }, undefined],
+    [
+      { 'package.json': JSON.stringify({ scripts: { test: 'node --test test/*.test.js' } }), 'package-lock.json': '{}' },
+      'node --test {files}',
+    ],
     [{ 'package.json': JSON.stringify({ scripts: { test: 'vitest run' } }), 'pnpm-lock.yaml': '' }, 'pnpm exec vitest run {files}'],
     [{ 'package.json': JSON.stringify({ scripts: { test: 'jest --ci' } }), 'package-lock.json': '{}' }, 'npx jest {files}'],
     [{ 'go.mod': 'module x\n' }, undefined],

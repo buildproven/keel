@@ -5,6 +5,22 @@ import { test } from 'node:test';
 import { detectProject, proposeConfig, writeProposedConfig } from '../src/init.js';
 import { tmp, write } from './helpers.js';
 
+test('REQ-GATE-33 keel init proposes node --test {files} for a node --test script with explicit file globs only', () => {
+  const cases = [
+    ['node --test test/*.test.js', 'node --test {files}'],
+    ['PATH="$PWD/bin:$PATH" node --test --test-concurrency=4 test/*.test.js', 'node --test {files}'],
+    ["node --test 'test/**/*.test.mjs'", 'node --test {files}'],
+    ['node --test', undefined],
+    ['node --test --test-name-pattern=x test/*.test.js', undefined],
+    ['mocha test/*.js', undefined],
+  ];
+  for (const [script, expected] of cases) {
+    const d = tmp();
+    write(d, { 'package.json': JSON.stringify({ scripts: { test: script } }), 'package-lock.json': '{}' });
+    assert.equal(proposeConfig(detectProject(d)).testFilesCommand, expected, script);
+  }
+});
+
 test('REQ-PROJ-2 detects npm and proposes only the scripts that exist', () => {
   write((process.env.__d = tmp()), {
     'package.json': JSON.stringify({ scripts: { test: 'vitest run', lint: 'eslint .', build: 'tsc -b' } }),

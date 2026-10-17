@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { globMatches } from './glob.js';
 
 /** Prose files: no code markers in them, and a change to only these is a doc change (REQ-GATE-25). */
@@ -78,17 +79,91 @@ const SCRIPT_REF = /(?:^|[;&|(]\s*|\s)(?:npm|pnpm|yarn|bun)\s+(?:run(?:-script)?
  * each level; a cycle ends at the first repeat). Locked like runner configs.
  */
 export function scriptPaths(pkgText, commands) {
-  const scripts = pkgText === null ? {} : (JSON.parse(pkgText).scripts ?? {});
+  const { texts } = scriptWalk(pkgText === null ? {} : (JSON.parse(pkgText).scripts ?? {}), commands);
+  return [...new Set(texts.flatMap((t) => [...t.matchAll(FILE_TOKEN)]).map((m) => m[1]))];
+}
+
+/**
+ * The commands and the package.json scripts they run, with their pre/post hooks, followed through scripts that run
+ * scripts (a cycle ends at the first repeat): `names` of the scripts and `texts` of the commands and scripts.
+ */
+function scriptWalk(scripts, commands) {
   const texts = [...commands];
-  const seen = new Set();
+  const names = new Set();
   for (let i = 0; i < texts.length; i++)
     for (const [, name] of texts[i].matchAll(SCRIPT_REF))
       for (const n of [`pre${name}`, name, `post${name}`])
-        if (!seen.has(n) && typeof scripts[n] === 'string') {
-          seen.add(n);
+        if (!names.has(n) && typeof scripts[n] === 'string') {
+          names.add(n);
           texts.push(scripts[n]);
         }
-  return [...new Set(texts.flatMap((t) => [...t.matchAll(FILE_TOKEN)]).map((m) => m[1]))];
+  return { names, texts };
+}
+
+// node options that run only some tests of a file, so a file a glob names may still not run in full (REQ-GATE-33).
+const TEST_FILTER = /--test-(?:name-pattern|skip-pattern|only|shard)\b/;
+// A file argument: a path, a glob, or a script.
+const FILE_ARG = /[/*]|\.[cm]?[jt]sx?$/;
+let nodeOptions;
+/**
+ * The options that `node --help` of the running node lists, each true when it takes a value written `--opt value`
+ * (`--import=...`, `--print [...]`), false when it takes none (`--cpu-prof`) or only with `=` (`--inspect[=port]`). Read from node itself,
+ * since a hand list misses options (REQ-GATE-33).
+ */
+function nodeOptionValues() {
+  if (!nodeOptions) {
+    const help = spawnSync(process.execPath, ['--help'], { encoding: 'utf8' });
+    if (help.status !== 0) throw new Error(`node --help failed: ${help.error?.message ?? help.stderr}`);
+    nodeOptions = new Map();
+    // `  -r, --require=...   desc`, `  --loader, --experimental-loader=...`, `  -p, --print [...]`, `  --inspect[=port]`:
+    // the aliases share the value of the last one.
+    for (const [, column] of help.stdout.matchAll(/^ {2}(-\S.*?)(?: {2,}|$)/gm)) {
+      const value = /(?<!\[)=| \[/.test(column);
+      for (const alias of column.split(', ')) nodeOptions.set(alias.match(/^--?[\w-]+/)[0], value);
+    }
+  }
+  return nodeOptions;
+}
+
+/**
+ * The file globs that `node --test` runs in shell command `text` (REQ-GATE-33): the file arguments after `node` in each
+ * part of the command that has `--test`. An unquoted `**` is the shell's, which stays in one directory like `*`; a
+ * quoted one is node's own, which spans directories; `--` ends the options. None when the command filters tests by name
+ * or shard or changes directory, since then a file that matches may not run in full, or the globs are not relative to
+ * the repo root, or when an option `node --help` does not list comes right before a file word, which may be its value.
+ */
+export function nodeTestGlobs(text) {
+  if (untargetable(text)) return [];
+  const globs = [];
+  for (const part of text.split(/[;&|\n]+/)) {
+    const words = [...part.matchAll(/'([^']*)'|"([^"]*)"|(\S+)/g)].map((m) => ({ word: m[1] ?? m[2] ?? m[3], quoted: !m[3] }));
+    const node = words.findIndex((w) => !w.quoted && w.word === 'node');
+    if (node < 0 || !words.slice(node + 1).some((w) => w.word === '--test')) continue;
+    const args = words.slice(node + 1);
+    for (let i = 0, options = true; i < args.length; i++) {
+      const { word, quoted } = args[i];
+      if (options && word === '--') options = false;
+      else if (options && word.startsWith('-')) {
+        const takesValue = word.includes('=') ? false : nodeOptionValues().get(word);
+        if (takesValue)
+          i++; // skip the option's value
+        else if (takesValue === undefined && args[i + 1] && FILE_ARG.test(args[i + 1].word)) return []; // not node's: a flag, or an option and its value?
+      } else if (FILE_ARG.test(word)) globs.push(quoted ? word : word.replaceAll('**', '*'));
+    }
+  }
+  return globs;
+}
+
+const untargetable = (text) => TEST_FILTER.test(text) || /(^|[;&|(]\s*)cd\s/.test(text);
+
+/**
+ * The `node --test` file globs that `commands` run, directly or through the package.json scripts they invoke
+ * (REQ-GATE-33). None when any of them filters tests or changes directory: `npm test -- --test-name-pattern=x`
+ * passes the filter on to the script.
+ */
+export function commandTestGlobs(pkgText, commands) {
+  const { texts } = scriptWalk(pkgText === null ? {} : (JSON.parse(pkgText).scripts ?? {}), commands);
+  return texts.some(untargetable) ? [] : texts.flatMap(nodeTestGlobs);
 }
 
 // package.json keys that configure a test, lint, or format tool; a change redefines "passing" (REQ-GATE-4).
@@ -240,20 +315,6 @@ export function pyprojectToolSectionsChanged(before, after) {
   return text(before) !== text(after);
 }
 
-/** The package.json scripts `commands` run, with their pre/post hooks, followed through scripts that run scripts. */
-function scriptNames(scripts, commands) {
-  const texts = [...commands];
-  const seen = new Set();
-  for (let i = 0; i < texts.length; i++)
-    for (const [, name] of texts[i].matchAll(SCRIPT_REF))
-      for (const n of [`pre${name}`, name, `post${name}`])
-        if (!seen.has(n) && typeof scripts[n] === 'string') {
-          seen.add(n);
-          texts.push(scripts[n]);
-        }
-  return seen;
-}
-
 // One argument a test script may gain (REQ-GATE-42): a path or glob, optionally quoted, with no shell syntax and no
 // leading `-`, so it can be neither an option nor a command.
 const ARG = /^(['"]?)([\w@.*?/][\w@.*?/-]*)\1$/;
@@ -270,7 +331,7 @@ export function scriptsAppendOnly(before, after, commands, testGlobs) {
   const a = JSON.parse(after).scripts ?? {};
   const keys = (s) => JSON.stringify(Object.keys(s).sort());
   if (keys(b) !== keys(a)) return 'a script was added or removed';
-  const run = scriptNames(b, commands);
+  const run = scriptWalk(b, commands).names;
   const isTestArg = (t) => {
     const m = ARG.exec(t);
     return Boolean(m) && matchesAny(m[2], testGlobs);
