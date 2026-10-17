@@ -26,6 +26,7 @@ import {
   fileMode,
   git,
   isDirty,
+  mainWorktree,
   revParse,
   sh,
   showBlob,
@@ -55,12 +56,23 @@ const tail = (s, n = 2000) => (s.length > n ? `…${s.slice(-n)}` : s);
 const fail = (name, rule, extra = {}) => ({ name, pass: false, problems: [{ rule, ...extra }] });
 export const inconclusive = (r) => r.timedOut || r.code === null || NOT_A_TEST_RESULT.has(r.code);
 
+/** Where shared dirs come from: the repo, then its main worktree when the repo is a git checkout (REQ-GATE-48). */
+const sharedRoots = (from) => (existsSync(join(from, '.git')) ? [from, mainWorktree(from)] : [from]);
+
 /** Symlink shared dependency dirs (node_modules, .venv) so temp checkouts can run tests. */
 export function linkShared(from, to, dirs) {
+  const roots = sharedRoots(from);
   for (const d of dirs) {
-    const src = resolve(from, d);
-    if (existsSync(src) && !existsSync(join(to, d))) symlinkSync(src, join(to, d));
+    const src = roots.map((r) => resolve(r, d)).find((p) => existsSync(p));
+    if (src && !existsSync(join(to, d))) symlinkSync(src, join(to, d));
   }
+}
+
+/** shareDirs that keel.json writes and neither the repo nor its main worktree has, so no checkout could run (REQ-GATE-49). */
+function missingShared(repo, config) {
+  if (!config.shareDirsRequired) return [];
+  const roots = sharedRoots(repo);
+  return linkedDirs(config).filter((d) => !roots.some((r) => existsSync(resolve(r, d))));
 }
 
 /**
@@ -586,6 +598,12 @@ export function gate({
   const failed = () => results.some((r) => !r.pass);
 
   if (isDirty(repo)) results.push(fail('clean-tree', 'uncommitted-changes'));
+  // Fail before any slot wait when the checks cannot find their dependencies (REQ-GATE-49).
+  const missing = missingShared(repo, config);
+  if (missing.length) {
+    const why = (d) => `missing ${d} in ${repo}: install dependencies there or set "install" in keel.json`;
+    results.push({ name: 'prepare', pass: false, problems: missing.map((d) => ({ rule: 'missing-shared-dir', path: d, detail: why(d) })) });
+  }
   // What the candidate changed is measured from where it left the base (REQ-GATE-40): a merge applies exactly that, so
   // work the base gained since is never read as the candidate's. Policy and the red proof still use the base itself.
   const from = forkPoint(baseSha, head, repo);

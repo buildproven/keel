@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 const MAX_BUFFER = 64 * 1024 * 1024;
 
@@ -34,6 +34,9 @@ export const isDirty = (cwd) => git(['status', '--porcelain'], cwd).trim() !== '
  * node_modules/.cache) in a checkout; that is normal tool behavior, not tampering with the candidate.
  */
 export const trackedContentDirty = (cwd) => git(['status', '--porcelain=v1', '--untracked-files=no'], cwd).trim() !== '';
+
+/** The main worktree of the repo at cwd: the parent of the git common dir (REQ-GATE-48). Equals cwd's top in the main one. */
+export const mainWorktree = (cwd) => dirname(resolve(cwd, git(['rev-parse', '--git-common-dir'], cwd).trim()));
 
 /** Files changed base..head as [{status, path}], NUL-delimited so any file name parses. Renames = delete + add. */
 export function changedFiles(base, head, cwd) {

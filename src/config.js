@@ -236,6 +236,8 @@ export function loadConfig(repo, ref) {
   if (unknown.length) throw new Error(`keel.json: unknown keys: ${unknown.join(', ')}`);
   const config = { ...structuredClone(DEFAULTS), ...user };
   if (config.testCommand && !own(user, 'heldOutCommand')) config.heldOutCommand = config.testCommand;
+  // shareDirs written in keel.json are dirs the checks need; the defaults are only linked when present (REQ-GATE-49).
+  config.shareDirsRequired = own(user, 'shareDirs');
   if (table(config.startTier)) {
     // startTier merges over the default floors, so a partial table keeps the others (REQ-CFG-1). Default floors follow
     // the configured ladder; floors written in keel.json are validated as written.

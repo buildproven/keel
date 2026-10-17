@@ -110,6 +110,8 @@ Gate (the USP). Trust model: the card, the base commit, and Keel itself are trus
 - **REQ-GATE-45** The gate shall record each command stage's wall time as `ms` on its result: install, every check, `regression-on-head`, and acceptance (the first run's time; a flaky retry is not counted), and every stage that yields one result (red proof, held-out, mutation, test edits, review), measured after its gate slot is granted, so queue time is not counted. The receipt carries `timing`, and `keel gate` prints it after the stage lines as one line, e.g. `timing lint 4s · test 3m12s · red-proof 40s · review 2m40s · total 6m36s`. Rationale: on 2026-10-16 nobody had noticed that BuildProven's 3,023 tests ran on one core while another product repo's ran on three; the ledger had one median gate time per card and no time per check.
 - **REQ-GATE-46** When the gate writes a receipt, it shall append `{ repo, card, head, pass, at, checks: { stage: ms } }` to `gate-times.jsonl` beside the receipts dir (`repo` is the real git common dir, so every worktree of a repository matches) and return `IMPROVE:` lines, which `keel gate` and `keel run` print: one for each stage over its absolute limit (2 min; 5 min for `review` and `test-edits`), or more than 1.5× and 30 s over its median of the last 20 passing gates of that repository once 3 have timed it. Each line names the stage, its time, the limit or median, and the likeliest fix for that stage (run tests in parallel, `testFilesCommand` for the red proof, cache installs, split the card for review, lint changed files). It warns and never fails the gate. Rationale: friction that is only measured is tolerated; a named fix after every gate makes the gate improve itself.
 - **REQ-GATE-47** The gate shall measure the time its stages wait for a gate slot (REQ-GATE-29), from asking to being granted, and record it as `waitMs` on the receipt and in its `gate-times.jsonl` row (REQ-GATE-46). The timing line leads with it when it is a second or more (`timing wait 4m12s · lint 4s · …`) and counts it in the total. A wait over a minute adds an `IMPROVE:` line that names it and its cause: other gates or work outside keel held the CPU or memory. Rationale: on 2026-10-16 a gate waited behind 2 others and 7 queued behind one slot, and nothing showed how much of a slow gate was queueing rather than work.
+- **REQ-GATE-48** When the gate prepares a fresh checkout without `install` (REQ-GATE-16) and a `shareDirs` entry is missing in the repo it runs from but present in that repo's main worktree (the parent of `git rev-parse --git-common-dir`), the gate shall link the main worktree's directory. `keel run` links its worker worktree the same way. Rationale: a linked worktree (`.claude/worktrees/agent-*`) has no `node_modules`, so the checkout got no dependencies and the gate failed late at `lint` with `eslint: command not found`; on 2026-10-17 two agents each lost a 30–60 min queued gate run to this (BUI-1374).
+- **REQ-GATE-49** When `keel.json` sets no `install` and writes `shareDirs` itself, and an entry of it exists in neither the repo nor its main worktree, the gate shall fail before it asks for a gate slot (REQ-GATE-29), as stage `prepare` with rule `missing-shared-dir` and the message `missing <dir> in <repo>: install dependencies there or set "install" in keel.json`. Written `shareDirs` are the dirs the checks need; the default `shareDirs` are only linked when present and never fail, because Keel cannot tell from them what a project needs (a Python repo that ignores `.venv` may run a system pytest). Rationale: the checks fail anyway without the dependencies, only after a long wait for a slot (BUI-1374).
 - **REQ-SLOT-1** Unless `KEEL_GATE_SLOTS` fixes it, the gate slot count (REQ-GATE-29) shall follow the machine's measured idle CPU and memory: the gates running plus one per 2 idle cores, at most half the CPUs. Idle is the share of CPU time idle across all cores over a 1-second sample (`os.cpus()` time deltas). Under 20 % idle, or when memory is short (macOS: `kern.memorystatus_vm_pressure_level` critical or `kern.memorystatus_level` under 15 %; Linux: `MemAvailable` under 15 % of `MemTotal`), no new slot opens: the count is the gates running, at least 1. A waiting gate recomputes it every poll; with no slot held, a gate always runs, so load from outside keel cannot stop every gate. Rationale: at a load average of 78 on 8 cores, 2 slotted gates ran beside about 10 unslotted test runs, and everything ran 3–5 times slower (BUI-1185), so the cap and the saturated-machine floor stay. The load average was the wrong signal: on macOS it counts waiting threads and lags by minutes, so on 2026-10-16 it read 30.6 with about 45 % of the CPU idle, and 7 gates queued behind one slot. `os.freemem()` is not used: on macOS it leaves out reclaimable memory and read 0.7 % on a healthy machine.
 - **REQ-SLOT-2** `keel test [--repo <dir>]` shall run `testCommand` from `keel.json` at HEAD in the working tree, with the candidate environment (REQ-RUN-12) and its output on the terminal, while holding a gate slot (REQ-GATE-29, REQ-SLOT-1), and exit with its exit code (1 when a signal ended it). It takes no argument. Rationale: builders run the suite before `keel gate` and after each fix; through `keel test` those runs queue with the gates instead of loading the machine beside them (BUI-1185).
 - **REQ-SLOT-3** A gate's tickets shall all carry the gate's start time, so each heavy stage after the first queues ahead of gates that started later, and the oldest started gate finishes first; order is still by start time, so no gate starves. Rationale: with a ticket per stage request, a started gate's red-proof stage queued behind every gate that arrived during its first stage, and one gate waited through the whole queue 2–4 times (2026-10-13).
@@ -322,7 +324,7 @@ Keel needs only this from a project, whatever its language or type:
 | `testFilesCommand` (optional): `testCommand` for given `{files}` (REQ-GATE-33)               | `keel.json` (proposed by `keel init`)     |
 | `testGlobs`: which files are tests                                                           | defaults cover common languages           |
 | `verificationPaths`: files that define "passing"                                             | defaults cover common runners and tools   |
-| `shareDirs` (optional): dependency dirs to link into temp checkouts                          | defaults: `node_modules`, `.venv`, `venv` |
+| `shareDirs` (optional): dependency dirs to link into temp checkouts (REQ-GATE-48, 49)        | defaults: `node_modules`, `.venv`, `venv` |
 | `mutation` (optional): mutation-test command over `KEEL_CHANGED_FILES` (REQ-GATE-20)         | `keel.json`                               |
 
 `keel init` presets (a starting point; you review the file):
@@ -342,46 +344,46 @@ commands by hand; the gate needs nothing else.
 
 ### 6.1a Modules
 
-| File                 | Role                                                                        | Requirements                                             |
-| -------------------- | --------------------------------------------------------------------------- | -------------------------------------------------------- |
-| `src/git.js`         | argv git wrappers, NUL-safe diff parsing, temp worktrees                    | GATE-1, 5, 12, 13, CLEAN-5                               |
-| `src/config.js`      | Defaults, `keel.json` at a ref, validation, trusted card reading            | CARD-1..4, CFG-1, RUN-28, 35, LED-12, CLEAN-3, LINEAR-32 |
-| `src/defaults.js`    | Gate base and card when the CLI is not given them                           | CLI-6, 7                                                 |
-| `src/init.js`        | Project detection and proposed `keel.json`                                  | PROJ-2, 6                                                |
-| `src/post-deploy.js` | Post-deploy smoke, rollback, and revert workflow template                   | PROJ-7, 8                                                |
-| `src/glob.js`        | Glob to RegExp matcher, the same on every platform                          | PROJ-9                                                   |
-| `src/scan.js`        | Skip/bypass markers, scope, runner files, tool-config sections, test shape  | GATE-4, 6, 8, 9, 42, 44, PROJ-3,4                        |
-| `src/workflow.js`    | YAML subset parser; a workflow edit that only adds                          | GATE-43                                                  |
-| `src/gate.js`        | Gate stages, safe overlay, receipt                                          | GATE-1..20, 42..44, RUN-19, 32                           |
-| `src/timing.js`      | Stage times, IMPROVE lines, serial-runner and duplicate-work advice         | GATE-45..47, CLI-13, LED-18                              |
-| `src/status.js`      | `keel/gate` commit status on the gated SHA                                  | RUN-23, CLI-10                                           |
-| `src/audit.js`       | Cross-family re-review of fallback-reviewed merges                          | CLI-11, GATE-24, LINEAR-22                               |
-| `src/review.js`      | Cross-model reviewer choice, review stage, test-edit verdict                | GATE-21..25, 44, CLI-9, LED-13                           |
-| `src/window.js`      | Review spend per provider window, shared across sessions                    | GATE-24                                                  |
-| `src/stack.js`       | Stacked-branch and diff-size warnings before a gate                         | GATE-30                                                  |
-| `src/lease.js`       | Path leases: open branches that change the same files                       | LEASE-1..3                                               |
-| `src/keel-test.js`   | `keel test`: the test command inside a gate slot                            | SLOT-2                                                   |
-| `src/slots.js`       | Machine-wide gate slots for the stages that run project commands            | GATE-29, SLOT-1, SLOT-3                                  |
-| `src/env.js`         | Strips secret-looking variables from worker and check environments          | RUN-12, RUN-40                                           |
-| `src/workers.js`     | Provider argv, session resume, usage parsing and pricing, failure classes   | RUN-6, 8, 11, 33, LED-12                                 |
-| `src/run.js`         | Attempt loop, learned tier choice, held-out authoring, PR                   | RUN-1..22, 24..27, 32..35, LED-13, LINEAR-30             |
-| `src/run-lock.js`    | Per-card run lock: one entry per run, named by its pid                      | RUN-10, LEASE-1                                          |
-| `src/ledger.js`      | Append + report, builder and review spend per card                          | LED-1..5, 12, 13, 17                                     |
-| `src/escaped.js`     | Later fixes on the same lines, and reverts, for merged changes              | LED-6, 7, 8, 10, 11                                      |
-| `src/dora.js`        | DORA metrics for Keel changes per repo                                      | LED-7                                                    |
-| `src/value.js`       | Keel merges against the repo's other changes; cost per card                 | LED-8, 9, 13, 15                                         |
-| `src/autonomy.js`    | Human touch rate of polled issues, from the ledgers and GitHub              | LED-14, 16, LINEAR-33                                    |
-| `src/clean.js`       | Lists and removes parked worktrees                                          | CLEAN-1, 2                                               |
-| `src/autoclean.js`   | Removes finished parked worktrees and dead gate checkouts                   | CLEAN-3, 4, 5                                            |
-| `src/doctor.js`      | Runs install and every check on a clean base; merge readiness; speed advice | CLI-3, 4, 13, 14, MERGE-1                                |
-| `src/merge.js`       | Self-merge of a certified SHA once every check on it is green               | MERGE-1..4                                               |
-| `src/linear.js`      | Issue to card mapping, dependency-aware selection, review state             | LINEAR-1..3, 5, 11..13, 20, 25, 26, 33                   |
-| `src/linear-http.js` | Real Linear client over HTTP (`LINEAR_API_KEY`)                             | LINEAR-7, 16, 20, 22, 28, 30, 33                         |
-| `src/done.js`        | Verifies an already-satisfied claim: commit on base or merged PR, checks    | LINEAR-30                                                |
-| `src/poll.js`        | One pass of the autonomous loop: pick, refine, run, comment, review         | LINEAR-4..19, 22, 25..33, RUN-20                         |
-| `src/refine.js`      | Refine turn before a build: prompt, strict parse, ledger row                | LINEAR-32, 33, LED-17                                    |
-| `src/usage.js`       | `UsageError`: a mistake in how Keel was invoked                             | CLI-2                                                    |
-| `bin/keel.js`        | CLI: `init`, `gate`, `run`, `poll`, `doctor`, `clean`, `report`             | CLI-1, 2, 8..10, LED-6..8, CLEAN-3                       |
+| File                 | Role                                                                        | Requirements                                                      |
+| -------------------- | --------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `src/git.js`         | argv git wrappers, NUL-safe diff parsing, temp worktrees                    | GATE-1, 5, 12, 13, 48, CLEAN-5                                    |
+| `src/config.js`      | Defaults, `keel.json` at a ref, validation, trusted card reading            | CARD-1..4, CFG-1, RUN-28, 35, LED-12, CLEAN-3, LINEAR-32, GATE-49 |
+| `src/defaults.js`    | Gate base and card when the CLI is not given them                           | CLI-6, 7                                                          |
+| `src/init.js`        | Project detection and proposed `keel.json`                                  | PROJ-2, 6                                                         |
+| `src/post-deploy.js` | Post-deploy smoke, rollback, and revert workflow template                   | PROJ-7, 8                                                         |
+| `src/glob.js`        | Glob to RegExp matcher, the same on every platform                          | PROJ-9                                                            |
+| `src/scan.js`        | Skip/bypass markers, scope, runner files, tool-config sections, test shape  | GATE-4, 6, 8, 9, 42, 44, PROJ-3,4                                 |
+| `src/workflow.js`    | YAML subset parser; a workflow edit that only adds                          | GATE-43                                                           |
+| `src/gate.js`        | Gate stages, safe overlay, receipt                                          | GATE-1..20, 42..44, 48, 49, RUN-19, 32                            |
+| `src/timing.js`      | Stage times, IMPROVE lines, serial-runner and duplicate-work advice         | GATE-45..47, CLI-13, LED-18                                       |
+| `src/status.js`      | `keel/gate` commit status on the gated SHA                                  | RUN-23, CLI-10                                                    |
+| `src/audit.js`       | Cross-family re-review of fallback-reviewed merges                          | CLI-11, GATE-24, LINEAR-22                                        |
+| `src/review.js`      | Cross-model reviewer choice, review stage, test-edit verdict                | GATE-21..25, 44, CLI-9, LED-13                                    |
+| `src/window.js`      | Review spend per provider window, shared across sessions                    | GATE-24                                                           |
+| `src/stack.js`       | Stacked-branch and diff-size warnings before a gate                         | GATE-30                                                           |
+| `src/lease.js`       | Path leases: open branches that change the same files                       | LEASE-1..3                                                        |
+| `src/keel-test.js`   | `keel test`: the test command inside a gate slot                            | SLOT-2                                                            |
+| `src/slots.js`       | Machine-wide gate slots for the stages that run project commands            | GATE-29, SLOT-1, SLOT-3                                           |
+| `src/env.js`         | Strips secret-looking variables from worker and check environments          | RUN-12, RUN-40                                                    |
+| `src/workers.js`     | Provider argv, session resume, usage parsing and pricing, failure classes   | RUN-6, 8, 11, 33, LED-12                                          |
+| `src/run.js`         | Attempt loop, learned tier choice, held-out authoring, PR                   | RUN-1..22, 24..27, 32..35, LED-13, LINEAR-30                      |
+| `src/run-lock.js`    | Per-card run lock: one entry per run, named by its pid                      | RUN-10, LEASE-1                                                   |
+| `src/ledger.js`      | Append + report, builder and review spend per card                          | LED-1..5, 12, 13, 17                                              |
+| `src/escaped.js`     | Later fixes on the same lines, and reverts, for merged changes              | LED-6, 7, 8, 10, 11                                               |
+| `src/dora.js`        | DORA metrics for Keel changes per repo                                      | LED-7                                                             |
+| `src/value.js`       | Keel merges against the repo's other changes; cost per card                 | LED-8, 9, 13, 15                                                  |
+| `src/autonomy.js`    | Human touch rate of polled issues, from the ledgers and GitHub              | LED-14, 16, LINEAR-33                                             |
+| `src/clean.js`       | Lists and removes parked worktrees                                          | CLEAN-1, 2                                                        |
+| `src/autoclean.js`   | Removes finished parked worktrees and dead gate checkouts                   | CLEAN-3, 4, 5                                                     |
+| `src/doctor.js`      | Runs install and every check on a clean base; merge readiness; speed advice | CLI-3, 4, 13, 14, MERGE-1                                         |
+| `src/merge.js`       | Self-merge of a certified SHA once every check on it is green               | MERGE-1..4                                                        |
+| `src/linear.js`      | Issue to card mapping, dependency-aware selection, review state             | LINEAR-1..3, 5, 11..13, 20, 25, 26, 33                            |
+| `src/linear-http.js` | Real Linear client over HTTP (`LINEAR_API_KEY`)                             | LINEAR-7, 16, 20, 22, 28, 30, 33                                  |
+| `src/done.js`        | Verifies an already-satisfied claim: commit on base or merged PR, checks    | LINEAR-30                                                         |
+| `src/poll.js`        | One pass of the autonomous loop: pick, refine, run, comment, review         | LINEAR-4..19, 22, 25..33, RUN-20                                  |
+| `src/refine.js`      | Refine turn before a build: prompt, strict parse, ledger row                | LINEAR-32, 33, LED-17                                             |
+| `src/usage.js`       | `UsageError`: a mistake in how Keel was invoked                             | CLI-2                                                             |
+| `bin/keel.js`        | CLI: `init`, `gate`, `run`, `poll`, `doctor`, `clean`, `report`             | CLI-1, 2, 8..10, LED-6..8, CLEAN-3                                |
 
 ### 6.2 Tiers (default policy, overridable in `keel.json`)
 
