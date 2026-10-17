@@ -42,6 +42,18 @@ const NOISE_MS = 30_000; // a slowdown smaller than this is noise, not a regress
 const MIN_SAMPLES = 3;
 const WINDOW = 20;
 
+/**
+ * Why the red proof ran the whole suite on base though `testFilesCommand` is set, from the head's `targeted-on-head`
+ * row (REQ-GATE-33, -46); null when it is not set (no row) or the proof was targeted.
+ */
+function untargetedReason(results) {
+  const row = results.find((r) => r.name === 'targeted-on-head');
+  if (!row || row.targeted) return null;
+  if (row.unseen?.length)
+    return `the suite output names no new test file (${row.unseen.join(', ')}) and no node --test glob of testCommand matches it, so the red proof ran the whole suite on base; make the runner print file names, or name the files in a node --test glob`;
+  return 'testFilesCommand failed on head for the new test files, so the red proof ran the whole suite on base; check that it runs them';
+}
+
 /** The likeliest fix for a slow stage, by name (REQ-GATE-46). */
 export function hintFor(name) {
   if (/^(test|regression-on-head|held-out|targeted-on-head)$/.test(name) || name.startsWith('acceptance:'))
@@ -59,7 +71,7 @@ export function hintFor(name) {
  * (REQ-GATE-46): a stage over its absolute limit, or more than 1.5× its median (and 30 s more) once 3 earlier
  * gates timed it. Only passing earlier gates count, since a failing gate stops early and is not comparable.
  */
-export function improveLines(times, history) {
+export function improveLines(times, history, results = []) {
   const lines = [];
   for (const [name, ms] of Object.entries(times)) {
     const past = history
@@ -74,7 +86,7 @@ export function improveLines(times, history) {
       ...(ms > limit ? [`over the ${fmtMs(limit)} limit`] : []),
       ...(med !== null ? [`median ${fmtMs(med)} over ${past.length} gates`] : []),
     ].join('; ');
-    lines.push(`IMPROVE: ${name} took ${fmtMs(ms)} (${why}): ${hintFor(name)}`);
+    lines.push(`IMPROVE: ${name} took ${fmtMs(ms)} (${why}): ${(name === 'red-proof' && untargetedReason(results)) || hintFor(name)}`);
   }
   return lines;
 }
@@ -88,7 +100,7 @@ export function recordGateTimes(file, { repo, card, head, pass, results, waitMs 
   if (!Object.keys(checks).length) return [];
   const id = repoIdOf(repo);
   const history = readJsonl(file).filter((r) => r.repo === id);
-  const lines = [...waitLines(waitMs), ...improveLines(checks, history)];
+  const lines = [...waitLines(waitMs), ...improveLines(checks, history, results)];
   appendJsonl(file, { repo: id, card, head, pass, at: new Date().toISOString(), waitMs, checks });
   return lines;
 }

@@ -35,6 +35,7 @@ import {
   withTempWorktree,
 } from './git.js';
 import {
+  commandTestGlobs,
   findBypassMarkers,
   findSkipMarkers,
   fold,
@@ -310,12 +311,15 @@ function candidateStages(ctx) {
       suiteOut = r.out;
       results.push(headResult('regression-on-head', r, 'regression-fails-on-head'));
     }
-    // The red proof runs only the new files on base (REQ-GATE-33) when two things hold on head: the whole suite's output
-    // names each new file, so testCommand (and CI) really runs it; and the files command passes, so a runner that cannot
-    // take these files fails here, not as a false "fails on base". Otherwise the red proof runs the whole suite.
+    // The red proof runs only the new files on base (REQ-GATE-33) when two things hold on head: testCommand (and CI)
+    // really runs each new file, because the whole suite's output names it or a `node --test` glob of testCommand or the
+    // package.json scripts it runs matches it; and the files command passes, so a runner that cannot take these files
+    // fails here, not as a false "fails on base". Otherwise the red proof runs the whole suite.
     if (results.every((r) => r.pass) && needsProof(card) && config.testFilesCommand) {
       const proof = proofFiles(ctx);
-      const unseen = proof.filter((p) => !namesPath(suiteOut, p, dir));
+      const pkg = join(dir, 'package.json');
+      const globs = commandTestGlobs(existsSync(pkg) ? readFileSync(pkg, 'utf8') : null, [config.testCommand]);
+      const unseen = proof.filter((p) => !namesPath(suiteOut, p, dir) && !matchesAny(p, globs));
       const r = proof.length && !unseen.length ? shell(filesCommand(config, proof), dir, config) : null; // no retry: a flaky files command is not trusted on base
       ctx.targeted = r?.code === 0;
       results.push({

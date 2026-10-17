@@ -5,6 +5,7 @@
     "test": "npm test"
   },
   "testCommand": "npm test",
+  "testFilesCommand": "PATH=\"$PWD/test/bin:$PATH\" node --test --test-concurrency=4 {files}",
   "bypassAllow": ["src/scan.js", "test/**", "bench/swebench/results/**", "bench/swebench/tamper.py"],
   "linearProject": "keel",
   "dailyBudgetUsd": 5

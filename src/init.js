@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { nodeTestGlobs } from './scan.js';
 import { UsageError } from './usage.js';
 
 const read = (dir, name) => (existsSync(join(dir, name)) ? readFileSync(join(dir, name), 'utf8') : null);
@@ -18,12 +19,14 @@ const EXEC = { npm: 'npx', pnpm: 'pnpm exec', yarn: 'yarn', bun: 'bunx' };
 
 /**
  * The test runner of a `test` script, for given files (REQ-GATE-33): vitest and jest, whose passing output names each
- * file, which the targeted red proof needs. null for others (`node --test` and mocha print only test names).
+ * file, and `node --test` over explicit file globs, which the gate matches new files against, since the targeted red
+ * proof needs to know the suite runs them. null for others (mocha and a bare `node --test` show no files).
  */
 function nodeFilesCommand(script, pm) {
   if (!script) return null;
   if (/\bvitest\b/.test(script)) return `${EXEC[pm]} vitest run {files}`;
   if (/\bjest\b/.test(script)) return `${EXEC[pm]} jest {files}`;
+  if (nodeTestGlobs(script).length) return 'node --test {files}';
   return null;
 }
 
