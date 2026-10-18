@@ -1,5 +1,5 @@
 import { removeParkedWorktree } from './clean.js';
-import { exec, isDirty, showFile } from './git.js';
+import { exec, isDirty, revParse, showFile } from './git.js';
 import { ALREADY_SATISFIED, verifyDone } from './done.js';
 import {
   attemptedIssueIds,
@@ -189,6 +189,19 @@ function linesAt(repo, ref, path) {
 }
 
 /**
+ * Whether line `line` of `path` at `ref` was there at `fork` (REQ-LINEAR-27): `git blame` over `fork..ref` marks it
+ * `boundary` when no commit after `fork` added it. The occurrence counts, not the text: a duplicate the branch added
+ * of an older line is the branch's. Porcelain output does not change with the user's diff settings; no ignored revs.
+ */
+function lineFrom(repo, fork, ref, path, line) {
+  // `git blame X..X` blames HEAD instead, so a cited commit already on base (an audit) is its own fork: the line is there.
+  if (revParse(ref, repo) === fork) return true;
+  const b = exec('git', ['blame', '--porcelain', '--ignore-revs-file=', '-L', `${line},${line}`, `${fork}..${ref}`, '--', path], repo);
+  if (b.status !== 0) throw new Error(`git blame ${fork}..${ref} -- ${path} failed: ${b.stderr.trim()}`);
+  return /^boundary$/m.test(b.stdout);
+}
+
+/**
  * Why a queued finding no longer applies on `base` (REQ-LINEAR-27), or null. Only a line that was there before the
  * finding's own work (at the merge base of its commit and `base`) can go stale: then the file must still exist on
  * `base` and still hold the cited line. A line the finding's unmerged branch added is never judged stale.
@@ -197,7 +210,7 @@ function staleReason(repo, base, cite) {
   if (!cite?.text) return null;
   const fork = exec('git', ['merge-base', cite.ref, base], repo);
   if (fork.status !== 0) return null;
-  if (!(linesAt(repo, fork.stdout.trim(), cite.path) ?? []).includes(cite.text)) return null;
+  if (!lineFrom(repo, fork.stdout.trim(), cite.ref, cite.path, cite.line)) return null;
   const now = linesAt(repo, base, cite.path);
   if (now === null) return `${cite.path} no longer exists on ${base}`;
   return now.includes(cite.text) ? null : `${cite.path}:${cite.line} no longer reads "${cite.text.slice(0, 120)}" on ${base}`;

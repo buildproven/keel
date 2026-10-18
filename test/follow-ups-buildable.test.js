@@ -204,3 +204,44 @@ test('REQ-LINEAR-27 a cited path with spaces keeps its line and, on a locked fil
   await poll({ repo: dir, project: 'x', client, config, runFn: noRun, limit: 0 });
   assert.match(client.created[0].fields.description, /\nallowEdits: \.github\/workflows\/quality gate\.yml\n/);
 });
+
+test('REQ-LINEAR-27 a duplicate line an unmerged branch added is not stale when the base drops the older copy', async () => {
+  const { dir } = audited();
+  g(dir, 'checkout', '-q', '-b', 'keel/BUI-7');
+  commit(dir, { 'src/sub.js': 'export const sub = (a, b) => b - a;\nexport const two = 2;\nexport const two = 2;\n' }, 'branch work');
+  g(dir, 'checkout', '-q', 'main');
+  commit(dir, { 'src/sub.js': 'export const sub = (a, b) => b - a;\n' }, 'drop two');
+  queueFollowUps(dir, 'BUI-7', [finding('src/sub.js:3', 'two is declared twice')], 'keel/BUI-7');
+  const client = fakeClient();
+  await poll({ repo: dir, project: 'x', client, config, runFn: noRun, limit: 0 });
+  assert.equal(rows('stale').length, 0);
+  assert.equal(client.created.length, 1);
+});
+
+test('REQ-LINEAR-27 an older cited line between two branch edits still goes stale, whatever diff.interHunkContext says', async () => {
+  const { dir } = fixtureRepo({ 'src/sub.js': 'a\nb\nexport const two = 2;\nc\nd\n' });
+  g(dir, 'config', 'diff.interHunkContext', '10');
+  g(dir, 'checkout', '-q', '-b', 'keel/BUI-7');
+  commit(dir, { 'src/sub.js': 'a\nB\nexport const two = 2;\nC\nd\n' }, 'branch work');
+  g(dir, 'checkout', '-q', 'main');
+  commit(dir, { 'src/sub.js': 'a\nb\nc\nd\n' }, 'drop two');
+  queueFollowUps(dir, 'BUI-7', [finding('src/sub.js:3', 'two is wrong')], 'keel/BUI-7');
+  const client = fakeClient();
+  await poll({ repo: dir, project: 'x', client, config, runFn: noRun, limit: 0 });
+  assert.equal(client.created.length, 0);
+  assert.match(rows('stale')[0].detail.reason, /src\/sub\.js:3 no longer reads/);
+});
+
+test('REQ-LINEAR-27 a line a branch added after a blank line is the branch own, whatever diff.suppressBlankEmpty says', async () => {
+  const { dir } = fixtureRepo({ 'src/sub.js': 'a\n\nc\n' });
+  g(dir, 'config', 'diff.interHunkContext', '10');
+  g(dir, 'config', 'diff.suppressBlankEmpty', 'true');
+  g(dir, 'checkout', '-q', '-b', 'keel/BUI-7');
+  commit(dir, { 'src/sub.js': 'A\n\nc\nexport const two = 9;\n' }, 'branch work');
+  g(dir, 'checkout', '-q', 'main');
+  queueFollowUps(dir, 'BUI-7', [finding('src/sub.js:4', 'two is 9')], 'keel/BUI-7');
+  const client = fakeClient();
+  await poll({ repo: dir, project: 'x', client, config, runFn: noRun, limit: 0 });
+  assert.equal(rows('stale').length, 0);
+  assert.equal(client.created.length, 1);
+});
