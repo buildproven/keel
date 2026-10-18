@@ -34,8 +34,8 @@ test('REQ-GATE-33 with testFilesCommand, the red-proof overlay runs only the new
     config: fixtureConfig({ checks: { test: full }, testCommand: full, testFilesCommand: files }),
   });
   assert.equal(r.pass, true, JSON.stringify(r.results, null, 2));
-  // full suite on head (check) and the base baseline; the files command on head and on the base overlay
-  assert.deepEqual(runs(), ['full', ['test/add.test.js'], 'full', ['test/add.test.js']]);
+  // full suite on head (check); the files command on head and on the base overlay; no base baseline, as the file is new (REQ-GATE-17)
+  assert.deepEqual(runs(), ['full', ['test/add.test.js'], ['test/add.test.js']]);
   assert.equal(r.results.find((x) => x.name === 'red-proof').targeted, true);
 });
 
@@ -67,7 +67,7 @@ test('REQ-GATE-33 file names reach the files command as single literal arguments
     config: fixtureConfig({ checks: { test: full }, testCommand: full, testFilesCommand: files }),
   });
   assert.equal(r.results.find((x) => x.name === 'targeted-on-head').targeted, true, JSON.stringify(r.results, null, 2));
-  assert.deepEqual([runs()[1], runs()[3]], [[name], [name]]); // on head, then on the base overlay
+  assert.deepEqual(runs().slice(1), [[name], [name]]); // on head, then on the base overlay
 });
 
 test('REQ-GATE-33 when the files command fails on head, the red proof falls back to the whole suite', () => {
