@@ -184,3 +184,14 @@ test('REQ-LINEAR-29 a finding on a file the gate locks is filed with allowEdits 
   assert.match(locked, /must not remove or weaken any check/);
   assert.doesNotMatch(free, /allowEdits/);
 });
+
+test('REQ-LINEAR-27 a cited path with spaces keeps its line and, on a locked file, its allowEdits', async () => {
+  const { dir } = fixtureRepo({ '.github/workflows/quality gate.yml': 'jobs:\n  test:\n    timeout-minutes: 10\n' });
+  const head = g(dir, 'rev-parse', 'HEAD');
+  queueFollowUps(dir, null, [finding('medium .github/workflows/quality gate.yml:3', 'Audit #4: timeout too short')], head);
+  const [item] = pendingFollowUps(dir);
+  assert.deepEqual(item.cite, { path: '.github/workflows/quality gate.yml', line: 3, text: 'timeout-minutes: 10', ref: head });
+  const client = fakeClient();
+  await poll({ repo: dir, project: 'x', client, config, runFn: noRun, limit: 0 });
+  assert.match(client.created[0].fields.description, /\nallowEdits: \.github\/workflows\/quality gate\.yml\n/);
+});

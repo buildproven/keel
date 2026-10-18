@@ -111,7 +111,7 @@ function earsLine(f, path) {
  * check (REQ-LINEAR-29).
  */
 function followUpText(source, f, config, repo, base) {
-  const path = citedPath(f);
+  const path = citedPath(f, fileAt(repo, base));
   const locked = path && locksAny(path, config.verificationPaths) ? path : null;
   const commit = f.found?.commit ?? f.cite?.ref ?? null;
   const pr = f.found?.pr ?? null;
@@ -149,15 +149,34 @@ function followUpText(source, f, config, repo, base) {
 
 // A `path:line` citation in a finding (REQ-LINEAR-27): a path with a `/` or `.`, not inside a longer token.
 const CITE = /(?<![\w./@-])((?:[\w@.-]+\/)*[\w@-][\w@.-]*):(\d+)\b/g;
+const WORD_BEFORE = /(?:^|\s)([\w@./-]+) $/; // the word a path with spaces may begin with, right before one space
+const SPACED_WORDS = 8; // how many words left of the match a path with spaces may span
 
-/** The first `path:line` a finding cites in its detail, then its title, or null. */
-function citation(f) {
+/**
+ * The first `path:line` a finding cites in its detail, then its title, or null. Text cannot tell a path with spaces
+ * from the words before it (`medium .github/workflows/quality gate.yml:3`), so the longest path that `exists` (a file
+ * in the commit the finding is about) wins, the match itself otherwise.
+ */
+function citation(f, exists = () => false) {
   for (const text of [f.detail, f.title])
-    for (const m of (text ?? '').matchAll(CITE)) if (/[./]/.test(m[1]) && !m[1].endsWith('.')) return { path: m[1], line: Number(m[2]) };
+    for (const m of (text ?? '').matchAll(CITE)) {
+      if (!/[./]/.test(m[1]) || m[1].endsWith('.')) continue;
+      let path = m[1];
+      let rest = text.slice(0, m.index);
+      for (let i = 0, cand = m[1], w; i < SPACED_WORDS && (w = WORD_BEFORE.exec(rest)); i++) {
+        cand = `${w[1]} ${cand}`;
+        rest = rest.slice(0, -(w[1].length + 1));
+        if (exists(cand)) path = cand;
+      }
+      return { path, line: Number(m[2]) };
+    }
   return null;
 }
 
-const citedPath = (f) => f.cite?.path ?? citation(f)?.path ?? null;
+/** Whether `path` is a file at `ref`. */
+const fileAt = (repo, ref) => (path) => exec('git', ['cat-file', '-e', `${ref}:${path}`], repo).status === 0;
+
+const citedPath = (f, exists) => f.cite?.path ?? citation(f, exists)?.path ?? null;
 
 /** The trimmed text of each line of `path` at `ref`, or null when the path or ref is not there. */
 function linesAt(repo, ref, path) {
@@ -347,7 +366,7 @@ export function queueFollowUps(repo, source, followUps, ref = null, pr = null) {
   const sha = ref && exec('git', ['rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`], repo);
   const at = sha?.status === 0 ? sha.stdout.trim() : null;
   const cited = followUps.map((f) => {
-    const c = at && citation(f);
+    const c = at && citation(f, fileAt(repo, at));
     const text = c && linesAt(repo, at, c.path)?.[c.line - 1];
     const found = { ...f, found: { commit: at, pr } };
     return text ? { ...found, cite: { ...c, text, ref: at } } : found;
