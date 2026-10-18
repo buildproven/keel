@@ -184,3 +184,16 @@ test('REQ-LINEAR-29 a finding on a file the gate locks is filed with allowEdits 
   assert.match(locked, /must not remove or weaken any check/);
   assert.doesNotMatch(free, /allowEdits/);
 });
+
+test('REQ-LINEAR-27 a duplicate line an unmerged branch added is not stale when the base drops the older copy', async () => {
+  const { dir } = audited();
+  g(dir, 'checkout', '-q', '-b', 'keel/BUI-7');
+  commit(dir, { 'src/sub.js': 'export const sub = (a, b) => b - a;\nexport const two = 2;\nexport const two = 2;\n' }, 'branch work');
+  g(dir, 'checkout', '-q', 'main');
+  commit(dir, { 'src/sub.js': 'export const sub = (a, b) => b - a;\n' }, 'drop two');
+  queueFollowUps(dir, 'BUI-7', [finding('src/sub.js:3', 'two is declared twice')], 'keel/BUI-7');
+  const client = fakeClient();
+  await poll({ repo: dir, project: 'x', client, config, runFn: noRun, limit: 0 });
+  assert.equal(rows('stale').length, 0);
+  assert.equal(client.created.length, 1);
+});

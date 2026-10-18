@@ -167,6 +167,18 @@ function linesAt(repo, ref, path) {
 }
 
 /**
+ * Whether line `line` of `path` at `ref` was there at `fork` (REQ-LINEAR-27): it is in no added hunk of the diff from
+ * `fork` to `ref`. The occurrence counts, not the text: a duplicate the branch added of an older line is the branch's.
+ */
+function lineFrom(repo, fork, ref, path, line) {
+  const d = exec('git', ['diff', '-U0', '--no-renames', '--no-ext-diff', fork, ref, '--', path], repo);
+  if (d.status !== 0) throw new Error(`git diff ${fork} ${ref} -- ${path} failed: ${d.stderr.trim()}`);
+  for (const [, start, count = '1'] of d.stdout.matchAll(/^@@ -\S+ \+(\d+)(?:,(\d+))? @@/gm))
+    if (line >= Number(start) && line < Number(start) + Number(count)) return false;
+  return true;
+}
+
+/**
  * Why a queued finding no longer applies on `base` (REQ-LINEAR-27), or null. Only a line that was there before the
  * finding's own work (at the merge base of its commit and `base`) can go stale: then the file must still exist on
  * `base` and still hold the cited line. A line the finding's unmerged branch added is never judged stale.
@@ -175,7 +187,7 @@ function staleReason(repo, base, cite) {
   if (!cite?.text) return null;
   const fork = exec('git', ['merge-base', cite.ref, base], repo);
   if (fork.status !== 0) return null;
-  if (!(linesAt(repo, fork.stdout.trim(), cite.path) ?? []).includes(cite.text)) return null;
+  if (!lineFrom(repo, fork.stdout.trim(), cite.ref, cite.path, cite.line)) return null;
   const now = linesAt(repo, base, cite.path);
   if (now === null) return `${cite.path} no longer exists on ${base}`;
   return now.includes(cite.text) ? null : `${cite.path}:${cite.line} no longer reads "${cite.text.slice(0, 120)}" on ${base}`;
