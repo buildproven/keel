@@ -1,3 +1,4 @@
+import { ALREADY_SATISFIED } from './done.js';
 import { exec } from './git.js';
 
 // Poll-ledger outcomes that are not a run of the issue: found work, filing, and polls that ran nothing (REQ-LED-14).
@@ -185,19 +186,24 @@ export function humanTouch({ pollRows, ledgerRows, prsFor = githubPrs, windowDay
  * are never polled, so they are not counted.
  */
 function stopsOf(ledgerRows, byIssue) {
-  const ends = new Map(); // repo\0card → run → last worker status
+  const ends = new Map(); // repo\0card → run → last attempt row
   for (const r of ledgerRows) {
     if (!r.run || r.role === 'held-out-author') continue;
     const k = `${r.repo}\0${r.card}`;
     if (!ends.has(k)) ends.set(k, new Map());
-    ends.get(k).set(r.run, r.workerStatus);
+    ends.get(k).set(r.run, r);
   }
   const out = { issues: 0, blocked: 0, auth: 0, decision: 0 };
   for (const [k, rows] of byIssue) {
-    const last = [...(ends.get(k)?.values() ?? [])];
+    const outcomes = new Set(rows.map((r) => r.outcome));
+    // A KEEL_DONE claim stops the run `blocked`; once poll proved it (alreadyDone) and never reported it unproven
+    // (blocked), no human stepped in (REQ-LINEAR-30).
+    const proven = outcomes.has('alreadyDone') && !outcomes.has('blocked');
+    const last = [...(ends.get(k)?.values() ?? [])].filter((r) => !(proven && ALREADY_SATISFIED.test(r.blockedReason ?? '')));
+    const status = last.map((r) => r.workerStatus);
     const hit = {
-      blocked: last.includes('blocked'),
-      auth: last.includes('auth'),
+      blocked: status.includes('blocked'),
+      auth: status.includes('auth'),
       decision: rows.some((r) => r.outcome === 'needsReview' || r.outcome === 'needsHuman'), // a refine question (REQ-LINEAR-33)
     };
     for (const [reason, yes] of Object.entries(hit)) if (yes) out[reason] += 1;
