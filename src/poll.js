@@ -70,10 +70,15 @@ async function closeDone(client, id, comment) {
   try {
     await client.done(id);
   } catch (e) {
-    await client.comment(
-      id,
-      `keel: the evidence that this issue is already done held, but keel could not move it to Done (${e.message}), so it stays open. Close it by hand, or retry with \`keel poll --issue ${id}\`.`,
-    );
+    // The failed move stays the error: a comment that fails too is added to it, never put in its place.
+    await client
+      .comment(
+        id,
+        `keel: the evidence that this issue is already done held, but keel could not move it to Done (${e.message}), so it stays open. Close it by hand, or retry with \`keel poll --issue ${id}\`.`,
+      )
+      .catch((c) => {
+        throw new Error(`${e.message}; the comment that says the issue stays open failed too: ${c.message}`, { cause: e });
+      });
     throw e;
   }
   await client.comment(id, comment);
