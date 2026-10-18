@@ -171,10 +171,19 @@ function linesAt(repo, ref, path) {
  * `fork` to `ref`. The occurrence counts, not the text: a duplicate the branch added of an older line is the branch's.
  */
 function lineFrom(repo, fork, ref, path, line) {
-  const d = exec('git', ['diff', '-U0', '--no-renames', '--no-ext-diff', fork, ref, '--', path], repo);
+  const d = exec('git', ['diff', '-U0', '--no-renames', '--no-ext-diff', '--no-color', fork, ref, '--', path], repo);
   if (d.status !== 0) throw new Error(`git diff ${fork} ${ref} -- ${path} failed: ${d.stderr.trim()}`);
-  for (const [, start, count = '1'] of d.stdout.matchAll(/^@@ -\S+ \+(\d+)(?:,(\d+))? @@/gm))
-    if (line >= Number(start) && line < Number(start) + Number(count)) return false;
+  // Walk each hunk's body, not its header: a hunk may hold unchanged lines too (diff.interHunkContext).
+  let n = null; // the new-side number of the next line, inside a hunk
+  for (const l of d.stdout.split('\n')) {
+    const h = /^@@ -\S+ \+(\d+)/.exec(l);
+    if (h) n = Number(h[1]);
+    else if (n === null || l.startsWith('\\')) continue;
+    else if (l.startsWith('+')) {
+      if (n === line) return false;
+      n += 1;
+    } else if (l.startsWith(' ')) n += 1;
+  }
   return true;
 }
 
