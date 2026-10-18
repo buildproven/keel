@@ -156,6 +156,18 @@ test('REQ-LINEAR-26 textPrerequisites reads the real prerequisite phrases and ig
   assert.deepEqual(textPrerequisites(issue({ description: 'Decode after utf-8 normalisation. See BUI-9 for history.' })), []);
 });
 
+test('REQ-LINEAR-26 textPrerequisites reads every identifier in a list after one prerequisite phrase', () => {
+  assert.deepEqual(textPrerequisites(issue({ description: 'This depends on BUI-21 and BUI-22.' })), ['BUI-21', 'BUI-22']);
+  assert.deepEqual(textPrerequisites(issue({ description: 'Wait for BUI-3, BUI-4, and ABC-5 to ship.' })), ['BUI-3', 'BUI-4', 'ABC-5']);
+  assert.deepEqual(textPrerequisites(issue({ description: 'Blocked by BUI-6 / BUI-7 or BUI-8 & BUI-9.' })), [
+    'BUI-6',
+    'BUI-7',
+    'BUI-8',
+    'BUI-9',
+  ]);
+  assert.deepEqual(textPrerequisites(issue({ description: 'Needs BUI-10. BUI-11 is related history.' })), ['BUI-10']);
+});
+
 test('REQ-LINEAR-26 keel poll waits on a named open prerequisite, inside or outside the project, and builds once it closes', async () => {
   const { dir } = fixtureRepo();
   const ran = [];

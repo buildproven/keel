@@ -155,16 +155,18 @@ export function notKeelReason(issue) {
   return null;
 }
 
-// A prerequisite phrase, then an issue identifier within 60 characters of the same sentence (REQ-LINEAR-26). Keywords
-// are case-folded by hand so the identifier stays upper case: `after utf-8` is not an issue.
+// A prerequisite phrase, then an issue identifier within 60 characters of the same sentence, and every identifier
+// listed right after it (`BUI-1, BUI-2 and BUI-3`) (REQ-LINEAR-26). Keywords are case-folded by hand so the identifier
+// stays upper case: `after utf-8` is not an issue.
+const ISSUE_ID = /\b[A-Z][A-Z0-9]*-\d+\b/g;
 const PREREQ =
-  /\b(?:[Nn]eeds|[Rr]equires|[Aa]fter|[Oo]nce|[Dd]epends on|[Bb]locked (?:on|by)|[Ww]aits? (?:for|on)|[Uu]ntil)\b[^.\n]{0,60}?\b([A-Z][A-Z0-9]*-\d+)\b/g;
+  /\b(?:[Nn]eeds|[Rr]equires|[Aa]fter|[Oo]nce|[Dd]epends on|[Bb]locked (?:on|by)|[Ww]aits? (?:for|on)|[Uu]ntil)\b[^.\n]{0,60}?\b([A-Z][A-Z0-9]*-\d+(?:\s*(?:,\s*(?:(?:and|or)\s+)?|(?:and|or)\s+|[&/]\s*)[A-Z][A-Z0-9]*-\d+)*)\b/g;
 const FOUND_BY = /^Found by keel while building [A-Z][A-Z0-9]*-\d+\.?$/gm;
 
 /** Issue identifiers an issue's text names as prerequisites (REQ-LINEAR-26), in order, without itself. */
 export function textPrerequisites(issue) {
   const text = `${issue.title ?? ''}\n${(issue.description ?? '').replace(FOUND_BY, '')}`;
-  const ids = [...text.matchAll(PREREQ)].map((m) => m[1]).filter((id) => id !== issue.id);
+  const ids = [...text.matchAll(PREREQ)].flatMap((m) => m[1].match(ISSUE_ID)).filter((id) => id !== issue.id);
   return [...new Set(ids)];
 }
 

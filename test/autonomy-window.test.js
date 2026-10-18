@@ -144,3 +144,23 @@ test('REQ-LED-16 self-merge bookkeeping rows are not runs; a failed self-merge i
   assert.equal(t.touched, 1);
   assert.deepEqual(t.reasons, { 'stopped for a human': 1 });
 });
+
+test('REQ-LED-16 a run that ended on a proven KEEL_DONE claim is not a stop for a human; an unproven one is', () => {
+  const done = (run, card) => ({
+    repo: REPO,
+    run,
+    card,
+    attempt: 1,
+    workerStatus: 'blocked',
+    blockedReason: 'already satisfied: commit abc1234',
+  });
+  const t = humanTouch({
+    pollRows: [row('D-1', 'alreadyDone'), row('D-2', 'blocked')],
+    ledgerRows: [done('r1', 'D-1'), done('r2', 'D-2')],
+    prsFor: () => [],
+    windowDays: 30,
+    now: NOW,
+  });
+  assert.deepEqual(t.stops, { issues: 1, blocked: 1, auth: 0, decision: 0 });
+  assert.equal(t.touched, 1);
+});
