@@ -147,26 +147,29 @@ function followUpText(source, f, config, repo, base) {
   );
 }
 
-// A `path:line` citation in a finding (REQ-LINEAR-27): a path with a `/` or `.`, not inside a longer token.
-const CITE = /(?<![\w./@-])((?:[\w@.-]+\/)*[\w@-][\w@.-]*):(\d+)\b/g;
+// A `path:line` citation in a finding (REQ-LINEAR-27): a path with a `/` or `.`, not inside a longer token. A `_`
+// may close it (Markdown emphasis, `_src/a.js:3_`).
+const CITE = /(?<![\w./@-])((?:[\w@.-]+\/)*[\w@-][\w@.-]*):(\d+)(?![\dA-Za-z])/g;
 const WORD_BEFORE = /([\w@./-]+) $/; // the word right before one space, after any quote, backtick, or bracket
 const SPACED_WORDS = 8; // how many words left of the match a path with spaces may span
 
 /**
  * The first `path:line` a finding cites in its detail, then its title, or null. Text cannot tell a path with spaces
- * from the words before it (`medium .github/workflows/quality gate.yml:3`), so the longest path that `exists` (a file
- * in the commit the finding is about) wins, the match itself otherwise.
+ * from the words before it (`medium .github/workflows/quality gate.yml:3`), nor a leading `_` or `*` of Markdown
+ * emphasis from the path, so the longest path that `exists` (a file in the commit the finding is about) wins, with or
+ * without that emphasis, and the match itself otherwise.
  */
 function citation(f, exists = () => false) {
+  const real = (p) => [p, p.replace(/^[_*]+/, '')].find(exists);
   for (const text of [f.detail, f.title])
     for (const m of (text ?? '').matchAll(CITE)) {
       if (!/[./]/.test(m[1]) || m[1].endsWith('.')) continue;
-      let path = m[1];
+      let path = real(m[1]) ?? m[1];
       let rest = text.slice(0, m.index);
       for (let i = 0, cand = m[1], w; i < SPACED_WORDS && (w = WORD_BEFORE.exec(rest)); i++) {
         cand = `${w[1]} ${cand}`;
         rest = rest.slice(0, -(w[1].length + 1));
-        if (exists(cand)) path = cand;
+        path = real(cand) ?? path;
       }
       return { path, line: Number(m[2]) };
     }

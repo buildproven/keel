@@ -190,9 +190,11 @@ test('REQ-LINEAR-27 a cited path with spaces keeps its line and, on a locked fil
   const head = g(dir, 'rev-parse', 'HEAD');
   queueFollowUps(dir, null, [finding('medium .github/workflows/quality gate.yml:3', 'Audit #4: timeout too short')], head);
   queueFollowUps(dir, null, [finding('see (`.github/workflows/quality gate.yml:3`)', 'Audit #4: quoted path')], head);
-  const [item, quoted] = pendingFollowUps(dir);
+  queueFollowUps(dir, null, [finding('see _.github/workflows/quality gate.yml:3_', 'Audit #4: emphasised path')], head);
+  const [item, quoted, emphasised] = pendingFollowUps(dir);
   assert.deepEqual(item.cite, { path: '.github/workflows/quality gate.yml', line: 3, text: 'timeout-minutes: 10', ref: head });
   assert.deepEqual(quoted.cite, item.cite);
+  assert.deepEqual(emphasised.cite, item.cite);
   const client = fakeClient();
   await poll({ repo: dir, project: 'x', client, config, runFn: noRun, limit: 0 });
   assert.match(client.created[0].fields.description, /\nallowEdits: \.github\/workflows\/quality gate\.yml\n/);
