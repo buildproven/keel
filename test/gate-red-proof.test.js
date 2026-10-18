@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { parseCard } from '../src/config.js';
 import { gate } from '../src/gate.js';
 import { commandTestGlobs } from '../src/scan.js';
 import { recordGateTimes } from '../src/timing.js';
-import { FIXED_SRC, commit, fixtureConfig, fixtureRepo, tmp } from './helpers.js';
+import { FIXED_SRC, REGRESSION_TEST, commit, fixtureConfig, fixtureRepo, tmp } from './helpers.js';
 
 /**
  * The gate without NODE_TEST_CONTEXT: node --test marks its test processes with it, and a `node --test` they start then
@@ -121,4 +122,89 @@ test('REQ-GATE-46 with testFilesCommand set and a files command that failed on h
 
 test('REQ-GATE-46 without testFilesCommand, the red-proof IMPROVE line still says to set it', () => {
   assert.match(slowRedProof(null), /set testFilesCommand so the red proof runs only the new test files on base/);
+});
+
+/**
+ * Commands that log each run (REQ-GATE-17): the whole suite writes `full` and names each file it runs, so the files
+ * command is trusted (REQ-GATE-33); the files command writes its file arguments as JSON.
+ */
+function loggedCommands() {
+  const log = join(tmp('keel-log-'), 'runs');
+  const full = `echo full >> '${log}'; for f in test/*.js; do echo "$f"; node "$f" || exit 1; done`;
+  const files = `node -e "require('fs').appendFileSync('${log}', JSON.stringify(process.argv.slice(1)) + '\\n')" -- {files}; for f in {files}; do node "$f" || exit 1; done`;
+  const runs = () =>
+    readFileSync(log, 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => (l === 'full' ? 'full' : JSON.parse(l)));
+  return { full, files, runs };
+}
+const ADD_ASSERT = "import assert from 'node:assert';\nimport { add } from '../src/add.js';\nassert.strictEqual(add(2, 3), 5);\n";
+
+test('REQ-GATE-17 a targeted red proof runs its base baseline with testFilesCommand on only the proof files that exist on base', () => {
+  const { dir, base } = fixtureRepo();
+  commit(dir, { 'test/basic.test.js': ADD_ASSERT, ...REGRESSION_TEST, ...FIXED_SRC });
+  const { full, files, runs } = loggedCommands();
+  const r = gate({
+    repo: dir,
+    base,
+    card: parseCard('# T-1: test card\nkind: bug\nsize: S\nallowEdits: test/basic.test.js\n'),
+    config: fixtureConfig({ checks: { test: full }, testCommand: full, testFilesCommand: files }),
+  });
+  assert.equal(r.pass, true, JSON.stringify(r.results, null, 2));
+  const proof = ['test/add.test.js', 'test/basic.test.js'];
+  // head: the whole suite (check) and the files command; base: the baseline of the base version of basic.test.js, then the overlay
+  assert.deepEqual(runs(), ['full', proof, ['test/basic.test.js'], proof]);
+});
+
+test('REQ-GATE-17 a targeted red proof whose proof files are all new on base runs no base baseline', () => {
+  const { dir, base } = fixtureRepo();
+  commit(dir, { ...REGRESSION_TEST, ...FIXED_SRC });
+  const { full, files, runs } = loggedCommands();
+  const r = gate({
+    repo: dir,
+    base,
+    card: card(),
+    config: fixtureConfig({ checks: { test: full }, testCommand: full, testFilesCommand: files }),
+  });
+  assert.equal(r.pass, true, JSON.stringify(r.results, null, 2));
+  assert.deepEqual(runs(), ['full', ['test/add.test.js'], ['test/add.test.js']]);
+});
+
+test('REQ-GATE-17 a targeted base baseline that fails on base fails the red proof as baseline-not-green', () => {
+  const { dir, base } = fixtureRepo({
+    'src/add.js': 'export const add = (a, b) => a - b;\n',
+    'test/basic.test.js': "import assert from 'node:assert';\nassert.ok(false);\n",
+  });
+  commit(dir, { 'test/basic.test.js': ADD_ASSERT, ...FIXED_SRC });
+  const { full, files } = loggedCommands();
+  const r = gate({
+    repo: dir,
+    base,
+    card: parseCard('# T-1: test card\nkind: bug\nsize: S\nallowEdits: test/basic.test.js\n'),
+    config: fixtureConfig({ checks: { test: full }, testCommand: full, testFilesCommand: files }),
+  });
+  assert.deepEqual(
+    r.results.flatMap((x) => x.problems.map((p) => p.rule)),
+    ['baseline-not-green'],
+  );
+});
+
+test('REQ-GATE-17 without testFilesCommand, or when the red proof is not targeted, the base baseline runs the whole testCommand', () => {
+  for (const withFiles of [false, true]) {
+    const { dir, base } = fixtureRepo();
+    commit(dir, { ...REGRESSION_TEST, ...FIXED_SRC });
+    const { full, files, runs } = loggedCommands();
+    // The quiet suite names no file, so with testFilesCommand set the red proof is not targeted (REQ-GATE-33).
+    const quiet = full.replace('echo "$f"; ', '');
+    const r = gate({
+      repo: dir,
+      base,
+      card: card(),
+      config: fixtureConfig({ checks: { test: quiet }, testCommand: quiet, ...(withFiles ? { testFilesCommand: files } : {}) }),
+    });
+    assert.equal(r.pass, true, JSON.stringify(r.results, null, 2));
+    // head check, the whole-suite base baseline, the whole-suite overlay
+    assert.deepEqual(runs(), ['full', 'full', 'full'], `testFilesCommand ${withFiles}`);
+  }
 });

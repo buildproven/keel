@@ -368,11 +368,15 @@ function redProof(ctx) {
     if (installed) return { ...fail('red-proof', 'install-failed'), output: tail(installed.out) };
     const cached = baseGreenFile(ctx);
     let flaky = false;
-    if (!cached || !existsSync(cached)) {
-      const baseline = runHead(config.testCommand, dir, config); // A load-induced base failure gets one retry too (REQ-GATE-18).
+    // A targeted overlay runs only the proof files, so only their base versions need a green baseline; a new file has
+    // none (REQ-GATE-17). An untargeted overlay runs the whole suite, so the whole suite must be green on base.
+    const onBase = ctx.targeted ? proof.filter((p) => fileMode(base, p, repo)) : null;
+    if ((!cached || !existsSync(cached)) && onBase?.length !== 0) {
+      const command = onBase ? filesCommand(config, onBase) : config.testCommand;
+      const baseline = runHead(command, dir, config); // A load-induced base failure gets one retry too (REQ-GATE-18).
       flaky = Boolean(baseline.flaky);
       if (baseline.code !== 0) return { ...fail('red-proof', 'baseline-not-green'), output: tail(baseline.out) };
-      if (cached) {
+      if (cached && !onBase) {
         mkdirSync(dirname(cached), { recursive: true });
         writeFileSync(cached, `${new Date().toISOString()}\n`); // Only a green base is cached (REQ-GATE-17).
       }
