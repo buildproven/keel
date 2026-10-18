@@ -62,6 +62,23 @@ function doneComment({ evidence, checks, baseSha }, { failure, branch }) {
   return `keel: already done, closed without a build. Evidence: ${evidence.join('; ')}; checks green on base ${baseSha.slice(0, 12)}: ${checks.join(', ') || '(none configured)'}.\n\nThe worker said:\n${trim(failure, 1500)}\n\nKeel's empty branch \`${branch}\` is not needed; remove it with \`keel clean\`.`;
 }
 
+/**
+ * Move an issue proven done to Done, then post `comment` (REQ-LINEAR-30). Done comes first, so a failed move never
+ * leaves a "closed" comment on an open issue: Keel says instead that it stays open, and the error goes on.
+ */
+async function closeDone(client, id, comment) {
+  try {
+    await client.done(id);
+  } catch (e) {
+    await client.comment(
+      id,
+      `keel: the evidence that this issue is already done held, but keel could not move it to Done (${e.message}), so it stays open. Close it by hand, or retry with \`keel poll --issue ${id}\`.`,
+    );
+    throw e;
+  }
+  await client.comment(id, comment);
+}
+
 /** The test globs that cover the repo's test files at `ref`, each adding files the earlier ones miss (REQ-LINEAR-22). */
 function testPathsAt(repo, ref, config) {
   const r = exec('git', ['ls-tree', '-r', '-z', '--name-only', ref], repo);
@@ -365,11 +382,11 @@ async function refineStep({ repo, base, config, client, issue, project, log, ref
   if (p.kind === 'done') {
     const done = verifyDone({ repo, base, config, reason: `already satisfied: ${p.evidence}` });
     if (done.ok) {
-      await client.comment(
+      await closeDone(
+        client,
         issue.id,
         `${refineHead(r)}: already done, closed without a build. Evidence: ${done.evidence.join('; ')}; checks green on base ${done.baseSha.slice(0, 12)}: ${done.checks.join(', ') || '(none configured)'}.`,
       );
-      await client.done(issue.id);
       return { outcome: { outcome: 'alreadyDone', issue: issue.id } };
     }
     await client.comment(
@@ -507,8 +524,7 @@ async function reportRun({ repo, base, config, client, issue, result }) {
     // A claim that the work is already done closes the issue once its evidence holds (REQ-LINEAR-30).
     const done = ALREADY_SATISFIED.test(result.failure ?? '') ? verifyDone({ repo, base, config, reason: result.failure }) : null;
     if (done?.ok) {
-      await client.comment(issue.id, doneComment(done, result));
-      await client.done(issue.id);
+      await closeDone(client, issue.id, doneComment(done, result));
       return { outcome: 'alreadyDone', issue: issue.id, result };
     }
     const unproven = done ? `\n\nThe worker says the card is already satisfied, but the evidence did not hold: ${done.why}.` : '';
