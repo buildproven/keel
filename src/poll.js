@@ -1,5 +1,5 @@
 import { removeParkedWorktree } from './clean.js';
-import { exec, isDirty, showFile } from './git.js';
+import { exec, isDirty, revParse, showFile } from './git.js';
 import { ALREADY_SATISFIED, verifyDone } from './done.js';
 import {
   attemptedIssueIds,
@@ -167,24 +167,16 @@ function linesAt(repo, ref, path) {
 }
 
 /**
- * Whether line `line` of `path` at `ref` was there at `fork` (REQ-LINEAR-27): it is in no added hunk of the diff from
- * `fork` to `ref`. The occurrence counts, not the text: a duplicate the branch added of an older line is the branch's.
+ * Whether line `line` of `path` at `ref` was there at `fork` (REQ-LINEAR-27): `git blame` over `fork..ref` marks it
+ * `boundary` when no commit after `fork` added it. The occurrence counts, not the text: a duplicate the branch added
+ * of an older line is the branch's. Porcelain output does not change with the user's diff settings; no ignored revs.
  */
 function lineFrom(repo, fork, ref, path, line) {
-  const d = exec('git', ['diff', '-U0', '--no-renames', '--no-ext-diff', '--no-color', fork, ref, '--', path], repo);
-  if (d.status !== 0) throw new Error(`git diff ${fork} ${ref} -- ${path} failed: ${d.stderr.trim()}`);
-  // Walk each hunk's body, not its header: a hunk may hold unchanged lines too (diff.interHunkContext).
-  let n = null; // the new-side number of the next line, inside a hunk
-  for (const l of d.stdout.split('\n')) {
-    const h = /^@@ -\S+ \+(\d+)/.exec(l);
-    if (h) n = Number(h[1]);
-    else if (n === null || l.startsWith('\\')) continue;
-    else if (l.startsWith('+')) {
-      if (n === line) return false;
-      n += 1;
-    } else if (l.startsWith(' ')) n += 1;
-  }
-  return true;
+  // `git blame X..X` blames HEAD instead, so a cited commit already on base (an audit) is its own fork: the line is there.
+  if (revParse(ref, repo) === fork) return true;
+  const b = exec('git', ['blame', '--porcelain', '--ignore-revs-file=', '-L', `${line},${line}`, `${fork}..${ref}`, '--', path], repo);
+  if (b.status !== 0) throw new Error(`git blame ${fork}..${ref} -- ${path} failed: ${b.stderr.trim()}`);
+  return /^boundary$/m.test(b.stdout);
 }
 
 /**
