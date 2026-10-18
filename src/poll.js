@@ -149,7 +149,7 @@ function followUpText(source, f, config, repo, base) {
 
 // A `path:line` citation in a finding (REQ-LINEAR-27): a path with a `/` or `.`, not inside a longer token.
 const CITE = /(?<![\w./@-])((?:[\w@.-]+\/)*[\w@-][\w@.-]*):(\d+)\b/g;
-const WORD_BEFORE = /(?:^|\s)([\w@./-]+) $/; // the word a path with spaces may begin with, right before one space
+const WORD_BEFORE = /([\w@./-]+) $/; // the word right before one space, after any quote, backtick, or bracket
 const SPACED_WORDS = 8; // how many words left of the match a path with spaces may span
 
 /**
