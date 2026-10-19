@@ -216,9 +216,10 @@ function staticChecks(ctx) {
       locked.push({ rule: 'verification-file-changed', path: f.path, status: f.status });
   }
   const code = lines.filter((l) => !PROSE.has(extname(l.path)) && !matchesAny(l.path, config.bypassAllow));
+  // A path the card allows to edit is in scope (REQ-GATE-50); allowEdits alone never turns scope on.
   const scope = outOfScope(
     changed.map((f) => f.path),
-    card.paths,
+    card.paths.length ? [...card.paths, ...card.allowEdits] : [],
   );
   ctx.testEdits = testEdits;
   return [
