@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs';
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { builderText, linkedDirs } from './config.js';
 import { changedFiles, exec, git, isDirty, revParse, withTempWorktree } from './git.js';
@@ -324,6 +324,39 @@ function commitLeftovers(wt, card, attempt, branch) {
   git(['add', '-A'], wt);
   const r = exec('git', ['commit', '-q', '-m', `chore(${card.id}): keel attempt ${attempt} leftovers`], wt);
   return r.status === 0 ? null : `commit failed (hooks?):\n${`${r.stdout}${r.stderr}`.slice(-2000)}`;
+}
+
+/** Statuses that say nothing about the work: the next tier, or the next run, continues it as it is (REQ-RUN-44). */
+const KEEP_DIRTY = new Set(['ok', 'approved', 'auth', 'quota', 'network']);
+const onBranch = (wt, branch) => exec('git', ['symbolic-ref', '-q', 'HEAD'], wt).stdout.trim() === `refs/heads/${branch}`;
+
+/**
+ * Commit what a worker that ended other than `ok` left behind (REQ-RUN-44), so the parked worktree is clean and the
+ * cleanup can remove it (REQ-CLEAN-6). When a hook rejects the commit, the diff is saved as a patch under the state
+ * dir and this run worktree only is reset to its HEAD (REQ-RUN-45). Returns the commit error, or null.
+ */
+function parkLeftovers(wt, card, attempt, branch, log) {
+  const error = commitLeftovers(wt, card, attempt, branch);
+  if (!error || !onBranch(wt, branch) || !isDirty(wt)) return error;
+  const patch = git(['diff', '--binary', 'HEAD'], wt);
+  const dir = join(stateDir(), 'leftovers');
+  mkdirSync(dir, { recursive: true });
+  // A later run of the same card never overwrites an earlier patch: `wx` fails when the file exists.
+  let file;
+  for (let n = 1; ; n++) {
+    file = join(dir, `${card.id}-attempt-${attempt}${n === 1 ? '' : `-${n}`}.patch`);
+    try {
+      writeFileSync(file, patch, { flag: 'wx' });
+      break;
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+    }
+  }
+  // Keel's own run worktree on its own keel/<card> branch, never the user's checkout; the work is in the patch.
+  git(['reset', '-q', '--hard'], wt);
+  git(['clean', '-q', '-fd'], wt);
+  log(`attempt ${attempt}: the leftovers commit failed; saved the diff to ${file} and reset the worktree`);
+  return error;
 }
 
 /**
@@ -794,10 +827,14 @@ function runLocked({ repo, card, config, baseSha, baseBranch, branch, wt, pr, me
           }
         }
       }
+      // A blocked worker stops the run: its edits on the card's branch are committed, never left dirty (REQ-RUN-44).
+      if (w.status === 'blocked' && onBranch(wt, branch)) parkLeftovers(wt, card, attempt, branch, log);
       Object.assign(row, { workerStatus: w.status, usage: w.usage, cost: w.cost, durationMs: w.durationMs });
       runCost = runCost !== null && typeof w.cost === 'number' ? runCost + w.cost : null;
       if (blocked === null) {
-        commitError = commitError ?? commitLeftovers(wt, card, attempt, branch);
+        commitError =
+          commitError ??
+          (KEEP_DIRTY.has(w.status) ? commitLeftovers(wt, card, attempt, branch) : parkLeftovers(wt, card, attempt, branch, log));
         const gateStart = Date.now();
         const gateHead = (flaky = []) => gateWorktree({ wt, baseSha, card, config, t, log, flaky });
         receipt = commitError ? null : gateHead();
