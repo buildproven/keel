@@ -6,7 +6,7 @@ import { autoClean } from '../src/autoclean.js';
 import { expectedBranch, listParkedWorktrees, removeParkedWorktree } from '../src/clean.js';
 import { loadConfig, readTrustedCard } from '../src/config.js';
 import { branchCard, defaultBase, findDefaultBase } from '../src/defaults.js';
-import { doctor, keelGateRequired, mergeReadiness } from '../src/doctor.js';
+import { doctor, keelGateRequired, mergeReadiness, setupAdvice } from '../src/doctor.js';
 import { git } from '../src/git.js';
 import { dora, formatDora } from '../src/dora.js';
 import { escapedDefects, formatEscaped } from '../src/escaped.js';
@@ -269,6 +269,7 @@ if (values.version && command) {
       }
       process.exitCode = rows.every((r) => r.pass || r.kind === 'acceptance') ? 0 : 1;
       const config = loadConfig(repo, base);
+      for (const w of setupAdvice(config)) log(`WARN ${w}`); // REQ-CLI-15: never fails the doctor
       // Merges go to the default branch, so read its protection, not the checked-out branch's (REQ-CLI-4).
       const target = values.base ?? findDefaultBase(repo) ?? 'HEAD';
       const branch = target === 'HEAD' ? git(['symbolic-ref', '--short', 'HEAD'], repo).trim() : target.replace(/^origin\//, '');
