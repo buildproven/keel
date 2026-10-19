@@ -133,7 +133,15 @@ export function linearHttpClient() {
           (e) => e.message,
         );
         if (!linked) continue;
-        await gql(apiKey, DELETE_ISSUE, { id });
+        const undone = await gql(apiKey, DELETE_ISSUE, { id }).then(
+          (d) => (d.issueDelete.success ? null : 'Linear refused the delete'),
+          (e) => e.message,
+        );
+        // An unlinked follow-up that stays would be deduped by title on retry: say so, so a human removes it.
+        if (undone)
+          throw new Error(
+            `could not mark follow-up ${id} blocked by ${blocker} (${linked}); could not delete ${id} (${undone}); delete it by hand`,
+          );
         throw new Error(`could not mark follow-up ${id} blocked by ${blocker} (${linked}); deleted ${id} so the next poll files it again`);
       }
       return id;
