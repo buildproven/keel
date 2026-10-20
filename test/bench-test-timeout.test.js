@@ -123,3 +123,31 @@ test('REQ-BENCH-2 when the process that ran test.sh is terminated, the container
     calls(f.log).join('\n'),
   );
 });
+
+// A watchdog `sleep` that misses its TERM (the signal lands between `sleep &` and `nap=$!`) must not outlive the
+// script and hold the caller's output pipes open: before the fix a 1800 s default made this test hang in CI.
+const DEAF_SLEEP = `#!/bin/sh
+echo $$ >> "$FAKE_DOCKER_LOG.sleep.pids"
+trap '' TERM
+exec /bin/sleep "$1"
+`;
+
+test('REQ-BENCH-3 when test.sh exits, no watchdog sleep outlives it by more than a few seconds, even one that ignores TERM', async (t) => {
+  const f = fixture();
+  write(f.dir, { 'fakebin/sleep': DEAF_SLEEP });
+  chmodSync(join(f.bin, 'sleep'), 0o755);
+  t.after(() => {
+    for (const pid of calls(`${f.log}.sleep.pids`)) {
+      try {
+        process.kill(Number(pid), 'SIGKILL');
+      } catch (e) {
+        if (e.code !== 'ESRCH') throw e;
+      }
+    }
+  });
+  const t0 = Date.now();
+  const timer = new Promise((r) => setTimeout(() => r(null), 10_000).unref());
+  const result = await Promise.race([start(f, { KEEL_BENCH_TEST_TIMEOUT: '1800' }).done, timer]);
+  assert.ok(result, `test.sh output stayed open ${Date.now() - t0} ms: a watchdog sleep outlived the script`);
+  assert.equal(result.code, 0, result.output);
+});

@@ -33,12 +33,16 @@ name="keel-bench-$$-$(date +%s)"
 docker run --rm --name "$name" --platform linux/amd64 -e SETUPTOOLS_SCM_PRETEND_VERSION=99.0 -v "$here":/testbed "$IMAGE" \
   timeout "$limit" bash -c "source /opt/miniconda3/bin/activate && conda activate testbed && cd /testbed && $install; $RUNNER $targets" &
 run=$!
-# The watchdog kills the container from the host too, in case the client or the emulated timeout hangs.
+# The watchdog kills the container from the host too, in case the client or the emulated timeout hangs. It polls the
+# client once a second instead of one long sleep: a missed TERM then leaves at most a 1 s sleep, never one that holds
+# the caller's output open for the whole limit (REQ-BENCH-3).
 (
-  trap 'kill "$nap" 2>/dev/null; exit 0' TERM
-  sleep "$limit" &
-  nap=$!
-  wait "$nap"
+  elapsed=0
+  while [ "$elapsed" -lt "$limit" ]; do
+    sleep 1
+    kill -0 "$run" 2>/dev/null || exit 0
+    elapsed=$((elapsed + 1))
+  done
   echo "keel-bench: tests exceeded $limit s (KEEL_BENCH_TEST_TIMEOUT); killing container $name" >&2
   docker kill "$name" >/dev/null
 ) &

@@ -250,6 +250,7 @@ Benchmark (`bench/swebench/`)
 
 - **REQ-BENCH-1** When `bench/swebench/test.sh` runs the tests, it shall start the container with a name (`keel-bench-<pid>-<time>`) and a time limit (env `KEEL_BENCH_TEST_TIMEOUT`, default 1800 s; a value that is not a positive integer is an error, exit 2): the command in the container runs under `timeout`, and a host-side watchdog kills the named container when the limit is hit. The script shall then exit non-zero. Rationale: on 2026-10-16, five SWE-bench containers with a hung `bin/test` under qemu were still running 3.5 days after they started, because `docker run --rm` had no name and no limit (BUI-1323).
 - **REQ-BENCH-2** When the process that ran `test.sh` is terminated (TERM, INT, HUP), the script shall kill the container it started (by name) within 30 s and exit non-zero.
+- **REQ-BENCH-3** When `test.sh` exits, its watchdog shall leave no process that runs on for more than a few seconds, even when a signal to the watchdog is missed: the watchdog polls the container client once a second instead of one long `sleep`. Rationale: a TERM between `sleep &` and `nap=$!` orphaned `sleep 1800`, which held the caller's output pipes open, so CI hung on `REQ-BENCH-1` for 20 minutes (PR #33, PR #39).
 
 Traceability (V-model, checked by machine)
 
