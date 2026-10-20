@@ -47,6 +47,7 @@ const SUITE = 'for f in test/*.js; do echo "$f"; node "$f" || exit 1; done';
 const FILES = 'for f in {files}; do node "$f" || exit 1; done';
 // Fails on the buggy base add(), passes on the fixed one, and names its own path when it fails.
 const RED_ON_BASE = "import assert from 'node:assert';\nimport { add } from '../src/add.js';\nassert.strictEqual(add(1, 1), 2);\n";
+const PASSING_TEST = "import assert from 'node:assert';\nassert.ok(true);\n";
 
 test('REQ-GATE-52 a base red only in a test file the card fixes passes the red proof as base-red-fixed, unrecorded', () => {
   const { dir, base } = fixtureRepo({ ...BUGGY, 'test/a.test.js': RED_ON_BASE });
@@ -64,6 +65,21 @@ test('REQ-GATE-52 a base red in a test file the card does not touch fails as bas
   const { dir, base } = fixtureRepo({ ...BUGGY, 'test/a.test.js': RED_ON_BASE, 'test/b.test.js': RED_ON_BASE });
   commit(dir, { ...FIXED_SRC, 'test/a.test.js': `${RED_ON_BASE}assert.strictEqual(add(2, 3), 5);\n` });
   const r = gate({ repo: dir, base, card: card('kind: bug\nsize: S\nallowEdits: test/a.test.js'), config: fixtureConfig() });
+  const proof = r.results.find((x) => x.name === 'red-proof');
+  assert.deepEqual(proof.problems, [{ rule: 'baseline-not-green', files: ['test/a.test.js', 'test/b.test.js'] }]);
+});
+
+test('REQ-GATE-52 baseline-not-green names only the files that fail, not the passing files a runner lists', () => {
+  // SUITE echoes every file it runs: test/0-failed.test.js passes on base, so only its echo names it.
+  const { dir, base } = fixtureRepo({
+    ...BUGGY,
+    'test/0-failed.test.js': PASSING_TEST,
+    'test/a.test.js': RED_ON_BASE,
+    'test/b.test.js': RED_ON_BASE,
+  });
+  commit(dir, { ...FIXED_SRC, 'test/a.test.js': `${RED_ON_BASE}assert.strictEqual(add(2, 3), 5);\n` });
+  const config = fixtureConfig({ testCommand: SUITE, checks: { test: SUITE } });
+  const r = gate({ repo: dir, base, card: card('kind: bug\nsize: S\nallowEdits: test/a.test.js'), config });
   const proof = r.results.find((x) => x.name === 'red-proof');
   assert.deepEqual(proof.problems, [{ rule: 'baseline-not-green', files: ['test/a.test.js', 'test/b.test.js'] }]);
 });
@@ -94,6 +110,27 @@ test('REQ-GATE-52 a targeted base baseline that fails without naming a file it r
   const r = gate({ repo: dir, base, card: card('kind: bug\nsize: S\nallowEdits: test/a.test.js'), config });
   assert.equal(r.results.find((x) => x.name === 'targeted-on-head').targeted, true);
   assert.deepEqual(rules(r), ['baseline-not-green']);
+});
+
+test('REQ-GATE-52 a targeted base baseline counts a file as failing only on a line with a failure mark or location', () => {
+  // On base the files command prints a line naming each file and exits 1; on head it runs them.
+  for (const [line, rule] of [
+    ['', 'baseline-not-green'],
+    ['FAIL ', null],
+  ]) {
+    const { dir, base } = fixtureRepo({ ...BUGGY, 'test/a.test.js': RED_ON_BASE });
+    commit(dir, { ...FIXED_SRC, 'test/a.test.js': `${RED_ON_BASE}assert.strictEqual(add(2, 3), 5);\n` });
+    const files = `grep -q "a - b" src/add.js && { echo ${line}{files}; exit 1; }; ${FILES}`;
+    const config = fixtureConfig({ testCommand: SUITE, checks: { test: SUITE }, testFilesCommand: files });
+    const r = gate({ repo: dir, base, card: card('kind: bug\nsize: S\nallowEdits: test/a.test.js'), config });
+    const proof = r.results.find((x) => x.name === 'red-proof');
+    assert.deepEqual(
+      proof.problems.map((p) => p.rule),
+      rule ? [rule] : [],
+      JSON.stringify(line),
+    );
+    if (!rule) assert.deepEqual(proof.baseRedFixed, ['test/a.test.js']);
+  }
 });
 
 test('REQ-GATE-52 a targeted base baseline red only in the files the card fixes passes as base-red-fixed', () => {
