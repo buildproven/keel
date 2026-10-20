@@ -641,7 +641,6 @@ function fixFindings({ wt, card, config, t, attempt, branch, baseSha, receipt, n
     builderHash,
     role: 'fix-findings',
     notes: notes.length,
-    gatePass: true, // the attempt is accepted whatever the turn does (REQ-RUN-37)
     head: passed,
     continued: true,
   };
@@ -693,7 +692,9 @@ function fixFindings({ wt, card, config, t, attempt, branch, baseSha, receipt, n
     Object.assign(out, { outcome: 'restore-failed', error: `restore: ${error.message}`.slice(0, 2000) });
     throw error;
   } finally {
-    appendAttempt({ usage: null, durationMs: 0, workerStatus: 'harness-error', ...out });
+    // Only a fixed, unchanged, or successfully reverted worktree retains an accepted receipt (REQ-RUN-37).
+    const gatePass = ['fixed', 'unchanged', 'reverted'].includes(out.outcome);
+    appendAttempt({ usage: null, durationMs: 0, workerStatus: 'harness-error', ...out, gatePass });
   }
   return { receipt: accepted, cost: out.cost ?? null };
 }
