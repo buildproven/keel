@@ -255,11 +255,15 @@ const namesPath = (out, path, dir) =>
   new RegExp(`(^|[^\\w./-]|${escapeRe(`${dir}/`)}|${escapeRe(`${realpathSync(dir)}/`)})${escapeRe(path)}(?![\\w./-])`, 'm').test(out);
 const quote = (s) => `'${s.replaceAll("'", "'\\''")}'`;
 /**
- * The test command for just `files` (REQ-GATE-33): each `{files}` becomes the shell-quoted paths. Paths come from git,
- * never from card text; one that starts with `-` gets `./` so a runner cannot read it as an option.
+ * A test command for just `files` (REQ-GATE-10, REQ-GATE-33): each `{files}` becomes the shell-quoted paths. Red-proof
+ * paths come from git and held-out paths from the private directory, never card text; a leading `-` gets `./`.
  */
-const filesCommand = (config, files) =>
-  config.testFilesCommand.replaceAll('{files}', files.map((p) => quote(p.startsWith('-') ? `./${p}` : p)).join(' '));
+const commandForFiles = (command, files) =>
+  command.replaceAll('{files}', files.map((p) => quote(p.startsWith('-') ? `./${p}` : p)).join(' '));
+const filesCommand = (config, files) => commandForFiles(config.testFilesCommand, files);
+/** The held-out command, targeted only when heldOutCommand was omitted from keel.json (REQ-GATE-10, REQ-RUN-17). */
+export const heldOutTestCommand = (config, files) =>
+  config.heldOutFilesCommand ? commandForFiles(config.heldOutFilesCommand, files) : config.heldOutCommand;
 const proofFiles = ({ changed, config }) =>
   changed.filter((f) => f.status !== 'D' && matchesAny(f.path, config.testGlobs)).map((f) => f.path);
 
@@ -565,7 +569,7 @@ function runHeldOut({ repo, card, config }, ref, files) {
       if (existsSync(join(dir, rel))) return { error: 'held-out-overwrite' };
       if (writeInside(dir, rel, (t) => copyFileSync(join(card.heldOut, rel), t))) return { error: 'unsafe-path' };
     }
-    return shell(config.heldOutCommand, dir, config);
+    return shell(heldOutTestCommand(config, files), dir, config);
   });
 }
 
