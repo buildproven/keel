@@ -442,3 +442,27 @@ test('REQ-GATE-19 a head with no change against base fails as no-change, whateve
     assert.deepEqual(rules(gate({ repo: dir, base, card: card(`kind: ${kind}\nsize: S`), config: fixtureConfig() })), ['no-change']);
   }
 });
+
+test('REQ-GATE-51 a test runner that hides file names under a coding agent still gets a targeted red proof', () => {
+  const { dir, base } = fixtureRepo();
+  commit(dir, { ...REGRESSION_TEST, ...FIXED_SRC });
+  // Like vitest 5 with std-env: it names each passing file only when no coding agent is detected.
+  const suite = 'for f in test/*.js; do [ -n "$CLAUDECODE" ] || echo "$f"; node "$f" || exit 1; done';
+  const config = fixtureConfig({
+    checks: { test: suite },
+    testCommand: suite,
+    testFilesCommand: 'for f in {files}; do node "$f" || exit 1; done',
+  });
+  const saved = process.env.CLAUDECODE;
+  process.env.CLAUDECODE = '1';
+  try {
+    const r = gate({ repo: dir, base, card: card(), config });
+    assert.equal(r.pass, true, JSON.stringify(r.results, null, 2));
+    const row = r.results.find((x) => x.name === 'targeted-on-head');
+    assert.equal(row.targeted, true, JSON.stringify(row));
+    assert.equal(row.unseen, undefined);
+  } finally {
+    if (saved === undefined) delete process.env.CLAUDECODE;
+    else process.env.CLAUDECODE = saved;
+  }
+});
