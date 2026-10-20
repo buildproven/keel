@@ -194,8 +194,8 @@ function reason(r, down) {
   };
 }
 
-/** A reviewer that spent tokens at no known price: the summed cost is then a lower bound (REQ-LED-12, -13). */
-const unpriced = (w) => Boolean(w.usage) && typeof w.cost !== 'number';
+/** A reviewer that ran at no known cost (no price, or no usage to price): the summed cost is then a lower bound (REQ-LED-12, -13). */
+const unpriced = (w) => typeof w.cost !== 'number';
 const addCost = (a, b) => (typeof a === 'number' || typeof b === 'number' ? (a ?? 0) + (b ?? 0) : null);
 
 /**
