@@ -14,7 +14,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { candidateEnv } from './env.js';
+import { checkEnv } from './env.js';
 import { linkedDirs } from './config.js';
 import { outLine, reviewStage, testEditStage } from './review.js';
 import { fixedSlots, withGateSlot } from './slots.js';
@@ -244,8 +244,8 @@ export function staticStage({ repo, base, card, config }) {
   return staticChecks({ repo, base: baseSha, from, head, card, config, changed: changedFiles(from, head, repo) });
 }
 
-/** Configured commands run without secret-looking environment variables (REQ-RUN-12). */
-export const shell = (command, dir, config) => sh(command, dir, { env: candidateEnv(process.env, config.workerEnvAllow) });
+/** Configured commands run without secret-looking (REQ-RUN-12) or coding-agent (REQ-GATE-51) environment variables. */
+export const shell = (command, dir, config) => sh(command, dir, { env: checkEnv(process.env, config.workerEnvAllow) });
 
 /**
  * Whether a runner's output names the repo file `path` (REQ-GATE-33): the path as written, or under the checkout `dir`,
@@ -519,7 +519,7 @@ function mutation(ctx) {
   return withTempWorktree(repo, head, (dir) => {
     const installed = prepareCheckout(repo, dir, config);
     if (installed) return { ...fail('mutation', 'install-failed'), output: tail(installed.out) };
-    const env = { ...candidateEnv(process.env, config.workerEnvAllow), KEEL_CHANGED_FILES: files.join('\n') };
+    const env = { ...checkEnv(process.env, config.workerEnvAllow), KEEL_CHANGED_FILES: files.join('\n') };
     return headResult('mutation', sh(config.mutation, dir, { env }), 'mutants-survived');
   });
 }
