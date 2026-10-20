@@ -566,21 +566,35 @@ function enableAutoMerge(wt, prResult, head) {
 
 /** Gate the worktree's HEAD for this card with the builder's cross-family reviewer. */
 const gateWorktree = ({ wt, baseSha, card, config, t, log, flaky = [] }) => {
-  const receipt = gate({
-    flaky,
-    repo: wt,
-    base: baseSha,
-    card,
-    config,
-    receiptDir: join(stateDir(), 'receipts'),
-    cacheDir: join(stateDir(), 'cache'),
-    reviewer: reviewerFor(config, t),
-    spendFile: spendFile(),
-    slotDir: join(stateDir(), 'locks'), // REQ-GATE-29
-    log,
-  });
-  for (const line of receipt.improve ?? []) log(line); // REQ-GATE-46
-  return receipt;
+  let receipt;
+  try {
+    receipt = gate({
+      flaky,
+      repo: wt,
+      base: baseSha,
+      card,
+      config,
+      receiptDir: join(stateDir(), 'receipts'),
+      cacheDir: join(stateDir(), 'cache'),
+      reviewer: reviewerFor(config, t),
+      spendFile: spendFile(),
+      slotDir: join(stateDir(), 'locks'), // REQ-GATE-29
+      log,
+    });
+    for (const line of receipt.improve ?? []) log(line); // REQ-GATE-46
+    return receipt;
+  } catch (error) {
+    // REQ-RUN-38: keep the completed gate evidence if a later improvement log fails.
+    if (receipt && error && (typeof error === 'object' || typeof error === 'function')) error.gateReceipt ??= receipt;
+    throw error;
+  }
+};
+
+/** Record gate time and any completed review even when persistence after the review throws (REQ-RUN-38). */
+const recordGateAccounting = (row, start, receipt) => {
+  row.gateMs = Date.now() - start;
+  const spent = reviewSpend(receipt?.results ?? []);
+  if (spent) Object.assign(row, spent);
 };
 
 /** Everything a run spent so far: attempts, held-out authoring, review, findings turns (REQ-RUN-22); unpriced rows cannot count. */
@@ -633,6 +647,7 @@ function fixFindings({ wt, card, config, t, attempt, branch, baseSha, receipt, n
   };
   let why;
   let accepted = receipt;
+  let gateStart = null;
   try {
     const w = runWorker(t, fixFindingsText(notes), wt, config, session.id);
     Object.assign(out, { workerStatus: w.status, usage: w.usage, cost: w.cost, durationMs: w.durationMs });
@@ -643,10 +658,9 @@ function fixFindings({ wt, card, config, t, attempt, branch, baseSha, receipt, n
     why = w.status !== 'ok' ? `worker ${w.status}` : blocked !== null ? 'the worker blocked' : commitLeftovers(wt, card, attempt, branch);
     if (!why && revParse('HEAD', wt) === passed && !isDirty(wt)) out.outcome = 'unchanged';
     if (!why && !out.outcome) {
-      const start = Date.now();
+      gateStart = Date.now();
       const next = gateWorktree({ wt, baseSha, card, config, t, log });
-      out.gateMs = Date.now() - start;
-      Object.assign(out, reviewSpend(next.results)); // REQ-LED-13
+      recordGateAccounting(out, gateStart, next); // REQ-LED-13
       if (next.pass) {
         Object.assign(out, { outcome: 'fixed', head: next.head });
         accepted = next;
@@ -659,6 +673,7 @@ function fixFindings({ wt, card, config, t, attempt, branch, baseSha, receipt, n
   } catch (error) {
     // REQ-RUN-37 allows this catch: an error in the optional turn (worker, commit, re-gate) must not lose the attempt
     // that already passed. It is logged and recorded on the row, never swallowed silently.
+    if (gateStart !== null && out.gateMs === undefined) recordGateAccounting(out, gateStart, error.gateReceipt);
     why = `error: ${error.message}`;
     out.error = error.message.slice(0, 2000);
   }
