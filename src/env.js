@@ -18,13 +18,28 @@ export function scrubEnv(env, allow = []) {
 
 let emptyGhDir = null;
 const madeGhDirs = [];
+const removeGhDirs = () => madeGhDirs.forEach((dir) => rmSync(dir, { recursive: true, force: true }));
+
+/**
+ * On SIGINT or SIGTERM, remove the dirs, then end as the signal would have (REQ-RUN-47). A listener replaces Node's
+ * default exit, so the signal is raised again once ours is gone; when another listener owns the signal, it decides.
+ */
+function onSignal(signal) {
+  removeGhDirs();
+  if (!process.listenerCount(signal)) process.kill(process.pid, signal);
+}
+
 /**
  * An empty dir for GH_CONFIG_DIR; a new one if candidate code wrote into the last one. A replaced dir is kept until
- * exit, since a candidate process started with it may still run; the 'exit' hook removes every dir made (REQ-RUN-40).
+ * exit, since a candidate process started with it may still run; the 'exit' hook removes every dir made (REQ-RUN-40),
+ * and so does a SIGINT or SIGTERM that ends the process (REQ-RUN-47).
  */
 function noGhConfig() {
   if (!emptyGhDir || readdirSync(emptyGhDir).length) {
-    if (!madeGhDirs.length) process.on('exit', () => madeGhDirs.forEach((dir) => rmSync(dir, { recursive: true, force: true })));
+    if (!madeGhDirs.length) {
+      process.on('exit', removeGhDirs);
+      for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, onSignal);
+    }
     emptyGhDir = mkdtempSync(join(tmpdir(), 'keel-nogh-'));
     madeGhDirs.push(emptyGhDir);
   }
