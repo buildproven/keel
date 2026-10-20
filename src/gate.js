@@ -760,17 +760,23 @@ export function gate({
   receipt.waitMs = waitMs;
   receipt.timing = timingLine(results, waitMs); // REQ-GATE-45, REQ-GATE-47
   if (receiptDir) {
-    mkdirSync(receiptDir, { recursive: true });
-    writeFileSync(join(receiptDir, `${card.id}-${head}-${Date.now()}.json`), `${JSON.stringify(receipt, null, 2)}\n`);
-    // Stage times per repository beside the receipts, and what to speed up (REQ-GATE-46).
-    receipt.improve = recordGateTimes(join(dirname(receiptDir), 'gate-times.jsonl'), {
-      repo,
-      card: card.id,
-      head,
-      pass: receipt.pass,
-      results,
-      waitMs,
-    });
+    try {
+      mkdirSync(receiptDir, { recursive: true });
+      writeFileSync(join(receiptDir, `${card.id}-${head}-${Date.now()}.json`), `${JSON.stringify(receipt, null, 2)}\n`);
+      // Stage times per repository beside the receipts, and what to speed up (REQ-GATE-46).
+      receipt.improve = recordGateTimes(join(dirname(receiptDir), 'gate-times.jsonl'), {
+        repo,
+        card: card.id,
+        head,
+        pass: receipt.pass,
+        results,
+        waitMs,
+      });
+    } catch (error) {
+      // REQ-RUN-38: callers must still account for a completed review when only receipt persistence failed.
+      if (error && (typeof error === 'object' || typeof error === 'function')) error.gateReceipt = receipt;
+      throw error;
+    }
   }
   return receipt;
 }
