@@ -467,10 +467,35 @@ function testEditProof(ctx) {
 /** The cross-family verdict on edited existing tests (REQ-GATE-44), on the candidate's own diff (REQ-GATE-40). */
 const testEdits = (ctx) => (ctx.testEdits?.length ? testEditStage({ ...ctx, files: ctx.testEdits }) : null);
 
-const listFiles = (dir) =>
+export const listFiles = (dir) =>
   readdirSync(dir, { recursive: true, withFileTypes: true })
     .filter((e) => e.isFile())
     .map((e) => relative(dir, join(e.parentPath, e.name)));
+
+// A failing test as the usual runners print it (REQ-RUN-46): pytest summary, unittest, TAP, go test, then the spec
+// reporters' fail marks (node:test, vitest, playwright, jest). Output markers only; the core still knows no language.
+const FAILED_TEST = [
+  /^(?:FAILED|ERROR) (\S+)/,
+  /^(?:FAIL|ERROR): (.+)$/,
+  /^not ok \d+ - (.+?)(?: # .*)?$/,
+  /^--- FAIL: (\S+)/,
+  /^[✖✗✘×●] +(.+)$/u,
+];
+const DURATION = /\s*\(\d+(?:\.\d+)?\s*m?s\)$/;
+
+/** The failing test names in a test run's output (REQ-RUN-46), without timings; a header such as `failing tests:` is none. */
+export function failingTests(out) {
+  const names = new Set();
+  for (const raw of out.split('\n')) {
+    const line = raw.trim();
+    const name = FAILED_TEST.map((re) => re.exec(line)?.[1])
+      .find(Boolean)
+      ?.replace(DURATION, '')
+      .trim();
+    if (name && !name.endsWith(':')) names.add(name);
+  }
+  return [...names];
+}
 
 /** Copy held-out files into a checkout of ref and run the held-out command. Never overwrites a file. */
 function runHeldOut({ repo, card, config }, ref, files) {
