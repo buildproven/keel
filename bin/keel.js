@@ -27,7 +27,7 @@ import { poll, pollExitCode, resolveProject } from '../src/poll.js';
 import { describeStop, run } from '../src/run.js';
 import { sizeWarning, stackWarnings } from '../src/stack.js';
 import { UsageError } from '../src/usage.js';
-import { formatValue, value } from '../src/value.js';
+import { formatValue, inWindow, value } from '../src/value.js';
 
 const USAGE = `keel — quality gate that picks the model
 
@@ -50,9 +50,10 @@ const USAGE = `keel — quality gate that picks the model
                                                                pick, build, and report on the next N Linear issues (needs LINEAR_API_KEY);
                                                                --file-only files queued follow-ups and builds nothing
   keel doctor [--repo <dir>] [--base <ref>]                  run the configured checks on a clean checkout of base; find red ones before a card does
-  keel report [--escaped] [--dora] [--value]                  ledger summary; --escaped lists fix: commits on files of merged
+  keel report [--escaped] [--dora] [--value [--days N]]       ledger summary; --escaped lists fix: commits on files of merged
                                                                Keel changes; --dora prints DORA metrics per repo (30 days);
-                                                               --value: finished cards, human touch rate, cost, later fixes
+                                                               --value: finished cards, human touch rate, cost, later fixes,
+                                                               all over the last N days (default 30)
   keel audit [--limit N] [--repo <dir>]                      review PRs merged in the last 30 days (up to N, default
                                                                500) that only a fallback reviewer saw, with the reviewer
                                                                that was out; findings join the found-work queue under the
@@ -83,6 +84,7 @@ try {
       escaped: { type: 'boolean' },
       dora: { type: 'boolean' },
       value: { type: 'boolean' },
+      days: { type: 'string' },
       project: { type: 'string' },
       limit: { type: 'string' },
       issue: { type: 'string' },
@@ -136,6 +138,8 @@ if (values.version && command) {
     if (values.author !== undefined && command !== 'gate') throw new UsageError('--author is an option of gate only');
     if (values.status && command !== 'gate') throw new UsageError('--status is an option of gate only');
     if (values['wait-review'] !== undefined && command !== 'gate') throw new UsageError('--wait-review is an option of gate only');
+    if (values.days !== undefined && !(command === 'report' && values.value))
+      throw new UsageError('--days is an option of report --value only');
     const waitReviewHours = values['wait-review'] === undefined ? 0 : Number(values['wait-review']);
     if (!(waitReviewHours >= 0) || (values['wait-review'] !== undefined && !(waitReviewHours > 0)))
       throw new UsageError('--wait-review must be a positive number of hours');
@@ -328,11 +332,20 @@ if (values.version && command) {
         log(`removed: ${w.path}`);
       }
     } else if (command === 'report') {
-      process.stdout.write(`${formatReport(report(readLedger()))}\n`);
-      process.stdout.write(`${formatSlowest(slowestChecks(readJsonl(join(stateDir(), 'gate-times.jsonl'))))}\n`); // REQ-LED-18
+      // With --value every line uses one window, --days N or 30 (REQ-LED-19); without it the summary is all-time.
+      const windowDays = values.days === undefined ? 30 : Number(values.days);
+      if (values.days !== undefined && !/^[1-9][0-9]*$/.test(values.days)) throw new UsageError('--days must be a positive integer');
+      const now = new Date();
+      const windowed = (rows) => (values.value ? inWindow(rows, windowDays, now) : rows);
+      if (values.value)
+        process.stdout.write(
+          `Window: last ${windowDays} days (since ${new Date(now.getTime() - windowDays * 86400000).toISOString().slice(0, 10)})\n`,
+        );
+      process.stdout.write(`${formatReport(report(windowed(readLedger())))}\n`);
+      process.stdout.write(`${formatSlowest(slowestChecks(windowed(readJsonl(join(stateDir(), 'gate-times.jsonl')))))}\n`); // REQ-LED-18
       if (values.escaped) process.stdout.write(`${formatEscaped(escapedDefects(readLedger()))}\n`);
       if (values.dora) process.stdout.write(`${formatDora(dora(readLedger()))}\n`);
-      if (values.value) process.stdout.write(`${formatValue(value(readLedger()))}\n`);
+      if (values.value) process.stdout.write(`${formatValue(value(readLedger(), { windowDays, now }))}\n`);
     } else {
       throw new UsageError(`unknown command "${command}"`);
     }

@@ -11,12 +11,23 @@ const DAY_MS = 86400000;
 const pct = (n, d) => `${Math.round((n / d) * 100)}%`;
 
 /**
+ * The rows whose `at` is within the last `windowDays` days (REQ-LED-19). Every row Keel writes has `at`; a row with
+ * none cannot be dated and is kept, so a hand-built row still counts.
+ */
+export function inWindow(rows, windowDays, now = new Date()) {
+  const since = now.getTime() - windowDays * DAY_MS;
+  return rows.filter((r) => r.at === undefined || Date.parse(r.at) >= since);
+}
+
+/**
  * Is Keel worth it (REQ-LED-8, DESIGN §8)? The same escaped-defect measure (REQ-LED-6, line-level by REQ-LED-10) for Keel merges and for every
  * other change on the same default branches over the same period, so Keel is judged against the owner's own
  * baseline, not an absolute bar; plus what an accepted card cost. It decides nothing: the owner reads it.
+ * Spend and cost by repo count only rows inside the window (REQ-LED-19).
  */
 export function value(ledgerRows, { windowDays = 30, prsFor, now = new Date() } = {}) {
   const rows = withReviewUsage(ledgerRows);
+  const recent = inWindow(rows, windowDays, now);
   const { merged } = escapedDefects(rows, { windowDays }); // each merge commit once (REQ-LED-6)
   const keelShas = new Set(merged.map((m) => m.mergeSha));
   const other = { changes: 0, followed: 0 };
@@ -34,9 +45,9 @@ export function value(ledgerRows, { windowDays = 30, prsFor, now = new Date() } 
   return {
     keel: { merged: merged.length, followed: merged.filter((m) => m.candidates.length || m.reverts.length).length },
     other,
-    spend: report(rows),
+    spend: report(recent), // REQ-LED-19: the same window as the lines above and below
     touch: humanTouch({ pollRows: readJsonl(pollLedgerFile()), ledgerRows: rows, prsFor, windowDays, now }), // REQ-LED-16
-    routing: routedCost(rows),
+    routing: routedCost(recent),
   };
 }
 
