@@ -55,6 +55,17 @@ function advice(rows, config, dir, testInChecks, slowSuiteMs) {
 }
 
 /**
+ * Setup advice from the config alone (REQ-CLI-15): without testFilesCommand, red proof reruns the whole suite on
+ * base for every bug or feature gate (REQ-GATE-33). Warnings only; they never fail the doctor.
+ */
+export function setupAdvice(config) {
+  if (config.testFilesCommand) return [];
+  return [
+    'testFilesCommand is not set: red proof reruns the whole test suite on every bug or feature gate; set it in keel.json to a command that runs only {files} (for example "node --test {files}" or "python -m pytest {files}")',
+  ];
+}
+
+/**
  * Required status checks on a branch, from classic branch protection and from rulesets (REQ-CLI-4). Without any,
  * GitHub auto-merge would merge at once, before CI, so a gh error or a 404 counts as none (fail safe).
  */
