@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, openSync, readSync, closeSync, readdirSync, statSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { candidateEnv } from './env.js';
@@ -153,4 +153,28 @@ export function nextReset(plan, limits) {
     .filter((s) => typeof s === 'number')
     .sort((a, b) => a - b)[0];
   return at ? new Date(at * 1000).toString().slice(0, 21) : null;
+}
+
+/** A plan reading this old or older is not used by the review window (REQ-PLAN-5): windows move as sessions work. */
+export const PLAN_MAX_AGE_MS = 30 * 60 * 1000;
+
+const planFile = (dir) => join(dir, 'plan.json');
+
+/** Keep a plan reading with its time in the state dir, so every gate and poll of the machine shares it (REQ-PLAN-5). */
+export function savePlan(plan, dir, now = new Date()) {
+  const file = planFile(dir);
+  const all = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : {};
+  for (const [family, w] of Object.entries(plan)) all[family] = w ? { ...w, at: now.toISOString() } : null;
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(file, `${JSON.stringify(all, null, 1)}\n`);
+}
+
+/** A family's saved plan windows when the reading is fresh, a window past its reset reading 0; else null. */
+export function cachedPlan(dir, family, now = new Date()) {
+  const file = planFile(dir);
+  const w = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8'))[family] : null;
+  if (!w?.at || now.getTime() - Date.parse(w.at) >= PLAN_MAX_AGE_MS) return null;
+  const s = now.getTime() / 1000;
+  const fresh = (x) => (x ? { used: typeof x.resetsAt === 'number' && x.resetsAt <= s ? 0 : x.used, resetsAt: x.resetsAt } : null);
+  return { fiveHour: fresh(w.fiveHour), week: fresh(w.week) };
 }

@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { appendJsonl, readJsonl, stateDir } from './ledger.js';
+import { cachedPlan } from './plan.js';
 
 /** A window with this share of its tokens left or less counts as nearly used (REQ-GATE-24). */
 export const WINDOW_RESERVE = 0.1;
@@ -46,6 +47,11 @@ export function learnLimit(file, family, now = new Date()) {
  */
 export function windowUse(file, family, windows, now = new Date()) {
   if (!file) return null;
+  // The provider's own meter, when a fresh reading exists, wins over any token estimate (REQ-PLAN-5): on 2026-10-20 a
+  // learned limit of 454k tokens sent every review to the fallback while Codex reported 7 % of its window used.
+  const plan = cachedPlan(dirname(file), family, now);
+  const pct = plan && Math.max(...[plan.fiveHour, plan.week].filter(Boolean).map((w) => w.used));
+  if (Number.isFinite(pct)) return { family, plan: true, used: pct, limit: 100, remaining: 100 - pct };
   const set = windows[family];
   const learned = set ? null : readJson(limitsFile(file))[family];
   const w = set ?? (learned ? { hours: learned.hours, tokens: learned.tokens } : null);
@@ -62,9 +68,11 @@ export const nearlyUsed = (use) => use !== null && use.remaining <= use.limit * 
  * says why the reviewer still reviews.
  */
 export const windowLine = (use, { first, reviewer, why = 'no fallback has room' }) =>
-  `review window ${use.family}${use.learned ? ' (learned)' : ''}: ~${use.remaining} of ${use.limit} tokens left in ${use.hours}h${
-    nearlyUsed(use) ? ` (nearly used: ${first ? `fallback ${first} reviews first` : `${why}, ${reviewer} still reviews`})` : ''
-  }`;
+  `review window ${use.family}${
+    use.plan
+      ? ` (plan): ${use.used}% used`
+      : `${use.learned ? ' (learned)' : ''}: ~${use.remaining} of ${use.limit} tokens left in ${use.hours}h`
+  }${nearlyUsed(use) ? ` (nearly used: ${first ? `fallback ${first} reviews first` : `${why}, ${reviewer} still reviews`})` : ''}`;
 
 /**
  * `keel doctor`'s window rows (REQ-GATE-27): one per reviewer family of the tiers whose window is set or learned.
