@@ -47,3 +47,34 @@ export function candidateEnv(env, allow = []) {
   out.GIT_TERMINAL_PROMPT = '0';
   return out;
 }
+
+/**
+ * The names std-env (vitest's reporter choice) reads as a coding agent (REQ-GATE-51). Names only: std-env also matches
+ * patterns in PATH, EDITOR, and TERM_PROGRAM, which a command needs and Claude Code and Codex do not set that way.
+ */
+export const AGENT_ENV = [
+  'AI_AGENT',
+  'CLAUDECODE',
+  'CLAUDE_CODE',
+  'REPL_ID',
+  'GEMINI_CLI',
+  'CODEX_SANDBOX',
+  'CODEX_THREAD_ID',
+  'OPENCODE',
+  'AUGMENT_AGENT',
+  'GOOSE_PROVIDER',
+  'JUNIE_DATA',
+  'JUNIE_SHIM_PATH',
+  'CURSOR_AGENT',
+];
+
+/**
+ * The environment of a gate check, test, held-out, install, or mutation command (REQ-GATE-51): the candidate
+ * environment without the coding-agent variables, so a runner prints the same output whichever program started the
+ * gate. Workers keep them (they are the agent). Names in `allow` keep their real value.
+ */
+export function checkEnv(env, allow = []) {
+  const out = candidateEnv(env, allow);
+  for (const name of AGENT_ENV) if (!allow.includes(name)) delete out[name];
+  return out;
+}
