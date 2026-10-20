@@ -50,37 +50,59 @@ const REASONS = [
   'closed without a merge',
 ];
 
+/** `gh api graphql --paginate --slurp` of `query` with `vars` (`-f`, or `-F` for an Int): its pages. Throws with gh's reason. */
+function graphqlPages(repo, query, vars) {
+  const flags = Object.entries(vars).flatMap(([k, v]) => [typeof v === 'number' ? '-F' : '-f', `${k}=${v}`]);
+  const r = exec('gh', ['api', 'graphql', '--paginate', '--slurp', '-f', `query=${query}`, ...flags], repo);
+  if (r.status !== 0) throw new Error(`gh api graphql: ${(r.stderr || r.error?.message || '').trim().split('\n')[0]}`);
+  return JSON.parse(r.stdout);
+}
+
+const AUTHOR = 'author { __typename login }';
+const PAGE_INFO = 'pageInfo { hasNextPage endCursor }';
+
 /**
  * Open, merged, and closed PRs of the repo's GitHub remote with every review and comment author's GraphQL type, so a
- * bot (`Bot`) is told from a person (anything else, an unknown author included). Throws with gh's reason (REQ-LED-14).
+ * bot (`Bot`) is told from a person (anything else, an unknown author included). A PR with more than 100 comments or
+ * reviews has the rest read page by page, so no person past the first 100 is missed. Throws with gh's reason
+ * (REQ-LED-14).
  */
 export function githubPrs(repo) {
   const view = exec('gh', ['repo', 'view', '--json', 'nameWithOwner', '-q', '.nameWithOwner'], repo);
   if (view.status !== 0) throw new Error(`gh repo view: ${(view.stderr || view.error?.message || '').trim().split('\n')[0]}`);
   const [owner, name] = view.stdout.trim().split('/');
-  const author = 'author { __typename login }';
+  // gh --paginate follows the first pageInfo in the reply, so the PR list's comes before the nested ones.
   const query = `query($owner: String!, $name: String!, $endCursor: String) {
   repository(owner: $owner, name: $name) {
     pullRequests(first: 100, after: $endCursor) {
-      pageInfo { hasNextPage endCursor }
-      nodes { headRefName headRefOid state comments(first: 100) { nodes { ${author} } } reviews(first: 100) { nodes { ${author} } } }
+      ${PAGE_INFO}
+      nodes { number headRefName headRefOid state comments(first: 100) { ${PAGE_INFO} nodes { ${AUTHOR} } } reviews(first: 100) { ${PAGE_INFO} nodes { ${AUTHOR} } } }
     }
   }
 }`;
-  const r = exec(
-    'gh',
-    ['api', 'graphql', '--paginate', '--slurp', '-f', `query=${query}`, '-f', `owner=${owner}`, '-f', `name=${name}`],
-    repo,
-  );
-  if (r.status !== 0) throw new Error(`gh api graphql: ${(r.stderr || r.error?.message || '').trim().split('\n')[0]}`);
+  // The rest of one PR's comments or reviews, after the first page's cursor.
+  const rest = (number, field, after) =>
+    graphqlPages(
+      repo,
+      `query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) { ${field}(first: 100, after: $endCursor) { ${PAGE_INFO} nodes { ${AUTHOR} } } }
+  }
+}`,
+      { owner, name, number, endCursor: after },
+    ).flatMap((page) => page.data.repository.pullRequest[field].nodes);
+  const all = (p, field) => [
+    ...p[field].nodes,
+    ...(p[field].pageInfo?.hasNextPage ? rest(p.number, field, p[field].pageInfo.endCursor) : []),
+  ];
   const who = (n) => ({ type: n.author?.__typename ?? 'unknown', login: n.author?.login ?? null });
-  return JSON.parse(r.stdout)
+  return graphqlPages(repo, query, { owner, name })
     .flatMap((page) => page.data.repository.pullRequests.nodes)
     .map((p) => ({
       head: p.headRefName,
       headOid: p.headRefOid,
       state: p.state,
-      authors: [...p.comments.nodes, ...p.reviews.nodes].map(who),
+      authors: [...all(p, 'comments'), ...all(p, 'reviews')].map(who),
     }));
 }
 
