@@ -7,6 +7,7 @@ import {
   failingTests,
   failureSummary,
   gate,
+  heldOutTestCommand,
   inconclusive,
   linkShared,
   listFiles,
@@ -258,7 +259,7 @@ function keptNames(dir, added, config) {
   if (renamed.every((p, i) => p === added[i])) return added;
   const move = (from, to) => from.forEach((p, i) => p !== to[i] && renameSync(join(dir, p), join(dir, to[i])));
   move(added, renamed);
-  const r = shell(config.heldOutCommand, dir, config);
+  const r = shell(heldOutTestCommand(config, renamed), dir, config);
   move(renamed, added);
   const ok = !inconclusive(r) && r.code !== 0 && renamed.some((p, i) => p !== added[i] && r.out.includes(basename(p)));
   return ok ? renamed : added;
@@ -298,7 +299,7 @@ function authorHeldOut({ repo, card, config, baseSha, runId, heldDir, log, defec
         .split('\0')
         .filter((p) => p && matchesAny(p, config.testGlobs));
       if (!added.length) return 'the author wrote no new test file';
-      const r = shell(config.heldOutCommand, dir, config);
+      const r = shell(heldOutTestCommand(config, added), dir, config);
       const out = r.out.slice(-2000);
       if (inconclusive(r)) return `the authored tests did not run (exit ${r.code}):\n${out}`;
       if (r.code === 0) return `the authored tests pass on base, so they prove nothing:\n${out}`;

@@ -70,6 +70,34 @@ test('REQ-RUN-17 authored tests that pass on base stop the run before any build 
   assert.equal(builderCalls().length, 0);
 });
 
+test('REQ-RUN-17 omitted heldOutCommand targets only the added and renamed authored files on base', () => {
+  const runs = join(tmp('keel-author-runs-'), 'runs.log');
+  const whole = `for f in test/*.js; do echo "WHOLE:$f" >> ${JSON.stringify(runs)}; node "$f" || exit 1; done`;
+  const targeted = `set -- {files}; for f in "$@"; do echo "TARGET:$f" >> ${JSON.stringify(runs)}; node "$f" || exit 1; done`;
+  const policy = {
+    checks: { test: whole },
+    testCommand: whole,
+    testFilesCommand: targeted,
+    review: false,
+    tiers: [builder, author(HELD)],
+    heldOutAuthorTier: 1,
+  };
+  const { dir, base } = fixtureRepo({
+    'src/add.js': 'export const add = (a, b) => a - b;\n',
+    'test/basic.test.js': "import assert from 'node:assert';\nassert.ok(true);\n",
+    'keel.json': `${JSON.stringify(policy)}\n`,
+  });
+  const config = loadConfig(dir, base);
+
+  const result = run({ repo: dir, card: card(), config });
+  assert.equal(result.pass, true, result.failure);
+  const calls = readFileSync(runs, 'utf8').trim().split('\n');
+  assert.ok(calls.includes('TARGET:test/held.test.js'), calls.join('\n'));
+  assert.ok(calls.includes('TARGET:test/heldout_held.test.js'), calls.join('\n'));
+  assert.ok(!calls.some((line) => /^WHOLE:test\/(?:held|heldout_held)\.test\.js$/.test(line)), calls.join('\n'));
+  assert.ok(!calls.some((line) => line === 'TARGET:test/basic.test.js'), calls.join('\n'));
+});
+
 test('REQ-RUN-17 no authoring for an S card, a card that names held-out tests, or when the tier is not configured', () => {
   const held = tmp('keel-held-');
   mkdirSync(join(held, 'test'));

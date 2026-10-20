@@ -243,6 +243,9 @@ export function loadConfig(repo, ref) {
   if (unknown.length) throw new Error(`keel.json: unknown keys: ${unknown.join(', ')}`);
   const config = { ...structuredClone(DEFAULTS), ...user };
   if (config.testCommand && !own(user, 'heldOutCommand')) config.heldOutCommand = config.testCommand;
+  // Preserve whether heldOutCommand was omitted: gate and run then target held-out files without changing the
+  // public heldOutCommand fallback or treating an explicitly equal command as implicit (REQ-GATE-10, REQ-RUN-17).
+  config.heldOutFilesCommand = !own(user, 'heldOutCommand') ? config.testFilesCommand : null;
   // shareDirs written in keel.json are dirs the checks need; the defaults are only linked when present (REQ-GATE-49).
   config.shareDirsRequired = own(user, 'shareDirs');
   if (table(config.startTier)) {
