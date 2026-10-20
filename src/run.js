@@ -726,6 +726,20 @@ function runLocked({ repo, card, config, baseSha, baseBranch, branch, wt, pr, me
     removeParkedWorktree({ repo, path: wt, branch });
     kept = null;
   }
+  if (!kept) {
+    // Before a worktree or any worker call: nothing may use a window kept for the owner (REQ-PLAN-3).
+    const author = needsAuthoring(card, config) ? config.tiers[config.heldOutAuthorTier] : null;
+    const blocked = config.tiers.every((t) => reserved.has(t.provider))
+      ? 'every tier'
+      : author && reserved.has(author.provider)
+        ? `the held-out author (tier ${config.heldOutAuthorTier})`
+        : null;
+    if (blocked) {
+      const why = [...reserved].map(([p, w]) => `${p} ${w}`).join('; ');
+      log(`${blocked} is on a provider over its plan window: ${why}`);
+      return { pass: false, stopped: 'quota', branch, worktree: null, failure: `${blocked} is on a provider over its plan window: ${why}` };
+    }
+  }
   if (kept) log(`gating the kept head ${kept.row.head} again; it waited for review (tier ${kept.row.tier})`);
   else {
     if (existsSync(wt)) throw new Error(`worktree exists: ${wt} — inspect it, then: git worktree remove --force ${wt}`);

@@ -399,11 +399,11 @@ const refineHead = (r) => `keel: refine turn (tier ${r.tier})`;
  * The refine step before a build (REQ-LINEAR-32, -33): returns `{ issue }` to build (refined or as written), or
  * `{ outcome }` when this pass builds nothing (split, needs a human, proven done). `refineFn` runs the turn; null skips it.
  */
-async function refineStep({ repo, base, config, client, issue, project, log, refineFn }) {
+async function refineStep({ repo, base, config, client, issue, project, log, refineFn, reserved }) {
   if (!refineFn || !config.refineIssues) return { issue };
   const why = refineReason(issue);
   if (!why) return { issue };
-  const r = refineFn({ repo, base, config, issue, why, log });
+  const r = refineFn({ repo, base, config, issue, why, reserved, log });
   const p = r.parsed;
   if (p.kind === 'unparsed') {
     // A visible failure, never a silent one: the issue is built as written, as before refining existed.
@@ -482,7 +482,7 @@ async function refineStep({ repo, base, config, client, issue, project, log, ref
  * `refineFn` to the refine turn; tests inject fakes so no live worker or gate runs.
  */
 async function runOne({ repo, base, pr, merge, log, config, client, issue: picked, project, runFn, refineFn, reserved }) {
-  const step = await refineStep({ repo, base, config, client, issue: picked, project, log, refineFn });
+  const step = await refineStep({ repo, base, config, client, issue: picked, project, log, refineFn, reserved });
   if (step.outcome) return step.outcome;
   const { issue } = step;
   const card = cardFromIssue(issue);

@@ -6,6 +6,7 @@ import { loadConfig } from '../src/config.js';
 import { setupAdvice } from '../src/doctor.js';
 import { claudeWindows, codexWindows, planLine, readPlan, reservedProviders } from '../src/plan.js';
 import { poll, pollExitCode } from '../src/poll.js';
+import { refineIssue } from '../src/refine.js';
 import { run, skipReserved } from '../src/run.js';
 import { commit, fixtureConfig, fixtureRepo, tmp } from './helpers.js';
 
@@ -111,7 +112,7 @@ test('REQ-PLAN-3 keel run with every tier reserved stops as quota without callin
   const r = run({ repo: dir, card, config, reserved: new Map([['exec', 'week 81% ≥ 80%']]), log: (m) => log.push(m) });
   assert.equal(r.stopped, 'quota');
   assert.ok(
-    log.some((l) => /tier 0 skipped: exec plan window week 81% ≥ 80%/.test(l)),
+    log.some((l) => /every tier is on a provider over its plan window: exec week 81% ≥ 80%/.test(l)),
     log.join('\n'),
   );
   assert.ok(!log.some((l) => /^attempt 1/.test(l)));
@@ -178,4 +179,60 @@ test('REQ-PLAN-4 doctor advice says dailyBudgetUsd is a list-price estimate when
     [],
   );
   assert.deepEqual(setupAdvice(fixtureConfig({ testFilesCommand: 'x {files}', tiers: tiersSub })), []);
+});
+
+test('REQ-PLAN-3 keel run does not author held-out tests on a reserved provider: it stops as quota before any worktree', () => {
+  const { dir } = fixtureRepo();
+  const log = [];
+  const config = fixtureConfig({
+    tiers: [
+      { provider: 'exec', command: ['false'], model: 'm', effort: 'e' },
+      { provider: 'codex', model: 'c', effort: 'e' },
+    ],
+    heldOutAuthorTier: 1,
+    heldOutRequired: ['S', 'M', 'L'],
+  });
+  const card = { id: 'PLAN-2', kind: 'feature', size: 'M', paths: [], allowEdits: [], text: '# c' };
+  const r = run({ repo: dir, card, config, reserved: new Map([['codex', 'week 85% ≥ 80%']]), log: (m) => log.push(m) });
+  assert.equal(r.stopped, 'quota');
+  assert.equal(r.worktree, null);
+  assert.ok(
+    log.some((l) => /the held-out author \(tier 1\) is on a provider over its plan window: codex week 85%/.test(l)),
+    log.join('\n'),
+  );
+  assert.ok(!log.some((l) => /^held-out author:/.test(l)));
+});
+
+test('REQ-PLAN-3 the refine turn skips a reserved provider, and runs no worker when every provider is reserved', () => {
+  const { dir } = fixtureRepo();
+  const config = fixtureConfig({ tiers: [{ provider: 'exec', command: ['false'], model: 'm', effort: 'e' }] });
+  const log = [];
+  const r = refineIssue({
+    repo: dir,
+    base: 'HEAD',
+    config,
+    issue,
+    why: 'unclear',
+    reserved: new Map([['exec', 'week 81% ≥ 80%']]),
+    log: (m) => log.push(m),
+  });
+  assert.equal(r.status, 'quota');
+  assert.equal(r.parsed.kind, 'unparsed');
+  assert.ok(!log.some((l) => /refine turn on tier/.test(l)), log.join('\n'));
+});
+
+test('REQ-PLAN-3 keel poll passes the reserved providers to the refine turn', async () => {
+  const { dir } = fixtureRepo();
+  let seen;
+  const vague = { ...issue, description: 'make it better' };
+  await poll({
+    repo: dir,
+    project: 'x',
+    client: { ...client, listIssues: async () => [vague] },
+    config: { planLimits: { fiveHour: 90, week: 80 }, tiers, refineIssues: true },
+    runFn: () => ({ pass: false, stopped: 'blocked', failure: 'x' }),
+    refineFn: (o) => ((seen = o.reserved), { parsed: { kind: 'unparsed', why: 'x' }, tier: 0, output: '' }),
+    planFn: () => ({ claude: { week: { used: 85, resetsAt: NOW } }, codex: null }),
+  });
+  assert.deepEqual([...seen.keys()], ['claude']);
 });
