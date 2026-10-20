@@ -1,14 +1,14 @@
 # Keel
 
-**Ship AI-written code you can trust, at the lowest model cost that works.**
+**Ship AI-written code you can trust: tests decide, not the model.**
 
 The deterministic merge gate for AI-written code:
 
 - **Proof, not opinion**: for a fix or feature, new tests must fail on the base and pass on the head, checked on the
   exact PR head Keel enables auto-merge for.
 - **Rules the agent cannot edit**: tests and policy are locked, and policy is read from the base commit.
-- **Cheapest tier that pays off**: each card starts at the cheapest tier your own ledger shows passes often enough
-  (higher for large or protected cards) and moves up only when an attempt fails.
+- **Escalate on failure**: each card starts at the cheapest tier your own ledger shows pays off (higher for large or
+  protected cards) and moves up only when the gate fails.
 
 Keel drives the coding agent you already use (Claude Code, Codex, or any CLI) through a loop:
 build → **deterministic gate** → escalate only on failure → PR with evidence → auto-merge when tested and reviewed.
@@ -22,16 +22,26 @@ card / Linear issue ──▶ keel run ──▶ worker (cheapest tier that pays
 
 ## Why it is worth it
 
-Real use across 14 of the author's repos (77 runs, 2026-09-27 to 2026-10-10; `keel report --value` on 2026-10-10):
+Real use in the author's repos, 30 days to 2026-10-20 (`keel report --value`), and two controlled comparisons:
 
-| Measure                                    | Keel                             | Other changes in the same repos |
-| ------------------------------------------ | -------------------------------- | ------------------------------- |
-| Merged changes later fixed or reverted     | **2 of 30 (7 %)**                | 52 of 150 (35 %)                |
-| Cost per accepted card (failed runs incl.) | ≈ $0.98                          | —                               |
-| Matched pilot vs plain Claude Code         | 16/16 accepted, 0 review defects | 14/16, 2 review defects         |
+| Measure                                                        | Keel                             | Comparison                                  |
+| -------------------------------------------------------------- | -------------------------------- | ------------------------------------------- |
+| Merged changes whose lines a later `fix:` changed, or reverted | **6 of 91 (7 %)**                | 81 of 358 (23 %), other changes, same repos |
+| SWE-bench Verified, 30 tasks (`bench/swebench/`)               | **28/30 resolved**, $8.95        | 25/30, $10.36, plain Claude Code (Opus)     |
+| Tampering cases caught by the gate before review               | **35 of 35**                     | —                                           |
+| Matched pilot (16 pairs, `docs/PILOT.md`)                      | 16/16 accepted, 0 review defects | 14/16, 2 review defects, plain Claude Code  |
 
-"Later fixed" is a heuristic (a `fix:` commit touching the same files, lockfiles aside, within 30 days), the same rule
-for both sides.
+"Later fixed" uses `git blame`: a `fix:` commit counts against a change only when it rewrites lines that change wrote
+(docs and lockfiles left out), the same rule for both sides.
+
+What it does not do yet, measured the same way since 2026-10-14:
+
+- **Cost**: ≈ $3.11 list price per accepted card, failed attempts and reviews included. On the SWE-bench tasks the
+  cheapest tier passed 22 of 30; on the author's real backlog it passes about 1 in 4, so the ledger routes most cards
+  straight to the top tier and the cost is close to running that tier alone. Routing saves money where cheap models
+  can do the work, and finds out when they cannot.
+- **Autonomy**: a human still touched 33–39 % of the issues `keel poll` ran (target under 5 %), mostly cards the
+  builder stopped as blocked.
 
 **Built-in quality.** The gate checks, with no model in the loop:
 
