@@ -18,15 +18,23 @@ export function scrubEnv(env, allow = []) {
 
 let emptyGhDir = null;
 const madeGhDirs = [];
-const removeGhDirs = () => madeGhDirs.forEach((dir) => rmSync(dir, { recursive: true, force: true }));
+let cleanupHooksInstalled = false;
+const removeGhDirs = () => {
+  madeGhDirs.forEach((dir) => rmSync(dir, { recursive: true, force: true }));
+  madeGhDirs.length = 0;
+  emptyGhDir = null;
+};
 
 /**
- * On SIGINT or SIGTERM, remove the dirs, then end as the signal would have (REQ-RUN-47). A listener replaces Node's
- * default exit, so the signal is raised again once ours is gone; when another listener owns the signal, it decides.
+ * On SIGINT or SIGTERM, remove the dirs, then end as the signal would have (REQ-RUN-47). Our only listener removes
+ * itself and raises the signal again; when another listener owns the signal, it decides whether the process continues.
  */
 function onSignal(signal) {
   removeGhDirs();
-  if (!process.listenerCount(signal)) process.kill(process.pid, signal);
+  if (process.listenerCount(signal) === 1) {
+    process.off(signal, onSignal);
+    process.kill(process.pid, signal);
+  }
 }
 
 /**
@@ -36,9 +44,10 @@ function onSignal(signal) {
  */
 function noGhConfig() {
   if (!emptyGhDir || readdirSync(emptyGhDir).length) {
-    if (!madeGhDirs.length) {
+    if (!cleanupHooksInstalled) {
+      cleanupHooksInstalled = true;
       process.on('exit', removeGhDirs);
-      for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, onSignal);
+      for (const signal of ['SIGINT', 'SIGTERM']) process.prependListener(signal, onSignal);
     }
     emptyGhDir = mkdtempSync(join(tmpdir(), 'keel-nogh-'));
     madeGhDirs.push(emptyGhDir);
