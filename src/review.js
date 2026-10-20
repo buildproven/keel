@@ -256,10 +256,11 @@ const APPROVAL = /^(APPROVE|DENY):\s*(.+)$/m;
 
 /**
  * Ask `tiers` in turn, in a scratch checkout of `ref` (whatever they write never reaches the build), until one answers
- * `APPROVE: …` or `DENY: …` (REQ-RUN-30, REQ-GATE-44). Returns { answer: { approved, by, reason } | null, cost, usage,
- * unpriced? }, with what every tier that ran spent (REQ-LED-13).
+ * a line `pattern` matches: `APPROVE: …` or `DENY: …` (REQ-RUN-30, REQ-GATE-44), or `DEFECT: …` or `VALID: …`
+ * (REQ-RUN-46). Returns { answer: { word, approved, by, reason } | null, cost, usage, unpriced? }, with what every tier
+ * that ran spent (REQ-LED-13).
  */
-function askApproval({ tiers, prompt, repo, ref, config }) {
+function askApproval({ tiers, prompt, repo, ref, config, pattern = APPROVAL }) {
   let cost = null;
   let usage = null;
   let unknown = false;
@@ -270,9 +271,9 @@ function askApproval({ tiers, prompt, repo, ref, config }) {
       cost = addCost(cost, w.cost);
       usage = addUsage(usage, w.usage);
       unknown ||= unpriced(w);
-      const m = w.status === 'ok' ? APPROVAL.exec(w.text) : null;
+      const m = w.status === 'ok' ? pattern.exec(w.text) : null;
       if (m) {
-        answer = { approved: m[1] === 'APPROVE', by: label(t), reason: m[2].trim() };
+        answer = { word: m[1], approved: m[1] === 'APPROVE', by: label(t), reason: m[2].trim() };
         break;
       }
     }
@@ -305,7 +306,38 @@ export function approveEdits({ config, builder, card, request, paths, cwd }) {
   ].join('\n');
   const tiers = [first, ...(config.reviewFallback ? fallbackReviewers(config, first) : [])];
   const { answer, ...spent } = askApproval({ tiers, prompt, repo: cwd, ref: 'HEAD', config });
-  return answer ? { ...answer, ...spent } : null;
+  return answer ? { approved: answer.approved, by: answer.by, reason: answer.reason, ...spent } : null;
+}
+
+const HELD_OUT_VERDICT = /^(DEFECT|VALID):\s*(.+)$/m;
+
+/**
+ * Ask the other family whether held-out tests that failed the same way on two builds are defective (REQ-RUN-46): the
+ * cross-family reviewer first, then the fallbacks (REQ-GATE-22), in a scratch checkout of `head`. `files` are the
+ * held-out tests as { path, text }; `output` is their private output on head. Returns { answer: { defect, by, reason }
+ * | null, cost, usage, unpriced? }; the spend counts whether or not a tier answered (REQ-LED-13).
+ */
+export function judgeHeldOut({ config, builder, card, files, output, cwd, head }) {
+  const first = reviewerFor(config, builder);
+  if (!first) return { answer: null, cost: null, usage: null };
+  const prompt = [
+    'Held-out acceptance tests, written by another model from the card below, failed on two builds of the card in a row with the same failing test. The builder never sees these tests. This checkout is the latest build. Do not edit files.',
+    'Decide whether the tests are defective, so that no correct implementation of the card could pass them: they assert what the card does not require or contradict it, depend on names or structure the card does not give, contradict themselves, or wait for a state that never occurs.',
+    'Otherwise they are valid and the build does not meet the card.',
+    'Answer with exactly one line: DEFECT: <why> or VALID: <why>.',
+    '',
+    '# Card',
+    builderText(card),
+    '',
+    '# Held-out tests',
+    clip(files.map((f) => `## ${f.path}\n${f.text}`).join('\n\n')),
+    '',
+    '# Held-out output on this build',
+    output,
+  ].join('\n');
+  const tiers = [first, ...(config.reviewFallback ? fallbackReviewers(config, first) : [])];
+  const { answer, ...spent } = askApproval({ tiers, prompt, repo: cwd, ref: head, config, pattern: HELD_OUT_VERDICT });
+  return { answer: answer && { defect: answer.word === 'DEFECT', by: answer.by, reason: answer.reason }, ...spent };
 }
 
 /**
