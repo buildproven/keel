@@ -20,7 +20,15 @@ let emptyGhDir = null;
 const madeGhDirs = [];
 let cleanupHooksInstalled = false;
 const removeGhDirs = () => {
-  madeGhDirs.forEach((dir) => rmSync(dir, { recursive: true, force: true }));
+  for (const dir of madeGhDirs) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch (error) {
+      // REQ-RUN-40: candidate code can make its temporary config unremovable; cleanup must not change how Keel exits.
+      const reason = error instanceof Error ? (error.code ?? error.message) : String(error);
+      console.error(`keel: WARN could not remove temporary GH_CONFIG_DIR ${dir}: ${reason}`);
+    }
+  }
   madeGhDirs.length = 0;
   emptyGhDir = null;
 };
