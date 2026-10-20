@@ -731,6 +731,22 @@ export function skipReserved(tiers, tier, floor, reserved, log = () => {}) {
   return tier;
 }
 
+/**
+ * The first tier of a run under reserved providers: the start tier or the next usable one above it (REQ-PLAN-3), else
+ * the nearest usable tier below it, never below the card's rule tier (REQ-PLAN-6). A learned start (REQ-RUN-21) is a
+ * cost choice, not a floor, so a usable stronger-than-needed tier beats deferring the card.
+ */
+export function startReserved(tiers, tier, ruleTier, reserved, log = () => {}) {
+  const up = skipReserved(tiers, tier, tier, reserved, log);
+  if (up !== null) return up;
+  for (let t = tier - 1; t >= ruleTier; t--) {
+    if (reserved.has(tiers[t].provider)) continue;
+    log(`start tier ${t}: tiers ${t + 1}..${tiers.length - 1} are on a provider over its plan window`);
+    return t;
+  }
+  return null;
+}
+
 /** The one-line (blocked: multi-line) message `keel run` prints when it stops without a pass (REQ-RUN-13). */
 export const describeStop = ({ stopped, failure, worktree }) =>
   `STOPPED (${stopped})${stopped === 'blocked' ? `: the worker reports the card blocked:\n${failure}\n` : ' —'} ${worktree ? `worktree kept at ${worktree}` : `no worktree kept: ${failure}`}`;
@@ -836,7 +852,7 @@ function runLocked({ repo, card, config, baseSha, baseBranch, branch, wt, pr, me
   let tier = kept ? kept.row.tier : learned.tier;
   let floor = Math.min(tier, learned.tier);
   if (!kept) {
-    const usable = skipReserved(config.tiers, tier, floor, reserved, log);
+    const usable = startReserved(config.tiers, tier, ruleTier, reserved, log);
     if (usable === null) {
       // No attempt ran: the worktree and branch hold no work and would block the next run (REQ-PLAN-3, REQ-RUN-41).
       removeParkedWorktree({ repo, path: wt, branch });
@@ -850,6 +866,7 @@ function runLocked({ repo, card, config, baseSha, baseBranch, branch, wt, pr, me
       };
     }
     tier = usable;
+    floor = Math.min(floor, usable);
   }
   let failure = null;
   let networkRetries = 0;
