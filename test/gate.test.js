@@ -42,6 +42,70 @@ test('REQ-GATE-3 fails when the base is not green before the overlay', () => {
   assert.deepEqual(rules(r), ['baseline-not-green']);
 });
 
+// A suite that names each file it runs, and the same for given files, so the red proof can be targeted (REQ-GATE-33).
+const SUITE = 'for f in test/*.js; do echo "$f"; node "$f" || exit 1; done';
+const FILES = 'for f in {files}; do node "$f" || exit 1; done';
+// Fails on the buggy base add(), passes on the fixed one, and names its own path when it fails.
+const RED_ON_BASE = "import assert from 'node:assert';\nimport { add } from '../src/add.js';\nassert.strictEqual(add(1, 1), 2);\n";
+
+test('REQ-GATE-52 a base red only in a test file the card fixes passes the red proof as base-red-fixed, unrecorded', () => {
+  const { dir, base } = fixtureRepo({ ...BUGGY, 'test/a.test.js': RED_ON_BASE });
+  commit(dir, { ...FIXED_SRC, 'test/a.test.js': `${RED_ON_BASE}assert.strictEqual(add(2, 3), 5);\n` });
+  const cacheDir = tmp('keel-cache-');
+  const r = gate({ repo: dir, base, card: card('kind: bug\nsize: S\nallowEdits: test/a.test.js'), config: fixtureConfig(), cacheDir });
+  assert.equal(r.pass, true, JSON.stringify(r.results, null, 2));
+  const proof = r.results.find((x) => x.name === 'red-proof');
+  assert.deepEqual(proof.baseRedFixed, ['test/a.test.js']);
+  assert.match(stageLine(proof), /^PASS red-proof \(base-red-fixed: test\/a\.test\.js\)/);
+  assert.deepEqual(readdirSync(cacheDir), [], 'a red baseline is never recorded');
+});
+
+test('REQ-GATE-52 a base red in a test file the card does not touch fails as baseline-not-green and names the files', () => {
+  const { dir, base } = fixtureRepo({ ...BUGGY, 'test/a.test.js': RED_ON_BASE, 'test/b.test.js': RED_ON_BASE });
+  commit(dir, { ...FIXED_SRC, 'test/a.test.js': `${RED_ON_BASE}assert.strictEqual(add(2, 3), 5);\n` });
+  const r = gate({ repo: dir, base, card: card('kind: bug\nsize: S\nallowEdits: test/a.test.js'), config: fixtureConfig() });
+  const proof = r.results.find((x) => x.name === 'red-proof');
+  assert.deepEqual(proof.problems, [{ rule: 'baseline-not-green', files: ['test/a.test.js', 'test/b.test.js'] }]);
+});
+
+test('REQ-GATE-52 an inconclusive base baseline is never base-red-fixed, targeted or not', () => {
+  // On base with test/a.test.js present the command exits 127 after naming the file; on head it runs the suite.
+  const notFound = `grep -q "a - b" src/add.js && [ -f test/a.test.js ] && { echo test/a.test.js; exit 127; }; ${SUITE}`;
+  for (const over of [
+    { testCommand: notFound, checks: { test: notFound } },
+    {
+      testCommand: SUITE,
+      checks: { test: SUITE },
+      testFilesCommand: `grep -q "a - b" src/add.js && { echo {files}; exit 127; }; ${FILES}`,
+    },
+  ]) {
+    const { dir, base } = fixtureRepo({ ...BUGGY, 'test/a.test.js': RED_ON_BASE });
+    commit(dir, { ...FIXED_SRC, 'test/a.test.js': `${RED_ON_BASE}assert.strictEqual(add(2, 3), 5);\n` });
+    const r = gate({ repo: dir, base, card: card('kind: bug\nsize: S\nallowEdits: test/a.test.js'), config: fixtureConfig(over) });
+    assert.deepEqual(rules(r), ['baseline-not-green'], JSON.stringify(over));
+  }
+});
+
+test('REQ-GATE-52 a targeted base baseline that fails without naming a file it ran fails as baseline-not-green', () => {
+  const { dir, base } = fixtureRepo({ ...BUGGY, 'test/a.test.js': RED_ON_BASE });
+  commit(dir, { ...FIXED_SRC, 'test/a.test.js': `${RED_ON_BASE}assert.strictEqual(add(2, 3), 5);\n` });
+  const silent = `grep -q "a - b" src/add.js && exit 1; ${FILES}`;
+  const config = fixtureConfig({ testCommand: SUITE, checks: { test: SUITE }, testFilesCommand: silent });
+  const r = gate({ repo: dir, base, card: card('kind: bug\nsize: S\nallowEdits: test/a.test.js'), config });
+  assert.equal(r.results.find((x) => x.name === 'targeted-on-head').targeted, true);
+  assert.deepEqual(rules(r), ['baseline-not-green']);
+});
+
+test('REQ-GATE-52 a targeted base baseline red only in the files the card fixes passes as base-red-fixed', () => {
+  const { dir, base } = fixtureRepo({ ...BUGGY, 'test/a.test.js': RED_ON_BASE });
+  commit(dir, { ...FIXED_SRC, 'test/a.test.js': `${RED_ON_BASE}assert.strictEqual(add(2, 3), 5);\n` });
+  const config = fixtureConfig({ testCommand: SUITE, checks: { test: SUITE }, testFilesCommand: FILES });
+  const r = gate({ repo: dir, base, card: card('kind: bug\nsize: S\nallowEdits: test/a.test.js'), config });
+  assert.equal(r.pass, true, JSON.stringify(r.results, null, 2));
+  const proof = r.results.find((x) => x.name === 'red-proof');
+  assert.deepEqual([proof.targeted, proof.baseRedFixed], [true, ['test/a.test.js']]);
+});
+
 test('REQ-GATE-3 treats command-not-found and silent failures as no proof', () => {
   const { dir, base } = fixtureRepo();
   commit(dir, { ...REGRESSION_TEST, ...FIXED_SRC });
