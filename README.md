@@ -8,7 +8,7 @@ The deterministic merge gate for AI-written code:
   exact PR head Keel enables auto-merge for.
 - **Rules the agent cannot edit**: tests and policy are locked, and policy is read from the base commit.
 - **Escalate on failure**: each card starts at the cheapest tier your own ledger shows pays off (higher for large or
-  protected cards) and moves up only when the gate fails.
+  protected cards) and moves up only when an attempt fails.
 
 Keel drives the coding agent you already use (Claude Code, Codex, or any CLI) through a loop:
 build → **deterministic gate** → escalate only on failure → PR with evidence → auto-merge when tested and reviewed.
