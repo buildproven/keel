@@ -18,6 +18,7 @@ import { cardLease, describeConflicts } from './lease.js';
 import { readLedger, spentToday } from './ledger.js';
 import { finishSelfMerges, recordSelfMerge } from './merge.js';
 import { REFINED_HEADING, refineIssue, refineReason } from './refine.js';
+import { nextReset, planLine, readPlan, reservedProviders } from './plan.js';
 import { run } from './run.js';
 import { locksAny, matchesAny } from './scan.js';
 import { UsageError } from './usage.js';
@@ -39,7 +40,7 @@ export function pollExitCode(results) {
     )
   )
     return 1;
-  return results.some((r) => ['budget', 'deferred', 'leased'].includes(r.outcome)) ? 3 : 0;
+  return results.some((r) => ['budget', 'plan', 'deferred', 'leased'].includes(r.outcome)) ? 3 : 0;
 }
 
 const trim = (s, n = 4000) => (s && s.length > n ? `…${s.slice(-n)}` : s);
@@ -480,12 +481,12 @@ async function refineStep({ repo, base, config, client, issue, project, log, ref
  * One issue → (refine) → card → run → report cycle (REQ-LINEAR-4, -5, -32). `runFn` defaults to `run` from run.js and
  * `refineFn` to the refine turn; tests inject fakes so no live worker or gate runs.
  */
-async function runOne({ repo, base, pr, merge, log, config, client, issue: picked, project, runFn, refineFn }) {
+async function runOne({ repo, base, pr, merge, log, config, client, issue: picked, project, runFn, refineFn, reserved }) {
   const step = await refineStep({ repo, base, config, client, issue: picked, project, log, refineFn });
   if (step.outcome) return step.outcome;
   const { issue } = step;
   const card = cardFromIssue(issue);
-  const result = runFn({ repo, card, config, base, pr, merge, log });
+  const result = runFn({ repo, card, config, base, pr, merge, reserved, log });
   // Found work is queued before any Linear call, so a Linear error cannot lose it (REQ-LINEAR-22).
   queueFollowUps(repo, issue.id, result.followUps, result.branch, result.pr?.ok ? result.pr.out.trim().split('\n').at(-1) : null);
   // Recorded before any Linear call too, so a later poll merges it whatever this report does (REQ-MERGE-1).
@@ -551,7 +552,7 @@ async function reportRun({ repo, base, config, client, issue, result }) {
   // A provider limit says nothing about the card: retry it on the next poll, not never (REQ-LINEAR-19).
   if (TRANSIENT_STOPS.has(result.stopped)) {
     // A build that passed every stage but the unavailable review is kept and gated again next time (REQ-RUN-24).
-    if (!result.pendingReview) removeParkedWorktree({ repo, path: result.worktree, branch: result.branch });
+    if (!result.pendingReview && result.worktree) removeParkedWorktree({ repo, path: result.worktree, branch: result.branch });
     const kept = result.pendingReview
       ? ` The build passed every other stage and is kept at \`${result.branch}\`; the next poll reviews it.`
       : '';
@@ -587,10 +588,26 @@ function overBudget({ repo, config, log }) {
 }
 
 /**
+ * REQ-PLAN-3: the subscription plan windows, read before every issue. Returns `{ stop }` when every provider of the
+ * ladder is over a `planLimits` window, else `{ reserved }`: the providers the run must skip.
+ */
+function planCheck({ config, log, planFn }) {
+  if (!config.planLimits || !planFn) return { reserved: new Map() };
+  const plan = planFn(config);
+  log(`plan: ${planLine(plan)}`);
+  const reserved = reservedProviders(plan, config.planLimits);
+  const providers = new Set(config.tiers.map((t) => t.provider));
+  if (!reserved.size || ![...providers].every((p) => reserved.has(p))) return { reserved };
+  const reset = nextReset(plan, config.planLimits);
+  log(`plan limit reached: ${[...reserved].map(([p, w]) => `${p} ${w}`).join('; ')}${reset ? `; next reset ${reset}` : ''}`);
+  return { stop: { outcome: 'plan', reserved: Object.fromEntries(reserved) } };
+}
+
+/**
  * `keel poll --issue <ID>` (REQ-LINEAR-14): an explicit human retry of one open issue, even if a previous poll
  * decided it. The `no-keel` opt-out still wins, and an invalid card raises its reason instead of skipping.
  */
-async function pollOne({ repo, project, client, config, base, pr, merge, log, runFn, refineFn, only }) {
+async function pollOne({ repo, project, client, config, base, pr, merge, log, runFn, refineFn, only, reserved }) {
   const issues = await client.listIssues(project);
   const issue = issues.find((i) => i.id === only);
   if (!issue || (issue.labels ?? []).some((l) => l.toLowerCase() === 'no-keel')) {
@@ -603,7 +620,7 @@ async function pollOne({ repo, project, client, config, base, pr, merge, log, ru
     log(`${issue.id} waits for path lease: ${describeConflicts(held)}`);
     return [{ outcome: 'leased', issue: issue.id }];
   }
-  const outcome = await runOne({ repo, base, pr, merge, log, config, client, issue, project, runFn, refineFn });
+  const outcome = await runOne({ repo, base, pr, merge, log, config, client, issue, project, runFn, refineFn, reserved });
   // A refined card whose paths an open branch holds is not an attempt (REQ-LEASE-3).
   if (outcome.outcome === 'leased') return [outcome];
   // The outcome keeps its own detail (a NEEDS_HUMAN question, SPLIT child IDs, REQ-LINEAR-33); byHand marks the run.
@@ -678,6 +695,8 @@ export async function poll({
   runFn = run,
   // The refine turn belongs to a real run: a test that injects `runFn` injects `refineFn` too (REQ-LINEAR-32).
   refineFn = runFn === run ? refineIssue : null,
+  // Plan windows are read for a real run only: a test that injects `runFn` injects `planFn` too (REQ-PLAN-3).
+  planFn = runFn === run ? readPlan : null,
   limit = 1,
   issue: only = null,
   fileOnly = false,
@@ -695,14 +714,33 @@ export async function poll({
   results.push(...filingFailed(await fileFollowUps({ repo, project, config, client, log, base }))); // what an earlier poll could not file
   await rebuildConflicts({ repo, client, log });
   if (only) {
-    const stop = overBudget({ repo, config, log });
+    const budget = overBudget({ repo, config, log });
+    const plan = budget ? {} : planCheck({ config, log, planFn });
+    const stop = budget ?? plan.stop;
     return [
       ...results,
-      ...(stop ? [stop] : await pollOne({ repo, project, client, config, base, pr: pr || merge, merge, log, runFn, refineFn, only })),
+      ...(stop
+        ? [stop]
+        : await pollOne({
+            repo,
+            project,
+            client,
+            config,
+            base,
+            pr: pr || merge,
+            merge,
+            log,
+            runFn,
+            refineFn,
+            only,
+            reserved: plan.reserved,
+          })),
     ];
   }
   for (let i = 0; i < limit; i++) {
-    const stop = overBudget({ repo, config, log });
+    const budget = overBudget({ repo, config, log });
+    const plan = budget ? {} : planCheck({ config, log, planFn });
+    const stop = budget ?? plan.stop;
     if (stop) {
       results.push(stop);
       break;
@@ -747,7 +785,7 @@ export async function poll({
       results.push({ outcome: 'none' });
       break;
     }
-    const outcome = await runOne({ repo, base, pr, merge, log, config, client, issue, project, runFn, refineFn });
+    const outcome = await runOne({ repo, base, pr, merge, log, config, client, issue, project, runFn, refineFn, reserved: plan.reserved });
     // A refined card whose paths an open branch holds waits, unrecorded, like any leased issue (REQ-LEASE-3): it is
     // not an attempt, so it uses no `limit` slot and the poll picks the next issue.
     if (outcome.outcome === 'leased') {

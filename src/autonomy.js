@@ -12,6 +12,7 @@ const NOT_A_RUN = new Set([
   'skipped',
   'leased',
   'budget',
+  'plan', // plan windows over planLimits (REQ-PLAN-3)
   'none',
   'followUpsFailed',
   'self-merge',

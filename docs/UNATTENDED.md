@@ -10,8 +10,9 @@ Keel. Enabling one spends model quota and moves Linear issues to review, so noth
 
 1. The repo has a `keel.json` on its default branch (`keel init`, review, merge). Policy is read from
    the base commit (REQ-CFG-1), never from the change under test.
-2. `keel.json` names `linearProject` (REQ-LINEAR-10) and a `dailyBudgetUsd` ceiling (REQ-LINEAR-9).
-   Without a ceiling there is no spend limit.
+2. `keel.json` names `linearProject` (REQ-LINEAR-10). On a Claude or Codex subscription, `planLimits`
+   (default 5-hour 90 %, week 80 %) keeps the rest of each plan window for your own sessions (REQ-PLAN-2).
+   With tiers that bill an API key, set a `dailyBudgetUsd` ceiling (REQ-LINEAR-9).
 3. `LINEAR_API_KEY` is set for the job only. Keel strips secret-looking variables from workers and
    checks (REQ-RUN-12); list anything a check truly needs in `workerEnvAllow`.
 4. Run one pass by hand first: `keel poll --repo <dir> --limit 1`, and read the Linear comment.

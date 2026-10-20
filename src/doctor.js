@@ -59,10 +59,17 @@ function advice(rows, config, dir, testInChecks, slowSuiteMs) {
  * base for every bug or feature gate (REQ-GATE-33). Warnings only; they never fail the doctor.
  */
 export function setupAdvice(config) {
-  if (config.testFilesCommand) return [];
-  return [
-    'testFilesCommand is not set: red proof reruns the whole test suite on every bug or feature gate; set it in keel.json to a command that runs only {files} (for example "node --test {files}" or "python -m pytest {files}")',
-  ];
+  const advice = [];
+  if (!config.testFilesCommand)
+    advice.push(
+      'testFilesCommand is not set: red proof reruns the whole test suite on every bug or feature gate; set it in keel.json to a command that runs only {files} (for example "node --test {files}" or "python -m pytest {files}")',
+    );
+  // A subscription is not billed per token; its plan windows are the ceiling, and planLimits guards them (REQ-PLAN-4).
+  if (config.dailyBudgetUsd !== null && config.tiers.some((t) => t.provider === 'claude' || t.provider === 'codex'))
+    advice.push(
+      `dailyBudgetUsd ${config.dailyBudgetUsd} counts list-price estimates, not what a Claude or Codex subscription charges, and stops the poll early; planLimits (${config.planLimits ? `5h ${config.planLimits.fiveHour}%, week ${config.planLimits.week}%` : 'off'}) guards the plan windows: remove dailyBudgetUsd unless the tiers bill an API key`,
+    );
+  return advice;
 }
 
 /**

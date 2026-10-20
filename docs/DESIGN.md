@@ -296,7 +296,11 @@ Autonomous loop (Linear)
 - **REQ-LEASE-1** Path leases: the files each other open branch of the repo changes are leased to it. Open branches are the `keel/*` branches whose `keel run` is in progress (a worktree in `git worktree list` under the state dir whose run lock, REQ-RUN-10, holds a live pid), with their diff from the merge base plus their worktree's uncommitted and untracked files, and, with an `origin` remote, the open PRs `gh pr list` returns with their files; the branch being built or gated is never one of them, also as a PR. A `keel/*` branch with no run in progress and no open PR is not open: Keel squash-merges, so a merged branch never becomes an ancestor of base, and a failed run's branch stays until `keel clean`. Prose files (`.md`, `.txt`, `.rst`) are shared and never conflict. A `gh` failure prints `path lease: open PRs not checked: …` and only local branches are checked. Before it gates, `keel gate` shall print, and not block, `WARN paths overlap <branch> (<files>): merge one first, then rebase the other` for each open branch that changes a file HEAD changes. Rationale: 12 parallel branches of one product repo changed the same files; six conflicted at merge and each gated again for 20–40 minutes (BUI-1183).
 - **REQ-LEASE-2** `keel run <card.md>` shall not start a card whose `paths` cover a file an open branch changes (REQ-LEASE-1); it prints `path lease: <card> overlaps <branch> (<files>), …; merge or close it first, or narrow the card's paths` and exits 3 without creating a branch. A card without `paths` leases nothing.
 - **REQ-LEASE-3** `keel poll` shall pass over an issue whose card `paths` cover a file an open branch changes: it logs `<ID> waits for path lease: <branch> (<files>), …`, does not comment on or record it (it is not an attempt), and picks the next issue; a later poll builds it once those branches merge or close. `keel run <ISSUE-ID>` (`--issue`) on such an issue does not start it and exits 3 (outcome `leased`).
-- **REQ-LINEAR-9** `keel.json` may set `dailyBudgetUsd` (a positive number; default none = no ceiling). Each ledger row records the `repo` it ran in. Before each issue, `keel poll` shall sum the estimated `cost` of today's (UTC) ledger rows for this repo; if that sum is at or above the ceiling it shall stop, run nothing, comment on no issue, log the spend and ceiling, and exit 3. Rows without cost data (e.g. Codex) cannot be priced: they are counted and logged as unpriced, never treated as zero silently.
+- **REQ-LINEAR-9** `keel.json` may set `dailyBudgetUsd` (a positive number; default none = no ceiling). Each ledger row records the `repo` it ran in. Before each issue, `keel poll` shall sum the estimated `cost` of today's (UTC) ledger rows (list-price estimates: on a subscription they are not spend, and `planLimits` is the ceiling, REQ-PLAN-2) for this repo; if that sum is at or above the ceiling it shall stop, run nothing, comment on no issue, log the spend and ceiling, and exit 3. Rows without cost data (e.g. Codex) cannot be priced: they are counted and logged as unpriced, never treated as zero silently.
+- **REQ-PLAN-1** Keel shall read each subscription provider's plan windows as `{ used: percent, resetsAt }` for the 5-hour and weekly window: Claude from the last `rate_limit_event` (`unifiedWindows.five_hour` / `seven_day`, `utilization` 0..1) of a one-line probe `claude -p --output-format stream-json --verbose` on the ladder's first Claude model at low effort; Codex from the last `rate_limits` line (`primary` 300 minutes, `secondary` 10080 minutes, `used_percent`) of the newest session log under `${CODEX_HOME:-~/.codex}/sessions`, which every Codex session on the machine writes. A window past its `resetsAt` reads 0; no event or no log reads unknown, never 0. Rationale: on 2026-10-20 every repo's `dailyBudgetUsd` was $5 of list-price estimates (Claude's `total_cost_usd`), which a subscription is not charged, so nightly polls stopped after 2–3 issues while the Claude weekly window was 34 % used; the Claude Code docs say the session cost figure "isn't relevant for billing purposes" for Max and Pro (code.claude.com/docs/en/costs).
+- **REQ-PLAN-2** `keel.json` `planLimits` (default `{ fiveHour: 90, week: 80 }`, each a percent above 0 and at most 100; `null` turns it off) sets the window use at which a provider is reserved: kept for the owner's own sessions, which share the same plan. A provider with any known window at or over its limit is reserved, with the reason (`week 81% ≥ 80%`); an unknown window reserves nothing.
+- **REQ-PLAN-3** Before each issue, after the REQ-LINEAR-9 check, `keel poll` shall read the plan windows of the ladder's providers (REQ-PLAN-1) and log `plan: claude 5h 4% · week 34%; codex …`. When every provider of the ladder is reserved it shall stop, run nothing, log `plan limit reached: <reasons>; next reset <time>`, record the outcome `plan`, and exit 3. Otherwise it passes the reserved providers to `keel run`, which skips their tiers as the quota rule moves (REQ-RUN-6), logging `tier N skipped: <provider> plan window <reason>`, at the start and at each escalation; when no usable tier is left before any attempt it removes the worktree it made and stops as `quota`, which the poll defers (REQ-LINEAR-19).
+- **REQ-PLAN-4** `keel doctor` shall warn, without failing, when `dailyBudgetUsd` is set and a tier is a Claude or Codex subscription: the figure is a list-price estimate, and `planLimits` guards the plan windows.
 
 ## 6. Architecture
 
@@ -352,46 +356,47 @@ commands by hand; the gate needs nothing else.
 
 ### 6.1a Modules
 
-| File                 | Role                                                                        | Requirements                                                      |
-| -------------------- | --------------------------------------------------------------------------- | ----------------------------------------------------------------- |
-| `src/git.js`         | argv git wrappers, NUL-safe diff parsing, temp worktrees                    | GATE-1, 5, 12, 13, 48, CLEAN-5                                    |
-| `src/config.js`      | Defaults, `keel.json` at a ref, validation, trusted card reading            | CARD-1..4, CFG-1, RUN-28, 35, LED-12, CLEAN-3, LINEAR-32, GATE-49 |
-| `src/defaults.js`    | Gate base and card when the CLI is not given them                           | CLI-6, 7                                                          |
-| `src/init.js`        | Project detection and proposed `keel.json`                                  | PROJ-2, 6                                                         |
-| `src/post-deploy.js` | Post-deploy smoke, rollback, and revert workflow template                   | PROJ-7, 8                                                         |
-| `src/glob.js`        | Glob to RegExp matcher, the same on every platform                          | PROJ-9                                                            |
-| `src/scan.js`        | Skip/bypass markers, scope, runner files, tool-config sections, test shape  | GATE-4, 6, 8, 9, 42, 44, PROJ-3,4                                 |
-| `src/workflow.js`    | YAML subset parser; a workflow edit that only adds                          | GATE-43                                                           |
-| `src/gate.js`        | Gate stages, safe overlay, receipt                                          | GATE-1..20, 42..44, 48, 49, RUN-19, 32                            |
-| `src/timing.js`      | Stage times, IMPROVE lines, serial-runner and duplicate-work advice         | GATE-45..47, CLI-13, LED-18                                       |
-| `src/status.js`      | `keel/gate` commit status on the gated SHA                                  | RUN-23, CLI-10                                                    |
-| `src/audit.js`       | Cross-family re-review of fallback-reviewed merges                          | CLI-11, GATE-24, LINEAR-22                                        |
-| `src/review.js`      | Cross-model reviewer choice, review stage, test-edit verdict                | GATE-21..25, 44, CLI-9, LED-13                                    |
-| `src/window.js`      | Review spend per provider window, shared across sessions                    | GATE-24                                                           |
-| `src/stack.js`       | Stacked-branch and diff-size warnings before a gate                         | GATE-30                                                           |
-| `src/lease.js`       | Path leases: open branches that change the same files                       | LEASE-1..3                                                        |
-| `src/keel-test.js`   | `keel test`: the test command inside a gate slot                            | SLOT-2                                                            |
-| `src/slots.js`       | Machine-wide gate slots for the stages that run project commands            | GATE-29, SLOT-1, SLOT-3                                           |
-| `src/env.js`         | Strips secret-looking variables from worker and check environments          | RUN-12, RUN-40                                                    |
-| `src/workers.js`     | Provider argv, session resume, usage parsing and pricing, failure classes   | RUN-6, 8, 11, 33, LED-12                                          |
-| `src/run.js`         | Attempt loop, learned tier choice, held-out authoring, PR                   | RUN-1..22, 24..27, 32..35, LED-13, LINEAR-30                      |
-| `src/run-lock.js`    | Per-card run lock: one entry per run, named by its pid                      | RUN-10, LEASE-1                                                   |
-| `src/ledger.js`      | Append + report, builder and review spend per card                          | LED-1..5, 12, 13, 17                                              |
-| `src/escaped.js`     | Later fixes on the same lines, and reverts, for merged changes              | LED-6, 7, 8, 10, 11                                               |
-| `src/dora.js`        | DORA metrics for Keel changes per repo                                      | LED-7                                                             |
-| `src/value.js`       | Keel merges against the repo's other changes; cost per card                 | LED-8, 9, 13, 15                                                  |
-| `src/autonomy.js`    | Human touch rate of polled issues, from the ledgers and GitHub              | LED-14, 16, LINEAR-33                                             |
-| `src/clean.js`       | Lists and removes parked worktrees                                          | CLEAN-1, 2                                                        |
-| `src/autoclean.js`   | Removes finished parked worktrees and dead gate checkouts                   | CLEAN-3, 4, 5                                                     |
-| `src/doctor.js`      | Runs install and every check on a clean base; merge readiness; speed advice | CLI-3, 4, 13, 14, MERGE-1                                         |
-| `src/merge.js`       | Self-merge of a certified SHA once every check on it is green               | MERGE-1..4                                                        |
-| `src/linear.js`      | Issue to card mapping, dependency-aware selection, review state             | LINEAR-1..3, 5, 11..13, 20, 25, 26, 33                            |
-| `src/linear-http.js` | Real Linear client over HTTP (`LINEAR_API_KEY`)                             | LINEAR-7, 16, 20, 22, 28, 30, 33                                  |
-| `src/done.js`        | Verifies an already-satisfied claim: commit on base or merged PR, checks    | LINEAR-30                                                         |
-| `src/poll.js`        | One pass of the autonomous loop: pick, refine, run, comment, review         | LINEAR-4..19, 22, 25..33, RUN-20                                  |
-| `src/refine.js`      | Refine turn before a build: prompt, strict parse, ledger row                | LINEAR-32, 33, LED-17                                             |
-| `src/usage.js`       | `UsageError`: a mistake in how Keel was invoked                             | CLI-2                                                             |
-| `bin/keel.js`        | CLI: `init`, `gate`, `run`, `poll`, `doctor`, `clean`, `report`             | CLI-1, 2, 8..10, LED-6..8, CLEAN-3                                |
+| File                 | Role                                                                        | Requirements                                                              |
+| -------------------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| `src/git.js`         | argv git wrappers, NUL-safe diff parsing, temp worktrees                    | GATE-1, 5, 12, 13, 48, CLEAN-5                                            |
+| `src/config.js`      | Defaults, `keel.json` at a ref, validation, trusted card reading            | CARD-1..4, CFG-1, RUN-28, 35, LED-12, CLEAN-3, LINEAR-32, GATE-49, PLAN-2 |
+| `src/defaults.js`    | Gate base and card when the CLI is not given them                           | CLI-6, 7                                                                  |
+| `src/init.js`        | Project detection and proposed `keel.json`                                  | PROJ-2, 6                                                                 |
+| `src/post-deploy.js` | Post-deploy smoke, rollback, and revert workflow template                   | PROJ-7, 8                                                                 |
+| `src/glob.js`        | Glob to RegExp matcher, the same on every platform                          | PROJ-9                                                                    |
+| `src/scan.js`        | Skip/bypass markers, scope, runner files, tool-config sections, test shape  | GATE-4, 6, 8, 9, 42, 44, PROJ-3,4                                         |
+| `src/workflow.js`    | YAML subset parser; a workflow edit that only adds                          | GATE-43                                                                   |
+| `src/gate.js`        | Gate stages, safe overlay, receipt                                          | GATE-1..20, 42..44, 48, 49, RUN-19, 32                                    |
+| `src/timing.js`      | Stage times, IMPROVE lines, serial-runner and duplicate-work advice         | GATE-45..47, CLI-13, LED-18                                               |
+| `src/status.js`      | `keel/gate` commit status on the gated SHA                                  | RUN-23, CLI-10                                                            |
+| `src/audit.js`       | Cross-family re-review of fallback-reviewed merges                          | CLI-11, GATE-24, LINEAR-22                                                |
+| `src/review.js`      | Cross-model reviewer choice, review stage, test-edit verdict                | GATE-21..25, 44, CLI-9, LED-13                                            |
+| `src/window.js`      | Review spend per provider window, shared across sessions                    | GATE-24                                                                   |
+| `src/plan.js`        | Subscription plan windows (Claude probe, Codex session log), reserved ones  | PLAN-1..3                                                                 |
+| `src/stack.js`       | Stacked-branch and diff-size warnings before a gate                         | GATE-30                                                                   |
+| `src/lease.js`       | Path leases: open branches that change the same files                       | LEASE-1..3                                                                |
+| `src/keel-test.js`   | `keel test`: the test command inside a gate slot                            | SLOT-2                                                                    |
+| `src/slots.js`       | Machine-wide gate slots for the stages that run project commands            | GATE-29, SLOT-1, SLOT-3                                                   |
+| `src/env.js`         | Strips secret-looking variables from worker and check environments          | RUN-12, RUN-40                                                            |
+| `src/workers.js`     | Provider argv, session resume, usage parsing and pricing, failure classes   | RUN-6, 8, 11, 33, LED-12                                                  |
+| `src/run.js`         | Attempt loop, learned tier choice, held-out authoring, PR                   | RUN-1..22, 24..27, 32..35, LED-13, LINEAR-30, PLAN-3                      |
+| `src/run-lock.js`    | Per-card run lock: one entry per run, named by its pid                      | RUN-10, LEASE-1                                                           |
+| `src/ledger.js`      | Append + report, builder and review spend per card                          | LED-1..5, 12, 13, 17                                                      |
+| `src/escaped.js`     | Later fixes on the same lines, and reverts, for merged changes              | LED-6, 7, 8, 10, 11                                                       |
+| `src/dora.js`        | DORA metrics for Keel changes per repo                                      | LED-7                                                                     |
+| `src/value.js`       | Keel merges against the repo's other changes; cost per card                 | LED-8, 9, 13, 15                                                          |
+| `src/autonomy.js`    | Human touch rate of polled issues, from the ledgers and GitHub              | LED-14, 16, LINEAR-33                                                     |
+| `src/clean.js`       | Lists and removes parked worktrees                                          | CLEAN-1, 2                                                                |
+| `src/autoclean.js`   | Removes finished parked worktrees and dead gate checkouts                   | CLEAN-3, 4, 5                                                             |
+| `src/doctor.js`      | Runs install and every check on a clean base; merge readiness; speed advice | CLI-3, 4, 13, 14, MERGE-1, PLAN-4                                         |
+| `src/merge.js`       | Self-merge of a certified SHA once every check on it is green               | MERGE-1..4                                                                |
+| `src/linear.js`      | Issue to card mapping, dependency-aware selection, review state             | LINEAR-1..3, 5, 11..13, 20, 25, 26, 33                                    |
+| `src/linear-http.js` | Real Linear client over HTTP (`LINEAR_API_KEY`)                             | LINEAR-7, 16, 20, 22, 28, 30, 33                                          |
+| `src/done.js`        | Verifies an already-satisfied claim: commit on base or merged PR, checks    | LINEAR-30                                                                 |
+| `src/poll.js`        | One pass of the autonomous loop: pick, refine, run, comment, review         | LINEAR-4..19, 22, 25..33, RUN-20, PLAN-3                                  |
+| `src/refine.js`      | Refine turn before a build: prompt, strict parse, ledger row                | LINEAR-32, 33, LED-17                                                     |
+| `src/usage.js`       | `UsageError`: a mistake in how Keel was invoked                             | CLI-2                                                                     |
+| `bin/keel.js`        | CLI: `init`, `gate`, `run`, `poll`, `doctor`, `clean`, `report`             | CLI-1, 2, 8..10, LED-6..8, CLEAN-3                                        |
 
 ### 6.2 Tiers (default policy, overridable in `keel.json`)
 

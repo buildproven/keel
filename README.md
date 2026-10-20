@@ -58,7 +58,8 @@ for both sides.
   re-prompt.
 - **Cheap failures**: a worker that finds the card impossible writes `KEEL_BLOCKED` and stops. Keel parks the card
   instead of paying for stronger models to game the gate.
-- **Spending limits**: a daily ceiling per repo (`dailyBudgetUsd`) and a per-card cap (`cardBudgetUsd`).
+- **Spending limits**: on a Claude or Codex subscription, `planLimits` stops unattended work at a share of the plan's
+  5-hour and weekly windows; with an API key, a daily dollar ceiling per repo (`dailyBudgetUsd`) and a per-card cap (`cardBudgetUsd`).
 - **Lean workers**: no MCP servers or skill listing, targeted checks only, and the green base is cached per day.
 
 **Speed and autonomy.** `keel poll` turns a Linear project into a queue. It picks the next issue in priority and
@@ -122,7 +123,7 @@ test: `docs/DESIGN.md`.
 ## Config (`keel.json`)
 
 Keys: `checks`, `testCommand`, `testFilesCommand`, `heldOutCommand`, `testGlobs`, `protected`, `verificationPaths`, `bypassAllow`,
-`heldOutRequired`, `heldOutAuthorTier`, `shareDirs`, `workerEnvAllow`, `linearProject`, `dailyBudgetUsd`,
+`heldOutRequired`, `heldOutAuthorTier`, `shareDirs`, `workerEnvAllow`, `linearProject`, `dailyBudgetUsd`, `planLimits`,
 `cardBudgetUsd`, `learnStart`, `acceptance`, `install`, `mutation`, `review`, `reviewBlock`, `reviewFallback`, `approveAllowEdits`, `fixLowFindings`, `reviewWindows`, `lightReview`, `smoke`, `tiers`, `startTier`,
 `maxAttempts`, `workerTimeoutSec`, `failureTailChars`, `claudePermissionMode`, `workerArgs`. Unknown keys are errors.
 Defaults: `src/config.js`.
