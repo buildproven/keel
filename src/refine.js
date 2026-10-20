@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 import { revParse, showFile, withTempWorktree } from './git.js';
 import { cardFromIssue } from './linear.js';
 import { appendAttempt } from './ledger.js';
-import { startTier } from './run.js';
+import { skipReserved, startTier } from './run.js';
 import { runWorker } from './workers.js';
 
 /** The heading a refined card sits under at the top of the issue description (REQ-LINEAR-33). */
@@ -188,8 +188,11 @@ export function parseRefine(text, issue) {
  * appends a ledger row with role `refine` (REQ-LED-17) and returns `{ status, output, parsed, tier }`; a worker that does
  * not end `ok` is `unparsed` with its status, so the caller builds the issue as written.
  */
-export function refineIssue({ repo, base, config, issue, why, log = () => {} }) {
-  const index = startTier(cardFromIssue(issue), config);
+export function refineIssue({ repo, base, config, issue, why, reserved = new Map(), log = () => {} }) {
+  // A provider over its plan window is skipped like a quota (REQ-PLAN-3).
+  const index = skipReserved(config.tiers, startTier(cardFromIssue(issue), config), 0, reserved, log);
+  if (index === null)
+    return { status: 'quota', output: '', parsed: { kind: 'unparsed', why: 'every provider is over its plan window' }, tier: null };
   const t = config.tiers[index];
   const baseSha = revParse(base, repo);
   log(`${issue.id}: refine turn on tier ${index} ${t.provider}/${t.model}/${t.effort}: ${why}`);

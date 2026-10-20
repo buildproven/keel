@@ -702,12 +702,24 @@ export function nextTier(tiers, tier, floor, status, networkRetries = 0) {
   return Math.max(floor, Math.min(tier + 1, tiers.length - 1));
 }
 
+/**
+ * The tier to use when `reserved` providers are over a plan window (REQ-PLAN-3): `tier` itself when its provider is not
+ * reserved, else the next tier the quota rule (REQ-RUN-6) gives that is not reserved either, or null.
+ */
+export function skipReserved(tiers, tier, floor, reserved, log = () => {}) {
+  while (tier !== null && reserved.has(tiers[tier].provider)) {
+    log(`tier ${tier} skipped: ${tiers[tier].provider} plan window ${reserved.get(tiers[tier].provider)}`);
+    tier = nextTier(tiers, tier, floor, 'quota');
+  }
+  return tier;
+}
+
 /** The one-line (blocked: multi-line) message `keel run` prints when it stops without a pass (REQ-RUN-13). */
 export const describeStop = ({ stopped, failure, worktree }) =>
-  `STOPPED (${stopped})${stopped === 'blocked' ? `: the worker reports the card blocked:\n${failure}\n` : ' —'} worktree kept at ${worktree}`;
+  `STOPPED (${stopped})${stopped === 'blocked' ? `: the worker reports the card blocked:\n${failure}\n` : ' —'} ${worktree ? `worktree kept at ${worktree}` : `no worktree kept: ${failure}`}`;
 
 /** Attempt loop: cheapest tier first, escalate on failure, stop on auth, exhausted quota, or a blocked card. */
-export function run({ repo, card, config, base = 'HEAD', pr = false, merge = false, log = () => {} }) {
+export function run({ repo, card, config, base = 'HEAD', pr = false, merge = false, reserved = new Map(), log = () => {} }) {
   const baseSha = revParse(base, repo);
   const baseBranch = base === 'HEAD' ? git(['symbolic-ref', '--short', 'HEAD'], repo).trim() : base.replace(/^origin\//, '');
   const branch = `keel/${card.id}`;
@@ -716,7 +728,7 @@ export function run({ repo, card, config, base = 'HEAD', pr = false, merge = fal
   const wt = join(stateDir(), 'worktrees', key);
   const releaseLock = acquireRunLock(join(stateDir(), 'locks', key));
   try {
-    return runLocked({ repo, card, config, base, baseSha, baseBranch, branch, wt, pr: pr || merge, merge, log });
+    return runLocked({ repo, card, config, base, baseSha, baseBranch, branch, wt, pr: pr || merge, merge, reserved, log });
   } finally {
     releaseLock();
   }
@@ -759,7 +771,7 @@ function keptHead({ repo, card, config, baseSha, branch, wt }) {
   return { row: last, stale };
 }
 
-function runLocked({ repo, card, config, baseSha, baseBranch, branch, wt, pr, merge, log }) {
+function runLocked({ repo, card, config, baseSha, baseBranch, branch, wt, pr, merge, reserved, log }) {
   const hash = cardHash(card);
   let kept = keptHead({ repo, card, config, baseSha, branch, wt });
   if (kept?.stale) {
@@ -767,6 +779,20 @@ function runLocked({ repo, card, config, baseSha, baseBranch, branch, wt, pr, me
     log(`kept head ${kept.row.head} is on an old base, card, or builder tier, or no longer checked out; building again`);
     removeParkedWorktree({ repo, path: wt, branch });
     kept = null;
+  }
+  if (!kept) {
+    // Before a worktree or any worker call: nothing may use a window kept for the owner (REQ-PLAN-3).
+    const author = needsAuthoring(card, config) ? config.tiers[config.heldOutAuthorTier] : null;
+    const blocked = config.tiers.every((t) => reserved.has(t.provider))
+      ? 'every tier'
+      : author && reserved.has(author.provider)
+        ? `the held-out author (tier ${config.heldOutAuthorTier})`
+        : null;
+    if (blocked) {
+      const why = [...reserved].map(([p, w]) => `${p} ${w}`).join('; ');
+      log(`${blocked} is on a provider over its plan window: ${why}`);
+      return { pass: false, stopped: 'quota', branch, worktree: null, failure: `${blocked} is on a provider over its plan window: ${why}` };
+    }
   }
   if (kept) log(`gating the kept head ${kept.row.head} again; it waited for review (tier ${kept.row.tier})`);
   else {
@@ -792,6 +818,22 @@ function runLocked({ repo, card, config, baseSha, baseBranch, branch, wt, pr, me
   if (learned.note) log(`start tier ${learned.tier} (${learned.note})`);
   let tier = kept ? kept.row.tier : learned.tier;
   let floor = Math.min(tier, learned.tier);
+  if (!kept) {
+    const usable = skipReserved(config.tiers, tier, floor, reserved, log);
+    if (usable === null) {
+      // No attempt ran: the worktree and branch hold no work and would block the next run (REQ-PLAN-3, REQ-RUN-41).
+      removeParkedWorktree({ repo, path: wt, branch });
+      const why = [...reserved].map(([p, w]) => `${p} ${w}`).join('; ');
+      return {
+        pass: false,
+        stopped: 'quota',
+        branch,
+        worktree: null,
+        failure: `every usable tier's provider is over its plan window: ${why}`,
+      };
+    }
+    tier = usable;
+  }
   let failure = null;
   let networkRetries = 0;
   let runCost = 0; // null once any attempt is unpriced (REQ-RUN-16)
@@ -1046,7 +1088,7 @@ function runLocked({ repo, card, config, baseSha, baseBranch, branch, wt, pr, me
       )
     )
       floor = Math.max(floor, config.startTier.protected);
-    const next = nextTier(config.tiers, tier, floor, w.status, networkRetries);
+    const next = skipReserved(config.tiers, nextTier(config.tiers, tier, floor, w.status, networkRetries), floor, reserved, log);
     log(`attempt ${attempt} failed (${w.status === 'ok' ? 'gate' : w.status})`);
     // Unpriced attempts cannot count; the priced spend still stops the card (REQ-RUN-22).
     if (config.cardBudgetUsd !== null) {

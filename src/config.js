@@ -110,7 +110,10 @@ export const DEFAULTS = {
   // Production smoke command run by the post-deploy workflow with KEEL_DEPLOY_URL (REQ-PROJ-7).
   smoke: null,
   linearProject: null,
+  // Estimated list-price dollars: a ceiling for API-key billing, not for a subscription (REQ-LINEAR-9).
   dailyBudgetUsd: null,
+  // Plan window percents at which `keel poll` stops using a subscription provider; null turns it off (REQ-PLAN-2).
+  planLimits: { fiveHour: 90, week: 80 },
   // Found-work issues `keel poll` may file per repo per UTC day (REQ-LINEAR-22); 0 turns filing off.
   followUpsPerDay: 5,
   // One read-only refine turn before `keel poll` builds an unclear or too-big issue (REQ-LINEAR-32).
@@ -215,6 +218,10 @@ function validate(c) {
     bad('"linearProject" must be a non-empty string');
   if (c.dailyBudgetUsd !== null && !(typeof c.dailyBudgetUsd === 'number' && c.dailyBudgetUsd > 0))
     bad('"dailyBudgetUsd" must be a positive number');
+  const pl = c.planLimits;
+  const pct = (n) => typeof n === 'number' && n > 0 && n <= 100;
+  if (pl !== null && !(table(pl) && Object.keys(pl).sort().join() === 'fiveHour,week' && pct(pl.fiveHour) && pct(pl.week)))
+    bad('"planLimits" must be null or { fiveHour, week }, each a percent above 0 and at most 100');
   if (!Number.isInteger(c.followUpsPerDay) || c.followUpsPerDay < 0) bad('"followUpsPerDay" must be an integer ≥ 0');
   if (!Number.isInteger(c.worktreeKeepDays) || c.worktreeKeepDays < 0) bad('"worktreeKeepDays" must be an integer ≥ 0');
   if (!positive(c.selfMergeTimeoutMinutes)) bad('"selfMergeTimeoutMinutes" must be a positive number');
