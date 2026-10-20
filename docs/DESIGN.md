@@ -303,6 +303,7 @@ Autonomous loop (Linear)
 - **REQ-PLAN-2** `keel.json` `planLimits` (default `{ fiveHour: 90, week: 80 }`, each a percent above 0 and at most 100; `null` turns it off) sets the window use at which a provider is reserved: kept for the owner's own sessions, which share the same plan. A provider with any known window at or over its limit is reserved, with the reason (`week 81% ≥ 80%`); an unknown window reserves nothing.
 - **REQ-PLAN-3** Before each issue, after the REQ-LINEAR-9 check, `keel poll` shall read the plan windows of the ladder's providers (REQ-PLAN-1) and log `plan: claude 5h 4% · week 34%; codex …`. When every provider of the ladder is reserved it shall stop, run nothing, log `plan limit reached: <reasons>; next reset <time>`, record the outcome `plan`, and exit 3. Otherwise it passes the reserved providers to the refine turn (REQ-LINEAR-32), which skips them the same way, and to `keel run`. Before it makes a worktree or calls any worker, `keel run` stops as `quota` when every tier, or the held-out author tier (REQ-RUN-17), is on a reserved provider; otherwise it skips their tiers as the quota rule moves (REQ-RUN-6), logging `tier N skipped: <provider> plan window <reason>`, at the start and at each escalation; when no usable tier at or above the floor is left before any attempt it removes the worktree it made and stops as `quota`, which the poll defers (REQ-LINEAR-19).
 - **REQ-PLAN-4** `keel doctor` shall warn, without failing, when `dailyBudgetUsd` is set and a tier is a Claude or Codex subscription: the figure is a list-price estimate, and `planLimits` guards the plan windows.
+- **REQ-PLAN-5** `keel poll` (each REQ-PLAN-3 reading) and `keel gate` (before it picks the reviewer, when a tier is Claude or Codex) shall save the plan windows with the reading time in `plan.json` in the state dir. The review window (REQ-GATE-24) shall use a family's saved reading when it is under 30 minutes old, with any window past its reset read as 0: use is the higher of the 5-hour and weekly percent, nearly used at 90 % or more, and `keel gate` prints `review window <family> (plan): N% used`. Only without a fresh reading does it use `reviewWindows` or the learned limit (REQ-GATE-27). Rationale: on 2026-10-20 a limit learned from one quota failure (454k tokens) sent every review of the day to the same-family fallback while Codex reported 7 % of its 5-hour window used; tokens a CLI reports do not map to the provider's meter.
 
 ## 6. Architecture
 
@@ -373,8 +374,8 @@ commands by hand; the gate needs nothing else.
 | `src/status.js`      | `keel/gate` commit status on the gated SHA                                  | RUN-23, CLI-10                                                            |
 | `src/audit.js`       | Cross-family re-review of fallback-reviewed merges                          | CLI-11, GATE-24, LINEAR-22                                                |
 | `src/review.js`      | Cross-model reviewer choice, review stage, test-edit and held-out verdicts  | GATE-21..25, 44, CLI-9, LED-13, RUN-46                                    |
-| `src/window.js`      | Review spend per provider window, shared across sessions                    | GATE-24                                                                   |
-| `src/plan.js`        | Subscription plan windows (Claude probe, Codex session log), reserved ones  | PLAN-1..3                                                                 |
+| `src/window.js`      | Review spend per provider window, shared across sessions                    | GATE-24, PLAN-5                                                           |
+| `src/plan.js`        | Subscription plan windows (Claude probe, Codex session log), reserved ones  | PLAN-1..3, 5                                                              |
 | `src/stack.js`       | Stacked-branch and diff-size warnings before a gate                         | GATE-30                                                                   |
 | `src/lease.js`       | Path leases: open branches that change the same files                       | LEASE-1..3                                                                |
 | `src/keel-test.js`   | `keel test`: the test command inside a gate slot                            | SLOT-2                                                                    |
@@ -395,10 +396,10 @@ commands by hand; the gate needs nothing else.
 | `src/linear.js`      | Issue to card mapping, dependency-aware selection, review state             | LINEAR-1..3, 5, 11..13, 20, 25, 26, 33                                    |
 | `src/linear-http.js` | Real Linear client over HTTP (`LINEAR_API_KEY`)                             | LINEAR-7, 16, 20, 22, 28, 30, 33                                          |
 | `src/done.js`        | Verifies an already-satisfied claim: commit on base or merged PR, checks    | LINEAR-30                                                                 |
-| `src/poll.js`        | One pass of the autonomous loop: pick, refine, run, comment, review         | LINEAR-4..19, 22, 25..33, RUN-20, PLAN-3                                  |
+| `src/poll.js`        | One pass of the autonomous loop: pick, refine, run, comment, review         | LINEAR-4..19, 22, 25..33, RUN-20, PLAN-3, 5                               |
 | `src/refine.js`      | Refine turn before a build: prompt, strict parse, ledger row                | LINEAR-32, 33, LED-17, PLAN-3                                             |
 | `src/usage.js`       | `UsageError`: a mistake in how Keel was invoked                             | CLI-2                                                                     |
-| `bin/keel.js`        | CLI: `init`, `gate`, `run`, `poll`, `doctor`, `clean`, `report`             | CLI-1, 2, 8..10, LED-6..8, CLEAN-3                                        |
+| `bin/keel.js`        | CLI: `init`, `gate`, `run`, `poll`, `doctor`, `clean`, `report`             | CLI-1, 2, 8..10, LED-6..8, CLEAN-3, PLAN-5                                |
 
 ### 6.2 Tiers (default policy, overridable in `keel.json`)
 

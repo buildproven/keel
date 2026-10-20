@@ -15,6 +15,7 @@ import { fmtMs, formatSlowest, slowestChecks } from '../src/timing.js';
 import { audit } from '../src/audit.js';
 import { keelTest } from '../src/keel-test.js';
 import { authorFamily, fallbackReviewers, family, label, reviewerFor, windowFallback } from '../src/review.js';
+import { readPlan, savePlan } from '../src/plan.js';
 import { spendFile, windowLine, windowLines, windowUse } from '../src/window.js';
 import { writeProposedConfig } from '../src/init.js';
 import { writePostDeployWorkflow } from '../src/post-deploy.js';
@@ -166,6 +167,9 @@ if (values.version && command) {
       const author = authorFamily(values.author, process.env);
       const reviewer = reviewerFor(config, author ? { family: author } : null);
       if (config.review) log(`reviewer ${reviewer ? `${reviewer.provider}/${reviewer.model}` : 'none'} (author ${author ?? 'unknown'})`);
+      // A fresh reading of the plan windows, so the review window below uses the provider's own meter (REQ-PLAN-5).
+      if (config.review && reviewer && config.tiers.some((t) => t.provider === 'claude' || t.provider === 'codex'))
+        savePlan(readPlan(config), stateDir());
       const window = config.review && reviewer ? windowUse(spendFile(), family(reviewer), config.reviewWindows) : null;
       if (window) {
         const first = windowFallback(config, reviewer, spendFile());

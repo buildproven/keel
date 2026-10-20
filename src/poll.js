@@ -15,10 +15,10 @@ import {
 } from './linear.js';
 import { resolve } from 'node:path';
 import { cardLease, describeConflicts } from './lease.js';
-import { readLedger, spentToday } from './ledger.js';
+import { readLedger, spentToday, stateDir } from './ledger.js';
 import { finishSelfMerges, recordSelfMerge } from './merge.js';
 import { REFINED_HEADING, refineIssue, refineReason } from './refine.js';
-import { nextReset, planLine, readPlan, reservedProviders } from './plan.js';
+import { nextReset, planLine, readPlan, reservedProviders, savePlan } from './plan.js';
 import { run } from './run.js';
 import { locksAny, matchesAny } from './scan.js';
 import { UsageError } from './usage.js';
@@ -594,6 +594,7 @@ function overBudget({ repo, config, log }) {
 function planCheck({ config, log, planFn }) {
   if (!config.planLimits || !planFn) return { reserved: new Map() };
   const plan = planFn(config);
+  savePlan(plan, stateDir()); // every gate of this poll's runs reads it for the review window (REQ-PLAN-5)
   log(`plan: ${planLine(plan)}`);
   const reserved = reservedProviders(plan, config.planLimits);
   const providers = new Set(config.tiers.map((t) => t.provider));
