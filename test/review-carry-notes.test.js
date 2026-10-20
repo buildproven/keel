@@ -40,6 +40,22 @@ test('REQ-GATE-23 a re-gate also shows the previous low and info notes, so a not
   assert.match(prompt, /- low src\/add\.js:1 negative sums are not tested/);
   assert.match(prompt, /- info src\/add\.js:1 name is terse/);
   assert.match(prompt, /Report again, at its own severity, any previous finding that is not fixed/);
+  assert.match(prompt, /a previous info note that is not fixed is `FINDING info <path>:<line> <text>`, which never blocks/);
+});
+
+test('REQ-GATE-23 an info note repeated on a re-gate stays an info note: it is kept and never blocks, even at reviewBlock low', () => {
+  const { dir, base, receiptDir } = setup();
+  const config = fixtureConfig({ review: true, reviewBlock: 'low' });
+  const info = reviewer("console.log('FINDING info src/add.js:1 name is terse'); console.log('VERDICT: pass')");
+  assert.equal(gate({ repo: dir, base, card: card(), config, receiptDir, reviewer: info }).pass, true);
+  commit(dir, { 'docs/unrelated.md': 'unrelated\n' }, 'docs: unrelated');
+  const again = gate({ repo: dir, base, card: card(), config, receiptDir, reviewer: info });
+  assert.equal(again.pass, true, JSON.stringify(again.results));
+  const review = again.results.find((r) => r.name === 'review');
+  assert.deepEqual(
+    review.notes.map((n) => `${n.severity} ${n.path}:${n.line} ${n.text}`),
+    ['info src/add.js:1 name is terse'],
+  );
 });
 
 test('REQ-GATE-23 a receipt whose notes are not a list of objects is not the previous review; one without notes still is', () => {

@@ -117,7 +117,7 @@ const reviewPrompt = (card, diff, previous) =>
     'One line per defect: FINDING <critical|high|medium|low> <path>:<line> <what is wrong and why>. Use a path from the diff.',
     ...(previous
       ? [
-          'This change was reviewed before; the findings and the change since then are below. Use medium or higher only for a previous finding that is not fixed, or a defect in the change since the previous review. Report any other defect at low. Report again, at its own severity, any previous finding that is not fixed.',
+          'This change was reviewed before; the findings and the change since then are below. Use medium or higher only for a previous finding that is not fixed, or a defect in the change since the previous review. Report any other defect at low. Report again, at its own severity, any previous finding that is not fixed; a previous info note that is not fixed is `FINDING info <path>:<line> <text>`, which never blocks.',
         ]
       : []),
     'End with exactly one line: VERDICT: pass or VERDICT: block.',
