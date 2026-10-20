@@ -92,9 +92,11 @@ const clip = (diff) =>
   diff.length > MAX_DIFF_CHARS ? `${diff.slice(0, MAX_DIFF_CHARS)}\n…(truncated; read the files in this checkout)` : diff;
 
 /**
- * A re-gate (REQ-GATE-23) shows the previous findings and the change since that review, and keeps medium or higher for
- * those: without it each round re-read the whole diff and blocked on new findings in unchanged text, so fixes never
- * converged (BUI-1147). Other defects are still reported, at low, and become follow-ups (REQ-RUN-27).
+ * A re-gate (REQ-GATE-23) shows the previous findings, low and info notes included, and the change since that review,
+ * and keeps medium or higher for those: without it each round re-read the whole diff and blocked on new findings in
+ * unchanged text, so fixes never converged (BUI-1147). The notes are listed so one a worker left unfixed is reported
+ * again, not dropped when the new receipt replaces the old (BUI-1425). Other defects are still reported, at low, and
+ * become follow-ups (REQ-RUN-27).
  */
 const previousSection = (previous) =>
   previous
@@ -115,7 +117,7 @@ const reviewPrompt = (card, diff, previous) =>
     'One line per defect: FINDING <critical|high|medium|low> <path>:<line> <what is wrong and why>. Use a path from the diff.',
     ...(previous
       ? [
-          'This change was reviewed before; the findings and the change since then are below. Use medium or higher only for a previous finding that is not fixed, or a defect in the change since the previous review. Report any other defect at low.',
+          'This change was reviewed before; the findings and the change since then are below. Use medium or higher only for a previous finding that is not fixed, or a defect in the change since the previous review. Report any other defect at low. Report again, at its own severity, any previous finding that is not fixed; a previous info note that is not fixed is `FINDING info <path>:<line> <text>`, which never blocks.',
         ]
       : []),
     'End with exactly one line: VERDICT: pass or VERDICT: block.',
