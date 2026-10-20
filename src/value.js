@@ -40,11 +40,12 @@ export function value(ledgerRows, { windowDays = 30, prsFor, now = new Date() } 
   };
 }
 
-const GATE_SLACK_MS = 60_000;
-
 /**
  * Rows from before `reviewUsage` was recorded (REQ-LED-13) take it from the gate receipts of their card and head that
  * were written during their gate time (a re-gate writes two), so their review spend still counts toward the card.
+ * The row is written right after its gate, so `at - gateMs` is no later than the gate's start and no earlier than its
+ * first receipt: no slack, or a hand gate of the same card and head just before (or the previous attempt's gate of the
+ * same head) would be charged to this attempt.
  * Rows older still name no reviewer either; the receipt names it, and a review it shows with no usage counts as unpriced.
  */
 export function withReviewUsage(rows, receiptDir = join(stateDir(), 'receipts')) {
@@ -54,7 +55,7 @@ export function withReviewUsage(rows, receiptDir = join(stateDir(), 'receipts'))
   return rows.map((r) => {
     if (!need.includes(r)) return r;
     const end = Date.parse(r.at);
-    const start = end - (r.gateMs ?? 0) - GATE_SLACK_MS;
+    const start = end - (r.gateMs ?? 0);
     let usage = null;
     let reviewer = r.reviewer ?? null;
     const prefix = `${r.card}-${r.head}-`; // gate.js names a receipt <card>-<head>-<ms>.json
