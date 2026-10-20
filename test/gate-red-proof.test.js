@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { parseCard } from '../src/config.js';
@@ -171,23 +171,24 @@ test('REQ-GATE-17 a targeted red proof whose proof files are all new on base run
   assert.deepEqual(runs(), ['full', ['test/add.test.js'], ['test/add.test.js']]);
 });
 
-test('REQ-GATE-17 a targeted base baseline that fails on base fails the red proof as baseline-not-green', () => {
+test('REQ-GATE-17 a targeted base baseline that fails on base is not recorded and, red only in files the card fixes, is base-red-fixed', () => {
   const { dir, base } = fixtureRepo({
     'src/add.js': 'export const add = (a, b) => a - b;\n',
     'test/basic.test.js': "import assert from 'node:assert';\nassert.ok(false);\n",
   });
   commit(dir, { 'test/basic.test.js': ADD_ASSERT, ...FIXED_SRC });
   const { full, files } = loggedCommands();
+  const cacheDir = tmp('keel-cache-');
   const r = gate({
     repo: dir,
     base,
     card: parseCard('# T-1: test card\nkind: bug\nsize: S\nallowEdits: test/basic.test.js\n'),
     config: fixtureConfig({ checks: { test: full }, testCommand: full, testFilesCommand: files }),
+    cacheDir,
   });
-  assert.deepEqual(
-    r.results.flatMap((x) => x.problems.map((p) => p.rule)),
-    ['baseline-not-green'],
-  );
+  assert.equal(r.pass, true, JSON.stringify(r.results, null, 2));
+  assert.deepEqual(r.results.find((x) => x.name === 'red-proof').baseRedFixed, ['test/basic.test.js']); // REQ-GATE-52
+  assert.deepEqual(readdirSync(cacheDir), []);
 });
 
 test('REQ-GATE-17 without testFilesCommand, or when the red proof is not targeted, the base baseline runs the whole testCommand', () => {

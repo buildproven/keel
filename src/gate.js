@@ -286,7 +286,7 @@ const headResult = (name, r, rule) => ({
 
 /** One `keel gate` output line per stage. */
 export const stageLine = (r) =>
-  `${r.pass ? 'PASS' : 'FAIL'} ${r.name}${r.flaky ? ' (flaky: failed once, passed on retry)' : ''}${r.fallback ? ` (fallback reviewer ${r.reviewer}; ${r.fallback.from} ${r.fallback.status})` : ''}${r.effort ? ` (re-review of a small doc change: effort ${r.effort})` : ''}${r.unavailable?.length ? ` (out: ${r.unavailable.map(outLine).join('; ')})` : ''}${r.unparsed?.length ? ` (unparsed: ${r.unparsed.join('; ')})` : ''}${r.problems.length ? ` ${JSON.stringify(r.problems)}` : ''}`;
+  `${r.pass ? 'PASS' : 'FAIL'} ${r.name}${r.flaky ? ' (flaky: failed once, passed on retry)' : ''}${r.baseRedFixed ? ` (base-red-fixed: ${r.baseRedFixed.join(', ')})` : ''}${r.fallback ? ` (fallback reviewer ${r.reviewer}; ${r.fallback.from} ${r.fallback.status})` : ''}${r.effort ? ` (re-review of a small doc change: effort ${r.effort})` : ''}${r.unavailable?.length ? ` (out: ${r.unavailable.map(outLine).join('; ')})` : ''}${r.unparsed?.length ? ` (unparsed: ${r.unparsed.join('; ')})` : ''}${r.problems.length ? ` ${JSON.stringify(r.problems)}` : ''}`;
 
 /** Checks and the regression tests run on a fresh checkout of head, never on worker leftovers (REQ-GATE-1, -3, -13, -14). */
 function candidateStages(ctx) {
@@ -355,6 +355,66 @@ function baseGreenFile({ repo, base, config, cacheDir }) {
   return join(cacheDir, 'base-green', createHash('sha256').update(key).digest('hex'));
 }
 
+// A failure word or mark, or a `path:<line>` location (a stack frame, a pytest or go error line), on a line naming a file.
+const FAILURE_MARK = /\b(?:FAIL(?:ED)?|failed|Error|not ok)\b|[✗✕×✖]/;
+/**
+ * Whether runner output shows `path` failing (REQ-GATE-52): a line names it with a failure mark or a location. A line
+ * that only names it (a runner listing each file it runs, `✓ test/x.test.js`) does not count, nor a mark in the path itself.
+ */
+const failsIn = (out, path, dir) =>
+  out
+    .split('\n')
+    .some(
+      (line) =>
+        line.includes(path) &&
+        namesPath(line, path, dir) &&
+        (FAILURE_MARK.test(line.replaceAll(path, '')) || new RegExp(`${escapeRe(path)}:\\d`).test(line)),
+    );
+
+/**
+ * A red base baseline (REQ-GATE-52). It passes the red proof as `base-red-fixed` only when every failing file is a proof
+ * file the card modifies: those are red on base and pass on head. A targeted baseline ran only such files; an untargeted
+ * one must pass with them removed from the base checkout. Never recorded (REQ-GATE-17). Otherwise `baseline-not-green`
+ * names the base test files the runner output shows failing.
+ */
+function baseRed({ repo, base, config }, dir, proof, onBase, baseline) {
+  const modified = onBase ?? proof.filter((p) => fileMode(base, p, repo));
+  const outs = [baseline.out];
+  const named = (files) => files.filter((p) => outs.some((out) => failsIn(out, p, dir)));
+  const output = tail(baseline.out);
+  // A timeout or a runner that cannot start is not a test failure; a targeted failure must name a file it ran.
+  let fixed = !inconclusive(baseline) && (onBase ? named(onBase).length > 0 : false);
+  let flaky = false;
+  if (!onBase && modified.length && !inconclusive(baseline)) {
+    for (const p of modified) {
+      const err = writeInside(dir, p, (t) => unlinkSync(t));
+      if (err) return fail('red-proof', 'unsafe-path', { detail: err });
+    }
+    const without = runHead(config.testCommand, dir, config);
+    fixed = without.code === 0;
+    flaky = Boolean(without.flaky);
+    if (!fixed) outs.push(without.out);
+  }
+  if (fixed) {
+    const files = named(modified);
+    return {
+      name: 'red-proof',
+      pass: true,
+      problems: [],
+      files: proof,
+      baseRedFixed: files.length ? files : modified,
+      output,
+      ...(flaky ? { flaky: true } : {}),
+      ...(onBase ? { targeted: true } : {}),
+    };
+  }
+  const tests = git(['ls-tree', '-r', '-z', '--name-only', base], repo)
+    .split('\0')
+    .filter((p) => p && matchesAny(p, config.testGlobs));
+  const files = named(tests);
+  return { ...fail('red-proof', 'baseline-not-green', files.length ? { files } : {}), output };
+}
+
 /**
  * Counterfactual regression proof (REQ-GATE-3): the base must be green, and the new tests overlaid on base
  * must fail as a real test failure that names a new test file.
@@ -376,7 +436,7 @@ function redProof(ctx) {
       const command = onBase ? filesCommand(config, onBase) : config.testCommand;
       const baseline = runHead(command, dir, config); // A load-induced base failure gets one retry too (REQ-GATE-18).
       flaky = Boolean(baseline.flaky);
-      if (baseline.code !== 0) return { ...fail('red-proof', 'baseline-not-green'), output: tail(baseline.out) };
+      if (baseline.code !== 0) return baseRed(ctx, dir, proof, onBase, baseline);
       if (cached && !onBase) {
         mkdirSync(dirname(cached), { recursive: true });
         writeFileSync(cached, `${new Date().toISOString()}\n`); // Only a green base is cached (REQ-GATE-17).
