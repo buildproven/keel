@@ -3,12 +3,23 @@ import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, rena
 import { basename, dirname, join, resolve } from 'node:path';
 import { builderText, linkedDirs } from './config.js';
 import { changedFiles, exec, git, isDirty, revParse, withTempWorktree } from './git.js';
-import { failureSummary, gate, inconclusive, linkShared, prepareCheckout, repairLines, shell, staticStage } from './gate.js';
+import {
+  failingTests,
+  failureSummary,
+  gate,
+  inconclusive,
+  linkShared,
+  listFiles,
+  prepareCheckout,
+  repairLines,
+  shell,
+  staticStage,
+} from './gate.js';
 import { removeParkedWorktree } from './clean.js';
 import { mergeReadiness } from './doctor.js';
 import { GATE_CONTEXT, postGateStatus } from './status.js';
 import { appendAttempt, readLedger, stateDir } from './ledger.js';
-import { approveEdits, reviewerFor } from './review.js';
+import { approveEdits, judgeHeldOut, reviewerFor } from './review.js';
 import { spendFile } from './window.js';
 import { matchesAny } from './scan.js';
 import { addUsage, runWorker } from './workers.js';
@@ -198,12 +209,16 @@ function combine(a, b) {
   return { ...b, usage, cost: sum(a.cost, b.cost), durationMs: a.durationMs + b.durationMs };
 }
 
-const authorPrompt = (card) =>
+const authorPrompt = (card, defect) =>
   [
     `You write held-out acceptance tests for card ${card.id} in this git worktree. Another agent implements the card later without seeing your tests; the gate then runs them.`,
     'Write tests only, in new test files, at least one per requirement, each naming its requirement ID. Do not change any other file and do not commit.',
     'Each test must fail on the current code because the required behavior is missing, and pass once the card is implemented as written.',
     'Test only behavior the card states, through interfaces the card or the existing code names. Do not depend on new internal names the card does not give.',
+    // A re-authoring after a defect check (REQ-RUN-46) must not write the same defect again.
+    ...(defect
+      ? ['', `A reviewer found the previous held-out tests for this card defective: ${defect}`, 'Do not repeat that defect.']
+      : []),
     '',
     '# Card',
     builderText(card),
@@ -253,10 +268,10 @@ function keptNames(dir, added, config) {
  * Held-out tests from the author tier (REQ-RUN-17), written on a temporary checkout of base the builder never sees.
  * They are kept only when they fail on base as a real test failure that names them. Returns an error text, or null.
  */
-function authorHeldOut({ repo, card, config, baseSha, runId, heldDir, log }) {
+function authorHeldOut({ repo, card, config, baseSha, runId, heldDir, log, defect = null }) {
   const index = config.heldOutAuthorTier;
   const t = config.tiers[index];
-  log(`held-out author: tier ${index} ${t.provider}/${t.model}/${t.effort}`);
+  log(`held-out ${defect ? 're-author' : 'author'}: tier ${index} ${t.provider}/${t.model}/${t.effort}`);
   const row = {
     run: runId,
     card: card.id,
@@ -275,7 +290,7 @@ function authorHeldOut({ repo, card, config, baseSha, runId, heldDir, log }) {
     return withTempWorktree(repo, baseSha, (dir) => {
       const installed = prepareCheckout(repo, dir, config);
       if (installed) return `install failed:\n${installed.out.slice(-2000)}`;
-      const w = runWorker(t, authorPrompt(card), dir, config);
+      const w = runWorker(t, authorPrompt(card, defect), dir, config);
       Object.assign(row, { workerStatus: w.status, usage: w.usage, cost: w.cost, durationMs: w.durationMs });
       if (w.status !== 'ok') return `author worker ${w.status}:\n${w.output}`;
       git(['add', '-A'], dir);
@@ -299,6 +314,45 @@ function authorHeldOut({ repo, card, config, baseSha, runId, heldDir, log }) {
   } finally {
     appendAttempt({ usage: null, durationMs: 0, workerStatus: 'harness-error', ...row });
   }
+}
+
+/** The test names a held-out stage that failed on head names in its private output (REQ-RUN-46), or null. */
+function heldOutFailing(receipt) {
+  const r = receipt?.results.find((x) => x.name === 'held-out' && x.problems.some((p) => p.rule === 'held-out-fails-on-head'));
+  const names = r ? failingTests(r.privateOutput ?? '') : [];
+  return names.length ? names : null;
+}
+
+/** The failure text after a held-out defect (REQ-RUN-46): it names no test, output, or reason, all held out (REQ-RUN-19). */
+const HELD_OUT_REPLACED =
+  'Keel found the held-out tests defective and replaced them; your work may already meet the card. Check it against every requirement, fix any gap, and leave correct work as it is.';
+
+/**
+ * The defect check (REQ-RUN-46): ask the other family whether the held-out tests, which failed the same way on two
+ * builds, are defective. On DEFECT, author new ones into `heldDir` (REQ-RUN-17), kept only when they fail on base.
+ * Returns true when the run goes on with the new set; false escalates as before.
+ */
+function checkHeldOut({ repo, card, config, t, baseSha, runId, heldDir, wt, head, output, row, log }) {
+  const files = listFiles(card.heldOut).map((path) => ({ path, text: readFileSync(join(card.heldOut, path), 'utf8') }));
+  const { answer, ...spent } = judgeHeldOut({ config, builder: t, card, files, output, cwd: wt, head });
+  Object.assign(row, { reviewCost: spent.cost, reviewUsage: spent.usage, reviewUnpriced: Boolean(spent.unpriced) }); // REQ-LED-13
+  if (!answer) {
+    log('held-out check: no tier answered DEFECT or VALID; escalating');
+    return false;
+  }
+  const verdict = { by: answer.by, reason: answer.reason };
+  if (!answer.defect) {
+    row.heldOutValid = verdict;
+    log(`held-out tests valid per ${answer.by}; escalating`);
+    return false;
+  }
+  row.heldOutDefect = verdict;
+  log(`held-out tests defective per ${answer.by}: ${answer.reason}`);
+  const error = authorHeldOut({ repo, card, config, baseSha, runId, heldDir, log, defect: answer.reason });
+  if (!error) return true;
+  row.heldOutDefect = { ...verdict, replaced: false };
+  log(`held-out re-author failed, so the old tests stay; escalating:\n${error}`);
+  return false;
 }
 
 function excludeShared(repo, dirs) {
@@ -723,8 +777,8 @@ function runLocked({ repo, card, config, baseSha, baseBranch, branch, wt, pr, me
   linkShared(repo, wt, linkedDirs(config));
 
   const runId = randomUUID();
+  const heldDir = join(stateDir(), 'heldout', basename(wt)); // Keel's own per-card held-out dir (REQ-RUN-17, -46)
   if (needsAuthoring(card, config)) {
-    const heldDir = join(stateDir(), 'heldout', basename(wt));
     const error = kept && existsSync(heldDir) ? null : authorHeldOut({ repo, card, config, baseSha, runId, heldDir, log });
     if (error) {
       // No build attempt ran: the worktree and branch this run made hold no work, and would block the next run (REQ-RUN-41).
@@ -744,6 +798,8 @@ function runLocked({ repo, card, config, baseSha, baseBranch, branch, wt, pr, me
   const followUps = []; // found work across all attempts (REQ-RUN-26, -27)
   const approvedEdits = []; // allowEdits the other family approved (REQ-RUN-30)
   let session = null; // the last CLI session and its tier, continued when the next call is the same CLI (REQ-RUN-33)
+  let heldOutFailed = null; // the held-out tests the last attempt failed on head (REQ-RUN-46)
+  let heldOutChecked = false; // one defect check per held-out set (REQ-RUN-46)
   for (let attempt = 1; attempt <= config.maxAttempts; attempt++) {
     const t = config.tiers[tier];
     log(`attempt ${attempt}: tier ${tier} ${t.provider}/${t.model}/${t.effort}`);
@@ -769,6 +825,7 @@ function runLocked({ repo, card, config, baseSha, baseBranch, branch, wt, pr, me
     let receipt = null;
     let commitError = null;
     let blocked = null;
+    let heldOutReplaced = false;
     /** One worker call, continuing the last session when it is the same CLI (REQ-RUN-33). */
     const turn = (text) => {
       const resume = session && sameCli(session.tier, t) ? session.id : null;
@@ -863,6 +920,18 @@ function runLocked({ repo, card, config, baseSha, baseBranch, branch, wt, pr, me
           log(`flaky (failed once, passed on retry): ${flaky.join(', ')}`);
         }
       }
+      // The same held-out test failing on two builds may be the test's defect: a stronger tier cannot fix it (REQ-RUN-46).
+      const failing = heldOutFailing(receipt);
+      if (failing && heldOutFailed?.some((n) => failing.includes(n)) && !heldOutChecked && config.heldOutAuthorTier !== null) {
+        heldOutChecked = true;
+        const output = receipt.results.find((r) => r.name === 'held-out').privateOutput;
+        heldOutReplaced = checkHeldOut({ repo, card, config, t, baseSha, runId, heldDir, wt, head: receipt.head, output, row, log });
+        if (heldOutReplaced) {
+          card = { ...card, heldOut: heldDir };
+          heldOutChecked = false;
+        }
+      }
+      heldOutFailed = heldOutReplaced ? null : failing;
     } finally {
       appendAttempt({ usage: null, durationMs: 0, workerStatus: 'harness-error', ...row }); // Recorded even when the gate throws.
     }
@@ -986,6 +1055,12 @@ function runLocked({ repo, card, config, baseSha, baseBranch, branch, wt, pr, me
         log(`card budget reached: ${usd(spent)} of $${config.cardBudgetUsd}`);
         return { pass: false, stopped: 'budget', branch, worktree: wt, failure, followUps };
       }
+    }
+    if (heldOutReplaced) {
+      // The tests were the defect, not the build: the same tier builds again against the new set (REQ-RUN-46).
+      failure = HELD_OUT_REPLACED;
+      log(`attempt ${attempt + 1} stays on tier ${tier} with new held-out tests`);
+      continue;
     }
     if (next === null) return { pass: false, stopped: 'quota', branch, worktree: wt, failure, followUps };
     networkRetries = next === tier && w.status === 'network' ? networkRetries + 1 : 0;
