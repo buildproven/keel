@@ -1,37 +1,44 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { tmp } from './helpers.js';
 
 const ENV_JS = new URL('../src/env.js', import.meta.url).href;
-
-function restoreAndRemoveNoghDirs(tmpDir) {
+function removeNoghDirs(tmpDir) {
   for (const name of readdirSync(tmpDir)) {
     if (!name.startsWith('keel-nogh-')) continue;
-    const dir = join(tmpDir, name);
-    const locked = join(dir, 'locked');
-    if (existsSync(locked)) chmodSync(locked, 0o700);
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(join(tmpDir, name), { recursive: true, force: true });
   }
 }
 
-const MAKE_UNREMOVABLE = `import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
+const MAKE_UNREMOVABLE = `import { mock } from 'node:test';
+import { mkdtempSync, readdirSync, rmSync as realRmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { candidateEnv } from ${JSON.stringify(ENV_JS)};
+let removeCalls = 0;
+mock.module('node:fs', { exports: {
+  mkdtempSync,
+  readdirSync,
+  rmSync(dir, options) {
+    if (removeCalls++ === 0) {
+      const error = new Error('injected permission failure');
+      error.code = 'EACCES';
+      throw error;
+    }
+    realRmSync(dir, options);
+  },
+} });
+const { candidateEnv } = await import(${JSON.stringify(ENV_JS)});
 const first = candidateEnv({}).GH_CONFIG_DIR;
-const locked = join(first, 'locked');
-mkdirSync(locked);
-writeFileSync(join(locked, 'hosts.yml'), 'x');
-chmodSync(locked, 0);
+writeFileSync(join(first, 'hosts.yml'), 'x');
 const second = candidateEnv({}).GH_CONFIG_DIR;
 console.log(JSON.stringify({ first, second }));`;
 
 test('REQ-RUN-40 an unremovable keel-nogh dir does not fail exit or stop cleanup of later dirs', (t) => {
   const tmpDir = tmp('keel-nogh-error-');
-  t.after(() => restoreAndRemoveNoghDirs(tmpDir));
-  const result = spawnSync(process.execPath, ['--input-type=module', '-e', MAKE_UNREMOVABLE], {
+  t.after(() => removeNoghDirs(tmpDir));
+  const result = spawnSync(process.execPath, ['--experimental-test-module-mocks', '--input-type=module', '-e', MAKE_UNREMOVABLE], {
     env: { ...process.env, TMPDIR: tmpDir },
     encoding: 'utf8',
   });
@@ -45,11 +52,15 @@ test('REQ-RUN-40 an unremovable keel-nogh dir does not fail exit or stop cleanup
 
 test('REQ-RUN-47 an unremovable keel-nogh dir does not replace the signal that ends the process', async (t) => {
   const tmpDir = tmp('keel-nogh-signal-error-');
-  t.after(() => restoreAndRemoveNoghDirs(tmpDir));
-  const proc = spawn(process.execPath, ['--input-type=module', '-e', `${MAKE_UNREMOVABLE}\nsetInterval(() => {}, 1000);`], {
-    env: { ...process.env, TMPDIR: tmpDir },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  t.after(() => removeNoghDirs(tmpDir));
+  const proc = spawn(
+    process.execPath,
+    ['--experimental-test-module-mocks', '--input-type=module', '-e', `${MAKE_UNREMOVABLE}\nsetInterval(() => {}, 1000);`],
+    {
+      env: { ...process.env, TMPDIR: tmpDir },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
+  );
   t.after(() => {
     if (proc.exitCode === null && proc.signalCode === null) proc.kill('SIGKILL');
   });
