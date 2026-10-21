@@ -16,7 +16,7 @@ import {
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { checkEnv } from './env.js';
 import { linkedDirs } from './config.js';
-import { outLine, reviewStage, testEditStage } from './review.js';
+import { outLine, reviewStage, signInFixes, testEditStage } from './review.js';
 import { fixedSlots, withGateSlot } from './slots.js';
 import { recordGateTimes, timingLine } from './timing.js';
 import {
@@ -743,6 +743,7 @@ export function gate({
   if (waitReviewHours > 0 && last?.name === 'review' && last.problems.some((p) => p.rule === 'review-unavailable')) {
     const ms = resetWaitMs(last.unavailable ?? []);
     if (ms !== null && ms <= waitReviewHours * 3600 * 1000) {
+      for (const line of signInFixes(last.unavailable)) log(line); // fixing a sign-in beats the wait (REQ-GATE-53)
       log(`every reviewer is out; waiting ${Math.ceil(ms / 60000)} min for the reset, then the review runs again`);
       sleep(ms);
       results[results.length - 1] = timed(() => [review(ctx)])[0];
@@ -782,6 +783,9 @@ export function gate({
       throw error;
     }
   }
+  // A reviewer that cannot sign in is a lost fallback, named even when another reviewer answered (REQ-GATE-53).
+  const signIn = signInFixes(results.find((r) => r.name === 'review')?.unavailable);
+  if (signIn.length) receipt.improve = [...(receipt.improve ?? []), ...signIn];
   return receipt;
 }
 
