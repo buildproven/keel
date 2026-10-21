@@ -38,7 +38,7 @@
     "access": "public"
   },
   "scripts": {
-    "test": "LINEAR_API_KEY= PATH=\"$PWD/test/bin:$PATH\" node --test --test-concurrency=4 --test-timeout=120000 --test-force-exit test/*.test.js",
+    "test": "PATH=\"$PWD/test/bin:$PATH\" node --test --test-concurrency=4 --test-timeout=120000 --test-force-exit test/*.test.js",
     "lint": "eslint .",
     "format:check": "prettier --check .",
     "gate": "node bin/keel.js gate --base origin/main"

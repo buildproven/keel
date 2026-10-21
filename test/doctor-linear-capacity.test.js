@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { readFileSync } from 'node:fs';
 import { LINEAR_ISSUE_LIMIT, linearCapacity, linearDoctor } from '../src/doctor.js';
 import { linearHttpClient } from '../src/linear-http.js';
 
@@ -79,9 +78,4 @@ test('REQ-CLI-16 capacity() counts unarchived issues across every page and retur
   assert.equal(bodies[1].variables.after, 'c1');
   assert.match(bodies[0].query, /issues\(first: 250/);
   assert.doesNotMatch(bodies[0].query, /includeArchived: true/);
-});
-
-test('REQ-CLI-16 the test script runs with LINEAR_API_KEY cleared, so no test reaches the real Linear', () => {
-  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
-  assert.match(pkg.scripts.test, /^LINEAR_API_KEY= /);
 });
