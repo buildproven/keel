@@ -154,3 +154,22 @@ export function linearCapacity({ open, teams }) {
   }
   return rows;
 }
+
+/**
+ * The doctor's Linear lines (REQ-CLI-16): nothing without LINEAR_API_KEY; else each linearCapacity row is logged as
+ * `<LEVEL> <text>`. Returns true when a row is FAIL, so the doctor exits 1. A read error is logged as a WARN and does
+ * not fail the doctor: Linear being down does not make the repo unhealthy, but it is shown.
+ */
+export async function linearDoctor({ env, client, log }) {
+  if (!env.LINEAR_API_KEY) return false;
+  let usage;
+  try {
+    usage = await client().capacity();
+  } catch (e) {
+    log(`WARN linear capacity unknown: ${e.message}`);
+    return false;
+  }
+  const rows = linearCapacity(usage);
+  for (const r of rows) log(`${r.level} ${r.text}`);
+  return rows.some((r) => r.level === 'FAIL');
+}
