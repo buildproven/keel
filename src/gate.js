@@ -621,7 +621,7 @@ const isObject = (x) => x !== null && typeof x === 'object' && !Array.isArray(x)
  * may still be writing one, so a file that is not JSON, or has no commit SHA head, date, or results list, is not a
  * receipt, nor is anything but a regular file (REQ-GATE-23). The head goes to git, so it must be a SHA, not an option.
  */
-function readReceipt(file) {
+export function readReceipt(file) {
   // Only a regular file: a directory throws, and a FIFO would block the gate forever (REQ-GATE-23).
   if (!statSync(file).isFile()) return null;
   let r;
