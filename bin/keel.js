@@ -6,7 +6,7 @@ import { autoClean } from '../src/autoclean.js';
 import { expectedBranch, listParkedWorktrees, removeParkedWorktree } from '../src/clean.js';
 import { loadConfig, readTrustedCard } from '../src/config.js';
 import { branchCard, defaultBase, findDefaultBase } from '../src/defaults.js';
-import { doctor, keelGateRequired, mergeReadiness, setupAdvice } from '../src/doctor.js';
+import { doctor, keelGateRequired, linearDoctor, mergeReadiness, setupAdvice } from '../src/doctor.js';
 import { git } from '../src/git.js';
 import { dora, formatDora } from '../src/dora.js';
 import { escapedDefects, formatEscaped } from '../src/escaped.js';
@@ -292,6 +292,8 @@ if (values.version && command) {
       log(
         `INFO ${GATE_CONTEXT} required ${keelGateRequired(repo, branch) ? 'yes' : `no (a push after the gate can merge ungated; require ${GATE_CONTEXT} on ${branch})`}`,
       );
+      // Room for new Linear issues, when this machine polls Linear (REQ-CLI-16).
+      if (await linearDoctor({ env: process.env, client: linearHttpClient, log })) process.exitCode = 1;
     } else if (command === 'audit') {
       // Cross-family re-review of merges only a fallback reviewer saw (REQ-CLI-11).
       const limit = limitOption(values.limit, 500);

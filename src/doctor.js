@@ -126,3 +126,50 @@ export function keelGateRequired(repo, branch) {
     return r.status === 0 && r.stdout.split('\n').some((l) => l.trim() === 'true');
   });
 }
+
+/** Linear's Free plan allows 250 issues; archived issues do not count, and at the limit no issue can be created (REQ-CLI-16). */
+export const LINEAR_ISSUE_LIMIT = 250;
+const LINEAR_WARN_AT = 200;
+
+/**
+ * Doctor lines for the Linear workspace's room for new issues (REQ-CLI-16): `open` unarchived issues against
+ * LINEAR_ISSUE_LIMIT (WARN from 200, FAIL at the limit), and each team's auto-archive period in months (WARN above 1).
+ */
+export function linearCapacity({ open, teams }) {
+  const count = `linear ${open} of ${LINEAR_ISSUE_LIMIT} unarchived issues`;
+  const rows = [
+    open >= LINEAR_ISSUE_LIMIT
+      ? { level: 'FAIL', text: `${count}: Linear refuses new issues, so keel poll cannot file follow-ups; archive closed issues` }
+      : open >= LINEAR_WARN_AT
+        ? { level: 'WARN', text: `${count}: archive closed issues before Linear refuses new ones at ${LINEAR_ISSUE_LIMIT}` }
+        : { level: 'INFO', text: count },
+  ];
+  for (const t of teams) {
+    const after = `linear team ${t.key} auto-archives closed issues after ${t.autoArchivePeriod} month${t.autoArchivePeriod === 1 ? '' : 's'}`;
+    rows.push(
+      t.autoArchivePeriod > 1
+        ? { level: 'WARN', text: `${after}; set 1 so closed issues stop counting sooner` }
+        : { level: 'INFO', text: after },
+    );
+  }
+  return rows;
+}
+
+/**
+ * The doctor's Linear lines (REQ-CLI-16): nothing without LINEAR_API_KEY; else each linearCapacity row is logged as
+ * `<LEVEL> <text>`. Returns true when a row is FAIL, so the doctor exits 1. A read error is logged as a WARN and does
+ * not fail the doctor: Linear being down does not make the repo unhealthy, but it is shown.
+ */
+export async function linearDoctor({ env, client, log }) {
+  if (!env.LINEAR_API_KEY) return false;
+  let usage;
+  try {
+    usage = await client().capacity();
+  } catch (e) {
+    log(`WARN linear capacity unknown: ${e.message}`);
+    return false;
+  }
+  const rows = linearCapacity(usage);
+  for (const r of rows) log(`${r.level} ${r.text}`);
+  return rows.some((r) => r.level === 'FAIL');
+}
