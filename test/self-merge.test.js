@@ -86,18 +86,24 @@ function repoWithRemote() {
   return dir;
 }
 
-function fakeClient(issues = [], { state = 'started', doneError = null } = {}) {
+function fakeClient(issues = [], { state = 'started', doneError = null, stateError = null, commentError = null } = {}) {
   const calls = [];
   return {
     calls,
     listIssues: async () => issues,
-    comment: async (id, body) => calls.push({ id, body }),
+    comment: async (id, body) => {
+      if (commentError) throw new Error(commentError);
+      calls.push({ id, body });
+    },
     review: async (id) => calls.push({ id, action: 'review' }),
     done: async (id) => {
       if (doneError) throw new Error(doneError);
       calls.push({ id, action: 'done' });
     },
-    stateType: async () => state,
+    stateType: async () => {
+      if (stateError) throw new Error(stateError);
+      return state;
+    },
   };
 }
 
@@ -405,4 +411,21 @@ test('REQ-MERGE-4 selfMergeTimeoutMinutes defaults to 30 and must be a positive 
     g(dir, 'commit', '-q', '-m', `bad ${bad}`);
     assert.throws(() => loadConfig(dir, 'HEAD'), /"selfMergeTimeoutMinutes" must be a positive number/, String(bad));
   }
+});
+
+test('REQ-MERGE-8 a failed Linear read, or a failed comment too, still gives closeFailed and never aborts the poll', async () => {
+  const { dir } = fixtureRepo();
+  pending(dir);
+  setGh({ pr: green({ state: 'MERGED' }) });
+  const client = fakeClient([], { stateError: 'read timeout' });
+  const results = await pollMerge(dir, client);
+  assert.ok(results.some((r) => r.outcome === 'closeFailed' && r.detail === 'read timeout'));
+  assert.match(client.calls[0].body, /could not move it to Done \(read timeout\)/);
+  const other = fixtureRepo().dir;
+  pending(other);
+  const silent = fakeClient([], { doneError: 'Linear down', commentError: 'Linear down' });
+  const both = await pollMerge(other, silent);
+  assert.ok(
+    both.some((r) => r.outcome === 'closeFailed' && /Linear down; the comment that says so failed too: Linear down/.test(r.detail)),
+  );
 });

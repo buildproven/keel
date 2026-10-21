@@ -101,12 +101,15 @@ function decide(repo, p, timeoutMinutes, now) {
  * is also commented on the issue so it shows where a human looks.
  */
 async function closeMerged(client, p) {
-  if (['completed', 'canceled'].includes(await client.stateType(p.issue))) return null;
   try {
+    if (['completed', 'canceled'].includes(await client.stateType(p.issue))) return null;
     await client.done(p.issue);
   } catch (e) {
-    await client.comment(p.issue, `keel: ${p.pr} merged, but keel could not move it to Done (${e.message}). Close it by hand.`);
-    return e.message;
+    // A failed read or move is reported, never thrown: the merge is already settled, so no later poll retries it.
+    return client.comment(p.issue, `keel: ${p.pr} merged, but keel could not move it to Done (${e.message}). Close it by hand.`).then(
+      () => e.message,
+      (c) => `${e.message}; the comment that says so failed too: ${c.message}`,
+    );
   }
   await client.comment(p.issue, `keel: merged ${p.pr} at ${p.sha}; moved to Done.`);
   return null;
