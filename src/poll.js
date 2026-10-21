@@ -562,6 +562,10 @@ async function reportRun({ repo, base, config, client, issue, result }) {
     );
     return { outcome: 'deferred', issue: issue.id, result };
   }
+  if (result.stopped === 'config') {
+    await client.comment(issue.id, result.failure);
+    return { outcome: 'blocked', issue: issue.id, result };
+  }
   if (result.stopped === 'blocked') {
     // A claim that the work is already done closes the issue once its evidence holds (REQ-LINEAR-30).
     const done = ALREADY_SATISFIED.test(result.failure ?? '') ? verifyDone({ repo, base, config, reason: result.failure }) : null;
