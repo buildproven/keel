@@ -12,12 +12,32 @@ async function home(apiKey, sourceId, project) {
 
 const ENDPOINT = 'https://api.linear.app/graphql';
 
-async function gql(apiKey, query, variables) {
-  const res = await fetch(ENDPOINT, {
+// Connection errors raised before any response: the server closed a pooled keep-alive socket, often the first call
+// after a run of many minutes. undici never retries a POST, so the client does (REQ-LINEAR-36). A query is safe to send
+// again after any of them. A mutation is sent again only after EPIPE, where the request body never reached Linear: a
+// reset or closed socket may come after Linear applied it, and a replay would post a second comment or issue.
+const DEAD_CONNECTION = new Set(['EPIPE', 'ECONNRESET', 'UND_ERR_SOCKET', 'UND_ERR_CLOSED']);
+const RETRIES = 2;
+const retryable = (query, code) => code === 'EPIPE' || (DEAD_CONNECTION.has(code) && !/^\s*mutation\b/.test(query));
+
+async function post(apiKey, query, variables) {
+  const init = {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: apiKey },
     body: JSON.stringify({ query, variables }),
-  });
+  };
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fetch(ENDPOINT, init);
+    } catch (e) {
+      // Any other error, or the last try, is the caller's to see (REQ-LINEAR-6: the poll fails visibly).
+      if (attempt >= RETRIES || !retryable(query, e?.cause?.code)) throw e;
+    }
+  }
+}
+
+async function gql(apiKey, query, variables) {
+  const res = await post(apiKey, query, variables);
   const body = await res.json();
   if (!res.ok) throw new Error(`Linear API HTTP ${res.status}: ${body.errors?.[0]?.message ?? 'request failed'}`);
   if (body.errors?.length) throw new Error(`Linear API error: ${body.errors.map((e) => e.message).join('; ')}`);
