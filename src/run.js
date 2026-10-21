@@ -46,7 +46,7 @@ const LEARN_MIN_RUNS = 5; // fewer runs that started at a tier say nothing about
 const LEARN_WINDOW = 20; // the most recent runs that started at a tier
 const PROBE_AFTER = 10; // runs that started above a skipped tier before it is tried again
 // First tries that say nothing about the model: the card, the provider, or Keel stopped them (REQ-RUN-21).
-const NOT_THE_MODEL = new Set(['blocked', 'approved', 'quota', 'network', 'auth', 'harness-error']);
+const NOT_THE_MODEL = new Set(['blocked', 'approved', 'quota', 'network', 'auth', 'config', 'harness-error']);
 /**
  * A tier's identity in the ledger (REQ-RUN-35): rows keep it, so a reordered ladder cannot misread them. An exec tier is
  * its command too, since model and effort are optional there.
@@ -757,9 +757,12 @@ export function startReserved(tiers, tier, ruleTier, reserved, log = () => {}) {
   return null;
 }
 
-/** The one-line (blocked: multi-line) message `keel run` prints when it stops without a pass (REQ-RUN-13). */
-export const describeStop = ({ stopped, failure, worktree }) =>
-  `STOPPED (${stopped})${stopped === 'blocked' ? `: the worker reports the card blocked:\n${failure}\n` : ' —'} ${worktree ? `worktree kept at ${worktree}` : `no worktree kept: ${failure}`}`;
+/** The message `keel run` prints when it stops without a pass (REQ-RUN-13, REQ-RUN-49). */
+export const describeStop = ({ stopped, failure, worktree }) => {
+  const detail =
+    stopped === 'blocked' ? `: the worker reports the card blocked:\n${failure}\n` : stopped === 'config' ? `:\n${failure}\n` : ' —';
+  return `STOPPED (${stopped})${detail} ${worktree ? `worktree kept at ${worktree}` : `no worktree kept: ${failure}`}`;
+};
 
 /** Attempt loop: cheapest tier first, escalate on failure, stop on auth, exhausted quota, or a blocked card. */
 export function run({ repo, card, config, base = 'HEAD', pr = false, merge = false, reserved = new Map(), log = () => {} }) {
@@ -911,6 +914,7 @@ function runLocked({ repo, card, config, baseSha, baseBranch, branch, wt, pr, me
     let receipt = null;
     let commitError = null;
     let blocked = null;
+    let configFailure = null;
     let heldOutReplaced = false;
     /** One worker call, continuing the last session when it is the same CLI (REQ-RUN-33). */
     const turn = (text) => {
@@ -1005,6 +1009,8 @@ function runLocked({ repo, card, config, baseSha, baseBranch, branch, wt, pr, me
           row.flaky = flaky;
           log(`flaky (failed once, passed on retry): ${flaky.join(', ')}`);
         }
+        configFailure = !['blocked', 'auth'].includes(w.status) ? unseenTestFailure(receipt) : null;
+        if (configFailure) row.workerStatus = 'config';
       }
       // The same held-out test failing on two builds may be the test's defect: a stronger tier cannot fix it (REQ-RUN-46).
       const failing = heldOutFailing(receipt);
@@ -1037,7 +1043,6 @@ function runLocked({ repo, card, config, baseSha, baseBranch, branch, wt, pr, me
         failure: unavailable.output ?? '',
         followUps,
       };
-    const configFailure = unseenTestFailure(receipt);
     if (configFailure) return { pass: false, stopped: 'config', branch, worktree: wt, failure: configFailure, followUps, approvedEdits };
     if (w.status === 'ok' && receipt?.pass) {
       // One corrective turn on the review's notes before a bug or feature card is accepted (REQ-RUN-36).

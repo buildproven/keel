@@ -4,8 +4,9 @@ import { join } from 'node:path';
 import { beforeEach, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { parseCard } from '../src/config.js';
+import { readLedger } from '../src/ledger.js';
 import { poll } from '../src/poll.js';
-import { run } from '../src/run.js';
+import { describeStop, learnedStart, run, tierLabel } from '../src/run.js';
 import { fixtureConfig, fixtureRepo, tmp } from './helpers.js';
 
 const FAKE = fileURLToPath(new URL('./fake-worker.js', import.meta.url));
@@ -53,6 +54,33 @@ test('REQ-RUN-49 an unseen new test stops the run as config after one attempt', 
   assert.equal(calls().length, 1);
   assert.match(result.failure, /test\/add\.test\.js/);
   assert.match(result.failure, /set `testFilesCommand` or make `testCommand` run (?:it|them)/i);
+  assert.match(describeStop(result), /test\/add\.test\.js/);
+  assert.match(describeStop(result), /testFilesCommand/);
+});
+
+test('REQ-RUN-49 a config stop does not train learned routing as a model failure', () => {
+  const { dir } = fixtureRepo();
+  const config = ignoredTestConfig({ tiers: [tier('cheap'), tier('strong')], maxAttempts: 2 });
+  run({ repo: dir, card: card(), config });
+
+  const [configStop] = readLedger();
+  assert.equal(configStop.workerStatus, 'config');
+  const cheapFailures = Array.from({ length: 4 }, (_, index) => ({
+    ...configStop,
+    run: `cheap-${index}`,
+    workerStatus: 'ok',
+    at: new Date(index).toISOString(),
+  }));
+  const strongCost = {
+    ...configStop,
+    run: 'strong-cost',
+    attempt: 2,
+    tier: 1,
+    tierLabel: tierLabel(config.tiers[1]),
+    workerStatus: 'ok',
+    cost: 1,
+  };
+  assert.equal(learnedStart([...cheapFailures, configStop, strongCost], configStop.repo, 0, { ...config, learnStart: true }).tier, 0);
 });
 
 test('REQ-RUN-49 poll comments the config stop and blocks the issue', async () => {
