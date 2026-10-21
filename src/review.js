@@ -160,7 +160,7 @@ export function reviewStage({ repo, base, head, card, config, changed, reviewer,
     if (down) {
       if (t === reviewer) [outage, primary] = [down, r];
       else tried.push(r.reviewer);
-      unavailable.push(reason(r, down));
+      unavailable.push(reason(r, down, t));
       if (down.status === 'quota') learnLimit(spendFile, family(t)); // the next gate switches early (REQ-GATE-27)
       continue;
     }
@@ -186,14 +186,36 @@ export function retryAt(output) {
 /** One reviewer that gave no verdict, for the stage line and the keel/gate description (REQ-GATE-26). */
 export const outLine = (u) => `${u.reviewer} ${u.status}${u.retryAt ? ` (retry ${u.retryAt})` : ''}`;
 
-function reason(r, down) {
+function reason(r, down, tier) {
   const at = retryAt(r.output);
   return {
     reviewer: r.reviewer,
+    family: family(tier),
     status: down.status === 'ok' ? 'no verdict' : down.status,
     ...(at ? { retryAt: at } : {}),
     output: (r.output ?? '').slice(-500),
   };
+}
+
+const SIGN_IN = {
+  claude:
+    'run `claude auth status` where Keel runs; over SSH on macOS the login Keychain is locked, so set CLAUDE_CODE_OAUTH_TOKEN (made once by `claude setup-token`) in that shell',
+  codex: 'run `codex login status` where Keel runs, then `codex login`',
+};
+
+/**
+ * One IMPROVE line per reviewer that was out because it cannot sign in (REQ-GATE-53). Waiting never fixes this, and
+ * each such reviewer is a fallback lost (REQ-GATE-22): on 2026-10-21 a gate waited about 2 h for a Codex reset while
+ * every Claude fallback failed `auth` over SSH.
+ */
+export function signInFixes(unavailable = []) {
+  const lines = unavailable
+    .filter((u) => u.status === 'auth')
+    .map(
+      (u) =>
+        `IMPROVE: reviewer ${u.reviewer} cannot sign in, so a fallback is lost; ${SIGN_IN[u.family] ?? 'log its CLI in where Keel runs'}`,
+    );
+  return [...new Set(lines)];
 }
 
 /** A reviewer that ran at no known cost (no price, or no usage to price): the summed cost is then a lower bound (REQ-LED-12, -13). */
