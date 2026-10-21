@@ -86,14 +86,24 @@ function repoWithRemote() {
   return dir;
 }
 
-function fakeClient(issues = []) {
+function fakeClient(issues = [], { state = 'started', doneError = null, stateError = null, commentError = null } = {}) {
   const calls = [];
   return {
     calls,
     listIssues: async () => issues,
-    comment: async (id, body) => calls.push({ id, body }),
+    comment: async (id, body) => {
+      if (commentError) throw new Error(commentError);
+      calls.push({ id, body });
+    },
     review: async (id) => calls.push({ id, action: 'review' }),
-    stateType: async () => 'started',
+    done: async (id) => {
+      if (doneError) throw new Error(doneError);
+      calls.push({ id, action: 'done' });
+    },
+    stateType: async () => {
+      if (stateError) throw new Error(stateError);
+      return state;
+    },
   };
 }
 
@@ -322,7 +332,55 @@ test('REQ-MERGE-3 a conflicting PR is left to the conflict rebuild, and a PR mer
   results = await pollMerge(dir, client);
   assert.ok(pollRows().some((r) => r.outcome === 'self-merged'));
   assert.deepEqual(prCalls('merge'), []);
-  assert.deepEqual(client.calls, []);
+  assert.deepEqual(prCalls('comment'), [], 'no PR comment for a PR merged outside Keel');
+});
+
+test('REQ-MERGE-8 a self-merge Keel merges moves its issue to Done with a comment', async () => {
+  const { dir } = fixtureRepo();
+  pending(dir);
+  setGh({ pr: green(), runs: [] });
+  const client = fakeClient();
+  const results = await pollMerge(dir, client);
+  assert.ok(results.some((r) => r.outcome === 'merged'));
+  assert.deepEqual(client.calls[0], { id: 'BUI-1', action: 'done' });
+  assert.match(client.calls[1].body, new RegExp(`keel: merged ${URL_} at ${SHA}; moved to Done`));
+});
+
+test('REQ-MERGE-8 a self-merge PR merged outside Keel also moves its issue to Done; a closed issue is left alone', async () => {
+  const { dir } = fixtureRepo();
+  pending(dir);
+  setGh({ pr: green({ state: 'MERGED' }) });
+  const client = fakeClient();
+  await pollMerge(dir, client);
+  assert.deepEqual(client.calls[0], { id: 'BUI-1', action: 'done' });
+  const other = fixtureRepo().dir;
+  pending(other);
+  const closed = fakeClient([], { state: 'completed' });
+  await pollMerge(other, closed);
+  assert.deepEqual(closed.calls, [], 'an issue the GitHub integration already closed is not touched');
+  const closedPr = fixtureRepo().dir;
+  pending(closedPr);
+  setGh({ pr: green({ state: 'CLOSED' }) });
+  const unmerged = fakeClient();
+  await pollMerge(closedPr, unmerged);
+  assert.deepEqual(unmerged.calls, [], 'a PR closed without a merge does not close the issue');
+});
+
+test('REQ-MERGE-8 a failed move to Done is logged, commented, and makes the poll exit 1', async () => {
+  const { dir } = fixtureRepo();
+  pending(dir);
+  setGh({ pr: green({ state: 'MERGED' }) });
+  const client = fakeClient([], { doneError: 'Linear down' });
+  const logs = [];
+  const results = await pollMerge(dir, client, { log: (l) => logs.push(l) });
+  assert.ok(results.some((r) => r.outcome === 'closeFailed' && r.issue === 'BUI-1'));
+  assert.equal(pollExitCode(results), 1);
+  assert.ok(logs.some((l) => /BUI-1: merged but could not move to Done \(Linear down\)/.test(l)));
+  assert.match(client.calls[0].body, /could not move it to Done \(Linear down\)/);
+  assert.ok(
+    pollRows().some((r) => r.outcome === 'self-merged'),
+    'the merge stays settled',
+  );
 });
 
 test('REQ-MERGE-4 checks still pending after selfMergeTimeoutMinutes are a failure, not a pass', async () => {
@@ -353,4 +411,21 @@ test('REQ-MERGE-4 selfMergeTimeoutMinutes defaults to 30 and must be a positive 
     g(dir, 'commit', '-q', '-m', `bad ${bad}`);
     assert.throws(() => loadConfig(dir, 'HEAD'), /"selfMergeTimeoutMinutes" must be a positive number/, String(bad));
   }
+});
+
+test('REQ-MERGE-8 a failed Linear read, or a failed comment too, still gives closeFailed and never aborts the poll', async () => {
+  const { dir } = fixtureRepo();
+  pending(dir);
+  setGh({ pr: green({ state: 'MERGED' }) });
+  const client = fakeClient([], { stateError: 'read timeout' });
+  const results = await pollMerge(dir, client);
+  assert.ok(results.some((r) => r.outcome === 'closeFailed' && r.detail === 'read timeout'));
+  assert.match(client.calls[0].body, /could not move it to Done \(read timeout\)/);
+  const other = fixtureRepo().dir;
+  pending(other);
+  const silent = fakeClient([], { doneError: 'Linear down', commentError: 'Linear down' });
+  const both = await pollMerge(other, silent);
+  assert.ok(
+    both.some((r) => r.outcome === 'closeFailed' && /Linear down; the comment that says so failed too: Linear down/.test(r.detail)),
+  );
 });
