@@ -6,7 +6,7 @@ import { autoClean } from '../src/autoclean.js';
 import { expectedBranch, listParkedWorktrees, removeParkedWorktree } from '../src/clean.js';
 import { loadConfig, readTrustedCard } from '../src/config.js';
 import { branchCard, defaultBase, findDefaultBase } from '../src/defaults.js';
-import { doctor, keelGateRequired, mergeReadiness, setupAdvice } from '../src/doctor.js';
+import { doctor, keelGateRequired, linearCapacity, mergeReadiness, setupAdvice } from '../src/doctor.js';
 import { git } from '../src/git.js';
 import { dora, formatDora } from '../src/dora.js';
 import { escapedDefects, formatEscaped } from '../src/escaped.js';
@@ -292,6 +292,18 @@ if (values.version && command) {
       log(
         `INFO ${GATE_CONTEXT} required ${keelGateRequired(repo, branch) ? 'yes' : `no (a push after the gate can merge ungated; require ${GATE_CONTEXT} on ${branch})`}`,
       );
+      // Room for new Linear issues, when this machine polls Linear (REQ-CLI-16). A read error is a WARN: Linear being
+      // down does not make the repo unhealthy, but it is shown.
+      if (process.env.LINEAR_API_KEY) {
+        try {
+          for (const r of linearCapacity(await linearHttpClient().capacity())) {
+            log(`${r.level} ${r.text}`);
+            if (r.level === 'FAIL') process.exitCode = 1;
+          }
+        } catch (e) {
+          log(`WARN linear capacity unknown: ${e.message}`);
+        }
+      }
     } else if (command === 'audit') {
       // Cross-family re-review of merges only a fallback reviewer saw (REQ-CLI-11).
       const limit = limitOption(values.limit, 500);

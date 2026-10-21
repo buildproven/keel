@@ -80,6 +80,13 @@ const ISSUE_ID = `query ($id: String!) { issue(id: $id) { id } }`;
 
 const SET_DESCRIPTION = `mutation ($id: String!, $description: String!) { issueUpdate(id: $id, input: { description: $description }) { success } }`;
 
+const CAPACITY = `
+  query ($after: String) {
+    issues(first: 250, after: $after) { pageInfo { hasNextPage endCursor } nodes { id } }
+    teams { nodes { key autoArchivePeriod } }
+  }
+`;
+
 const MOVE_ISSUE = `mutation ($id: String!, $stateId: String!) { issueUpdate(id: $id, input: { stateId: $stateId }) { success } }`;
 
 /**
@@ -123,6 +130,20 @@ export function linearHttpClient() {
           .filter((r) => r.type === 'blocks' && !['completed', 'canceled'].includes(r.issue.state.type))
           .map((r) => r.issue.identifier),
       }));
+    },
+    /** Unarchived issues in the workspace (the query leaves archived ones out) and each team's auto-archive period (REQ-CLI-16). */
+    async capacity() {
+      const apiKey = key();
+      let open = 0;
+      let teams = [];
+      let after = null;
+      do {
+        const data = await gql(apiKey, CAPACITY, after ? { after } : {});
+        open += data.issues.nodes.length;
+        teams = data.teams.nodes;
+        after = data.issues.pageInfo.hasNextPage ? data.issues.pageInfo.endCursor : null;
+      } while (after);
+      return { open, teams };
     },
     async comment(issueId, body) {
       const apiKey = key();
