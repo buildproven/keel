@@ -35,7 +35,7 @@ export function pollExitCode(results) {
   if (
     results.some(
       (r) =>
-        ['failed', 'blocked', 'needsHuman', 'prFailed', 'followUpsFailed', 'mergeFailed'].includes(r.outcome) ||
+        ['failed', 'blocked', 'needsHuman', 'prFailed', 'followUpsFailed', 'mergeFailed', 'closeFailed'].includes(r.outcome) ||
         r.result?.merge?.state === 'failed',
     )
   )

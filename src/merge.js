@@ -96,6 +96,23 @@ function decide(repo, p, timeoutMinutes, now) {
 }
 
 /**
+ * Move the issue of a merged self-merge PR to Done (REQ-MERGE-8), unless it is already closed: Linear's GitHub
+ * integration closes it only for repos it is installed on. Returns null, or the error message of a failed move, which
+ * is also commented on the issue so it shows where a human looks.
+ */
+async function closeMerged(client, p) {
+  if (['completed', 'canceled'].includes(await client.stateType(p.issue))) return null;
+  try {
+    await client.done(p.issue);
+  } catch (e) {
+    await client.comment(p.issue, `keel: ${p.pr} merged, but keel could not move it to Done (${e.message}). Close it by hand.`);
+    return e.message;
+  }
+  await client.comment(p.issue, `keel: merged ${p.pr} at ${p.sha}; moved to Done.`);
+  return null;
+}
+
+/**
  * Finish pending self-merges (REQ-MERGE-2..7), at the start of `keel poll --merge`: merge each whose checks are all
  * green with `gh pr merge --squash --match-head-commit <certified sha>`, report each that cannot merge on the PR and
  * the issue, and leave the rest pending for a later poll, so no repo's poll waits on CI. Returns poll results:
@@ -118,6 +135,13 @@ export async function finishSelfMerges({ repo, config, client, log, now = Date.n
         log(`${p.issue}: merged ${p.pr} at ${p.sha}`);
         results.push({ outcome: 'merged', issue: p.issue });
       } else log(`${p.issue}: ${p.pr} was ${d.outcome === 'self-merged' ? 'merged' : 'closed'} outside Keel; self-merge dropped`);
+      if (d.outcome === 'self-merged') {
+        const failed = await closeMerged(client, p);
+        if (failed) {
+          log(`${p.issue}: merged but could not move to Done (${failed})`);
+          results.push({ outcome: 'closeFailed', issue: p.issue, detail: failed });
+        }
+      }
     } else {
       // Recorded first, so a comment error cannot make the next poll report it again (REQ-MERGE-3).
       recordPollAttempt(repo, { issue: p.issue, outcome: 'self-merge-failed', detail: { pr: p.pr, sha: p.sha, reason: d.reason } });
