@@ -702,6 +702,16 @@ function fixFindings({ wt, card, config, t, attempt, branch, baseSha, receipt, n
 
 const MAX_NETWORK_RETRIES = 2; // A stronger model fixes nothing about a dropped connection; retry the same tier this many times first.
 
+/** A red proof that proves the configured suite never ran the new tests cannot be repaired by a stronger model. */
+function unseenTestFailure(receipt) {
+  const problem = receipt?.results
+    .find((result) => result.name === 'red-proof')
+    ?.problems.find((candidate) => candidate.rule === 'test-passes-on-base' && typeof candidate.hint === 'string');
+  if (!problem) return null;
+  const files = Array.isArray(problem.files) && problem.files.length ? problem.files.join(', ') : 'the new test files';
+  return `The configured test command did not run the new test files: ${files}. Set \`testFilesCommand\` or make \`testCommand\` run them.`;
+}
+
 /**
  * Next tier after a failure (REQ-RUN-3, REQ-RUN-6, REQ-RUN-11): quota moves to another provider; a
  * network failure retries the same tier up to MAX_NETWORK_RETRIES times, then escalates like an
@@ -1027,6 +1037,8 @@ function runLocked({ repo, card, config, baseSha, baseBranch, branch, wt, pr, me
         failure: unavailable.output ?? '',
         followUps,
       };
+    const configFailure = unseenTestFailure(receipt);
+    if (configFailure) return { pass: false, stopped: 'config', branch, worktree: wt, failure: configFailure, followUps, approvedEdits };
     if (w.status === 'ok' && receipt?.pass) {
       // One corrective turn on the review's notes before a bug or feature card is accepted (REQ-RUN-36).
       const lowNotes = receipt.results.find((r) => r.name === 'review')?.notes ?? [];
