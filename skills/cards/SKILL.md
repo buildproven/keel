@@ -33,6 +33,14 @@ issues; `keel poll` (nightly, or `keel poll --issue <ID> --merge`) builds them.
      ~~~markdown
      <one to three lines of context: who needs this and why>
 
+     ## Root cause
+
+     <Bug only: why it happens, with file:line evidence>
+
+     ## Prevention
+
+     <Bug only: the test, check, `keel doctor` line, or skill rule that stops this class recurring>
+
      ## Requirements
 
      - REQ-<AREA>-<n>: When <trigger>, the <system> shall <observable response>.
@@ -47,6 +55,8 @@ issues; `keel poll` (nightly, or `keel poll --issue <ID> --merge`) builds them.
      ```
      ~~~
 
+   Keep `Root cause` and `Prevention` as headings: a `Word:` line above the first heading is read as a card header.
+
    A card that only adds tests for existing behavior sets `kind: chore` in its `keel` block (such tests pass on the
    base, so a bug or feature card can never pass red proof) and says "put the new tests in a new test file": existing
    test files are locked, and a builder that edits them fails the gate (BUI-1137 lost two tiers that way).
@@ -59,6 +69,10 @@ issues; `keel poll` (nightly, or `keel poll --issue <ID> --merge`) builds them.
 
 ## Rules
 
+- A Bug card fixes the root cause, never a symptom, and its `Prevention` lands in the owning tool in the same card
+  (or a linked one), so the class does not come back. No root cause yet: investigate first; do not file a guess.
+- `keel report --recur` lists failure classes that recur across gates, with the previous window's count. Start a
+  prevention card from its top class, and check that the count falls after the merge.
 - Name behavior and interfaces; never prescribe the implementation.
 - Every requirement has an acceptance line a test can check. If you cannot write one,
   the card is not ready: ask, or mark it `no-keel`.

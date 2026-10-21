@@ -27,6 +27,7 @@ import { poll, pollExitCode, resolveProject } from '../src/poll.js';
 import { describeStop, run } from '../src/run.js';
 import { sizeWarning, stackWarnings } from '../src/stack.js';
 import { UsageError } from '../src/usage.js';
+import { RECUR_DAYS, formatRecurring, readReceipts, recurring } from '../src/recur.js';
 import { formatValue, inWindow, value } from '../src/value.js';
 
 const USAGE = `keel — quality gate that picks the model
@@ -50,10 +51,13 @@ const USAGE = `keel — quality gate that picks the model
                                                                pick, build, and report on the next N Linear issues (needs LINEAR_API_KEY);
                                                                --file-only files queued follow-ups and builds nothing
   keel doctor [--repo <dir>] [--base <ref>]                  run the configured checks on a clean checkout of base; find red ones before a card does
-  keel report [--escaped] [--dora] [--value [--days N]]       ledger summary; --escaped lists fix: commits on files of merged
+  keel report [--escaped] [--dora] [--value [--days N]] [--recur]
+                                                               ledger summary; --escaped lists fix: commits on files of merged
                                                                Keel changes; --dora prints DORA metrics per repo (30 days);
                                                                --value: finished cards, human touch rate, cost, later fixes,
-                                                               all over the last N days (default 30)
+                                                               all over the last N days (default 30); --recur: failure
+                                                               classes that recur across gates in the last 14 days, to
+                                                               prevent at their source
   keel audit [--limit N] [--repo <dir>]                      review PRs merged in the last 30 days (up to N, default
                                                                500) that only a fallback reviewer saw, with the reviewer
                                                                that was out; findings join the found-work queue under the
@@ -83,6 +87,7 @@ try {
       json: { type: 'boolean' },
       escaped: { type: 'boolean' },
       dora: { type: 'boolean' },
+      recur: { type: 'boolean' },
       value: { type: 'boolean' },
       days: { type: 'string' },
       project: { type: 'string' },
@@ -346,6 +351,10 @@ if (values.version && command) {
       if (values.escaped) process.stdout.write(`${formatEscaped(escapedDefects(readLedger()))}\n`);
       if (values.dora) process.stdout.write(`${formatDora(dora(readLedger()))}\n`);
       if (values.value) process.stdout.write(`${formatValue(value(readLedger(), { windowDays, now }))}\n`);
+      if (values.recur) {
+        const rows = recurring(readReceipts(join(stateDir(), 'receipts')), { days: RECUR_DAYS, now }); // REQ-LED-20
+        process.stdout.write(`${formatRecurring(rows, RECUR_DAYS)}\n`);
+      }
     } else {
       throw new UsageError(`unknown command "${command}"`);
     }
