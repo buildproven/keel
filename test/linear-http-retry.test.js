@@ -18,6 +18,7 @@ afterEach(() => {
 const deadSocket = (code = 'EPIPE') =>
   Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error(`write ${code}`), { code }) });
 const ok = { ok: true, json: async () => ({ data: { commentCreate: { success: true } } }) };
+const state = { ok: true, json: async () => ({ data: { issue: { state: { type: 'started' } } } }) };
 
 /** A fetch that plays `steps` in order: an Error is thrown, anything else is the response. */
 function stubFetch(steps) {
@@ -28,23 +29,32 @@ function stubFetch(steps) {
   };
 }
 
-test('REQ-LINEAR-36 a request that fails on a dead pooled connection is sent again and succeeds', async () => {
+test('REQ-LINEAR-36 a query that fails on a dead pooled connection is sent again and succeeds', async () => {
+  for (const code of ['EPIPE', 'ECONNRESET', 'UND_ERR_SOCKET', 'UND_ERR_CLOSED']) {
+    calls = 0;
+    stubFetch([deadSocket(code), state]);
+    assert.equal(await linearHttpClient().stateType('BUI-1'), 'started', code);
+    assert.equal(calls, 2, code);
+  }
+});
+
+test('REQ-LINEAR-36 a mutation is sent again only after EPIPE, when its body never reached Linear', async () => {
   stubFetch([deadSocket('EPIPE'), ok]);
   await linearHttpClient().comment('BUI-1', 'hello');
   assert.equal(calls, 2);
   for (const code of ['ECONNRESET', 'UND_ERR_SOCKET', 'UND_ERR_CLOSED']) {
     calls = 0;
     stubFetch([deadSocket(code), ok]);
-    await linearHttpClient().comment('BUI-1', 'hello');
-    assert.equal(calls, 2, code);
+    await assert.rejects(() => linearHttpClient().comment('BUI-1', 'hello'), /fetch failed/, code);
+    assert.equal(calls, 1, `${code}: a reset may come after Linear applied the comment`);
   }
 });
 
 test('REQ-LINEAR-36 when every try fails on a dead connection, the last error is thrown', async () => {
   const last = deadSocket('ECONNRESET');
-  stubFetch([deadSocket(), deadSocket(), last, ok]);
+  stubFetch([deadSocket(), deadSocket(), last, state]);
   await assert.rejects(
-    () => linearHttpClient().comment('BUI-1', 'hello'),
+    () => linearHttpClient().stateType('BUI-1'),
     (e) => e === last,
   );
   assert.equal(calls, 3, 'one request and two retries');
