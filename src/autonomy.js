@@ -6,6 +6,7 @@ import { exec } from './git.js';
 const NOT_A_RUN = new Set([
   'found',
   'filed',
+  'appended', // a finding added to an open findings card (REQ-LINEAR-38)
   'dup',
   'stale',
   'file-error',

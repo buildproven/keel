@@ -111,8 +111,18 @@ function earsLine(f, path) {
  * and paths. A finding on a file the gate locks also names that file in `allowEdits`, and says the edit must keep every
  * check (REQ-LINEAR-29).
  */
+/** The path a queued finding cites (REQ-LINEAR-22, -27), or null. */
+const findingPath = (f, repo, base) => f.cite?.path ?? citation(f, filesAt(repo, base))?.path ?? null;
+
+/** The line that names the file whose later findings Keel appends to a findings card (REQ-LINEAR-38). */
+const appendMarker = (path) => `Keel adds later findings in \`${path}\` to this card.`;
+
+/** One finding as a `## Problem` bullet: the title, the detail, and the quoted cited line when stored (REQ-LINEAR-27). */
+const problemItem = (f) =>
+  `- ${f.title}${f.detail ? ` (${f.detail})` : ''}${f.cite?.text ? `\n\n\`${f.cite.path}:${f.cite.line}\` reads:\n\n> ${f.cite.text}` : ''}`;
+
 function followUpText(source, f, config, repo, base) {
-  const path = f.cite?.path ?? citation(f, filesAt(repo, base))?.path ?? null;
+  const path = findingPath(f, repo, base);
   const locked = path && locksAny(path, config.verificationPaths) ? path : null;
   const commit = f.found?.commit ?? f.cite?.ref ?? null;
   const pr = f.found?.pr ?? null;
@@ -120,8 +130,8 @@ function followUpText(source, f, config, repo, base) {
   const context = [
     `Found by keel${source ? ` while building ${source}` : ''}.`,
     `Keel ${source ? 'found this outside that card' : 'found this in a review of merged work'}, so it was filed, not fixed${seen ? `; seen at ${seen}` : ''}.`,
+    ...(path ? [appendMarker(path)] : []),
   ];
-  const cite = f.cite?.text ? `\n\n\`${f.cite.path}:${f.cite.line}\` reads:\n\n> ${f.cite.text}` : '';
   const acceptance =
     f.kind === 'chore'
       ? 'New tests in a new test file prove the requirement; no existing test file changes.'
@@ -140,7 +150,7 @@ function followUpText(source, f, config, repo, base) {
   return (
     [
       context.join('\n'),
-      `## Problem\n\n- ${f.title}${f.detail ? ` (${f.detail})` : ''}${cite}`,
+      `## Problem\n\n${problemItem(f)}`,
       `## Requirements\n\n- ${earsLine(f, path)}${lockNote}`,
       `## Acceptance\n\n- [ ] ${acceptance}`,
       `\`\`\`keel\n${block.join('\n')}\n\`\`\``,
@@ -217,6 +227,45 @@ function staleReason(repo, base, cite) {
   return now.includes(cite.text) ? null : `${cite.path}:${cite.line} no longer reads "${cite.text.slice(0, 120)}" on ${base}`;
 }
 
+/** A findings card takes appends up to this many findings, so it stays one card of size S or M (REQ-LINEAR-38). */
+const FINDINGS_PER_CARD = 5;
+/** States of a card that takes appends: never `started`, where a builder may hold it (REQ-LINEAR-38). */
+const APPEND_STATES = ['backlog', 'unstarted', 'triage'];
+const PROBLEM = /\n## Problem\n\n[\s\S]*?(?=\n\n## Requirements\n)/;
+const REQUIREMENTS = /\n## Requirements\n\n[\s\S]*?(?=\n\n## Acceptance\n)/;
+
+/**
+ * `description` with finding `f` on `path` appended (REQ-LINEAR-38): its bullet at the end of `## Problem`, its EARS
+ * line at the end of `## Requirements`; null when a section is missing or the card holds FINDINGS_PER_CARD findings.
+ */
+function appendFinding(description, f, path) {
+  const problem = PROBLEM.exec(description);
+  if (!problem || !REQUIREMENTS.test(description)) return null;
+  if (problem[0].split('\n').filter((l) => l.startsWith('- ')).length >= FINDINGS_PER_CARD) return null;
+  const at = problem.index + problem[0].length;
+  const d = `${description.slice(0, at)}\n${problemItem(f)}${description.slice(at)}`;
+  const reqs = REQUIREMENTS.exec(d);
+  const end = reqs.index + reqs[0].length;
+  return `${d.slice(0, end)}\n- ${earsLine(f, path)}${d.slice(end)}`;
+}
+
+/**
+ * Archive the polled project's closed issues (REQ-LINEAR-39), so they stop counting toward Linear's Free-plan limit.
+ * Returns the poll results to add: none, or one `followUpsFailed` when Linear failed, so the poll exits 1 and goes on.
+ */
+async function archiveClosed(archiveFn, log) {
+  if (!archiveFn) return [];
+  try {
+    const ids = await archiveFn();
+    if (ids.length) log(`archived ${ids.length} closed issue(s): ${ids.join(', ')}`);
+    return [];
+  } catch (e) {
+    // REQ-LINEAR-39: any Linear error here is logged and fails the poll, never stops it.
+    log(`closed issues not archived: ${e.message}`);
+    return [{ outcome: 'followUpsFailed', detail: `closed issues not archived: ${e.message}` }];
+  }
+}
+
 /** A found item whose title an issue closed this many days ago has is done or was declined (REQ-LINEAR-22). */
 const DUP_CLOSED_DAYS = 30;
 
@@ -260,9 +309,13 @@ async function fileFollowUps({ repo, project, config, client, log, base = 'HEAD'
   // Every Linear error is caught here (REQ-LINEAR-22), recorded against the item, and returned, so one bad item cannot
   // stop every later poll.
   try {
-    const known = new Set((await client.listIssues(project, { closedWithinDays: DUP_CLOSED_DAYS })).map((i) => titleKey(i.title)));
+    const listed = await client.listIssues(project, { closedWithinDays: DUP_CLOSED_DAYS });
+    const known = new Set(listed.map((i) => titleKey(i.title)));
+    // A finding already appended to a card is in its description, not its title (REQ-LINEAR-38).
+    const texts = listed.map((i) => (i.description ?? '').toLowerCase());
+    let cards = null; // open findings cards that take appends, oldest first, read once (REQ-LINEAR-38)
     for (const f of pending) {
-      if (known.has(titleKey(f.title))) {
+      if (known.has(titleKey(f.title)) || texts.some((t) => t.includes(titleKey(f.title)))) {
         recordPollAttempt(repo, { issue: f.source, outcome: 'dup', detail: { source: f.source, title: f.title } });
         continue;
       }
@@ -272,6 +325,32 @@ async function fileFollowUps({ repo, project, config, client, log, base = 'HEAD'
         recordPollAttempt(repo, { issue: f.source, outcome: 'stale', detail: { source: f.source, title: f.title, reason: stale } });
         log(`follow-up "${f.title}" dropped as stale: ${stale}`);
         continue;
+      }
+      // A finding on a file an open findings card names goes into that card: it adds no issue, so neither the daily
+      // cap nor the workspace hold applies (REQ-LINEAR-38).
+      const path = findingPath(f, repo, base);
+      if (path) {
+        cards ??= (await client.listIssues(project, { stateTypes: APPEND_STATES })).sort((a, b) =>
+          String(a.createdAt).localeCompare(String(b.createdAt)),
+        );
+        let into = null;
+        let text = null;
+        for (const c of cards)
+          if ((c.description ?? '').split('\n').includes(appendMarker(path)) && (text = appendFinding(c.description, f, path))) {
+            into = c;
+            break;
+          }
+        if (into) {
+          current = f;
+          await client.setDescription(into.id, text);
+          current = null;
+          into.description = text;
+          texts.push(text.toLowerCase());
+          recordPollAttempt(repo, { issue: into.id, outcome: 'appended', detail: { source: f.source, title: f.title, into: into.id } });
+          log(`follow-up "${f.title}" appended to ${into.id}`);
+          filed.set(f.source, [...(filed.get(f.source) ?? []), `appended to ${into.id}`]);
+          continue;
+        }
       }
       if (filedToday(repo) >= config.followUpsPerDay) {
         log(`follow-up cap reached (${config.followUpsPerDay} per day); ${pending.length - pending.indexOf(f)} wait in the queue`);
@@ -721,6 +800,9 @@ export async function poll({
   // The workspace's issue count is read for a real run only: a test that injects `runFn` injects `capacityFn` too
   // (REQ-LINEAR-37).
   capacityFn = runFn === run ? () => client.capacity() : null,
+  // Closed issues are archived through the Linear client (REQ-LINEAR-39); linearHttpClient always can. An in-memory
+  // client without `archiveClosed` (a test fake of other behavior) archives nothing; tests of archiving inject `archiveFn`.
+  archiveFn = client.archiveClosed ? () => client.archiveClosed(project) : null,
   limit = 1,
   issue: only = null,
   fileOnly = false,
@@ -728,8 +810,10 @@ export async function poll({
   // A project that is not this repo's stops before Linear is read or a worktree made (REQ-LINEAR-34).
   resolveProject(project, config, repo);
   // File the queued follow-ups and stop: no issue is built, commented on, or recorded (REQ-LINEAR-31).
-  if (fileOnly) return filingFailed(await fileFollowUps({ repo, project, config, client, log, base, capacityFn }));
-  const results = [];
+  // Closed issues stop counting toward Linear's limit before anything is filed (REQ-LINEAR-39).
+  const archived = await archiveClosed(archiveFn, log);
+  if (fileOnly) return [...archived, ...filingFailed(await fileFollowUps({ repo, project, config, client, log, base, capacityFn }))];
+  const results = [...archived];
   const prereqStates = new Map(); // prerequisite states read this poll (REQ-LINEAR-26)
   const deferredNow = new Set(); // issues this poll deferred (REQ-LINEAR-19)
   const leasedNow = new Set(); // issues whose paths an open branch holds (REQ-LEASE-3)

@@ -45,8 +45,8 @@ async function gql(apiKey, query, variables) {
 }
 
 const LIST_ISSUES = `
-  query ($filter: IssueFilter, $after: String) {
-    issues(filter: $filter, first: 100, after: $after) {
+  query ($filter: IssueFilter, $after: String, $includeArchived: Boolean) {
+    issues(filter: $filter, first: 100, after: $after, includeArchived: $includeArchived) {
       pageInfo { hasNextPage endCursor }
       nodes {
         identifier title description priority createdAt estimate labels(first: 10) { nodes { name } }
@@ -87,6 +87,14 @@ const CAPACITY = `
   }
 `;
 
+const CLOSED_ISSUES = `
+  query ($filter: IssueFilter, $after: String) {
+    issues(filter: $filter, first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { id identifier } }
+  }
+`;
+
+const ARCHIVE_ISSUE = `mutation ($id: String!) { issueArchive(id: $id) { success } }`;
+
 const MOVE_ISSUE = `mutation ($id: String!, $stateId: String!) { issueUpdate(id: $id, input: { stateId: $stateId }) { success } }`;
 
 /**
@@ -101,19 +109,21 @@ export function linearHttpClient() {
   };
 
   return {
-    async listIssues(project, { closedWithinDays } = {}) {
+    async listIssues(project, { closedWithinDays, stateTypes } = {}) {
       const apiKey = key();
-      const open = { state: { type: { nin: ['completed', 'canceled'] } } };
+      const open = { state: { type: stateTypes ? { in: stateTypes } : { nin: ['completed', 'canceled'] } } };
       // Dedupe of found work also counts issues closed lately, so work fixed by hand is not filed again (REQ-LINEAR-22).
+      // Keel archives closed issues at once (REQ-LINEAR-39), so that read includes archived ones.
       const since = `-P${closedWithinDays}D`;
       const filter = closedWithinDays
         ? { project: { name: { eq: project } }, or: [open, { completedAt: { gt: since } }, { canceledAt: { gt: since } }] }
         : { project: { name: { eq: project } }, ...open };
+      const archived = closedWithinDays ? { includeArchived: true } : {};
       // Every page: an issue past the first 100 must still be picked, and a follow-up still deduped (REQ-LINEAR-22).
       const nodes = [];
       let after = null;
       do {
-        const page = (await gql(apiKey, LIST_ISSUES, { filter, ...(after ? { after } : {}) })).issues;
+        const page = (await gql(apiKey, LIST_ISSUES, { filter, ...archived, ...(after ? { after } : {}) })).issues;
         nodes.push(...page.nodes);
         after = page.pageInfo?.hasNextPage ? page.pageInfo.endCursor : null;
       } while (after);
@@ -144,6 +154,25 @@ export function linearHttpClient() {
         after = data.issues.pageInfo.hasNextPage ? data.issues.pageInfo.endCursor : null;
       } while (after);
       return { open, teams };
+    },
+    /**
+     * Archive the project's closed (completed or canceled) issues, so they stop counting toward Linear's Free-plan
+     * limit (REQ-LINEAR-39); returns their identifiers.
+     */
+    async archiveClosed(project) {
+      const apiKey = key();
+      const filter = { project: { name: { eq: project } }, state: { type: { in: ['completed', 'canceled'] } } };
+      const closed = [];
+      let after = null;
+      do {
+        const page = (await gql(apiKey, CLOSED_ISSUES, { filter, ...(after ? { after } : {}) })).issues;
+        closed.push(...page.nodes);
+        after = page.pageInfo?.hasNextPage ? page.pageInfo.endCursor : null;
+      } while (after);
+      for (const issue of closed)
+        if (!(await gql(apiKey, ARCHIVE_ISSUE, { id: issue.id })).issueArchive.success)
+          throw new Error(`Linear did not archive ${issue.identifier}`);
+      return closed.map((i) => i.identifier);
     },
     async comment(issueId, body) {
       const apiKey = key();
