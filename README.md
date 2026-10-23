@@ -94,6 +94,7 @@ keel init                          # detects the project; proposes keel.json (JS
 git add keel.json && git commit -m "chore: add keel.json"
 keel doctor --base HEAD            # every check must be green on base before a card can pass
 keel run cards/BUG-1.md --pr       # build, gate, escalate; open a PR of the certified commit
+keel propose                       # no card yet? ask what is most worth building next
 keel report --value                # is it paying off?
 ```
 
@@ -114,30 +115,87 @@ paths: src/billing/**, test/billing/**
 `kind` (bug, feature, refactor, ui, infra, chore) and `size` (S, M, L) are required. `paths`, `allowEdits`,
 `acceptance`, and `heldOut` are optional; M/L bug and feature cards need held-out tests; by default the strongest tier of the other family writes them (`heldOutAuthorTier`, `null` = off).
 
+## No card? Let Keel propose one
+
+`keel propose` asks the strongest tier one read-only question: _what is most worth building next here?_ Keel first
+reads the base commit itself, with no model, for signals (`TODO`/`FIXME` markers, source files no test names) and
+hands them over with the work already queued. The model weighs bugs, missing tests, gaps between the docs and the
+code, rough edges a user would feel, and small missing features, and answers with up to `proposeMax` (default 3)
+cards. Every card goes through the same strict check as a refined issue: EARS requirements, acceptance checks, size
+S or M, and no `allowEdits`, so a model never unlocks the tests it will be judged by.
+
+```bash
+keel propose                                  # writes PROP-1.md … outside the repo and prints `keel run` for each
+keel propose --focus "test coverage of the CLI"
+keel propose --file                           # files them in the repo's Linear project instead
+keel poll --propose --merge                   # when the backlog runs dry, propose instead of idling
+```
+
+Filed proposals start with an approval line and the loop never builds them until you delete it
+(`proposeApproval`, default on; turn it off to let the loop build its own ideas). While one proposal waits, no new
+turn is paid for. Propose turns show in `keel report` as spend.
+
+## Many projects: choose which ones Keel works on
+
+Got 20 repos but want Keel on only the top 5? Keep a ranked list, outside every repo, in
+`~/.config/keel/projects.json` (or `$KEEL_PROJECTS_FILE`):
+
+```bash
+keel projects add ~/src/shop --rank 1          # add, or move to rank 1
+keel projects add ~/src/blog                   # add at the end
+keel projects active 5                         # only the top 5 unpaused repos are worked on ("all" for every one)
+keel projects pause ~/src/blog                 # skip it for now, keep its rank; resume puts it back
+keel projects                                  # rank, active/waiting/paused, and what each repo still lacks
+keel poll --projects --merge                   # one pass over each active repo, in rank order
+```
+
+The file is plain JSON you can edit by hand; a project can carry its own `limit` (issues per pass) and `base`:
+
+```json
+{
+  "active": 5,
+  "projects": ["~/src/shop", { "repo": "~/src/api", "limit": 2, "base": "origin/main" }, { "repo": "~/src/blog", "paused": true }]
+}
+```
+
+Each repo keeps its own `keel.json`, Linear project, and budget; one repo's error is reported and the next still
+runs. `keel poll --projects` is still one pass that exits: run it from your own schedule (`docs/UNATTENDED.md`).
+
 ## Commands
 
-| Command                                                                   | What it does                                                                                                                                                                                                                                             |
-| ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `keel init`                                                               | Propose `keel.json` from the project's marker files                                                                                                                                                                                                      |
-| `keel doctor --base <ref>`                                                | Run install and every check on a clean base; show merge readiness                                                                                                                                                                                        |
-| `keel gate [--base <ref>] [--card <card>] [--author <family>] [--status]` | Gate the committed HEAD against origin's default branch; card from commit types if none; reviewer of another family than the author; JSON receipt; a `timing` line and `IMPROVE:` lines for slow or slowing stages; `--status` posts `keel/gate` on HEAD |
-| `keel run <card \| ISSUE-ID> [--pr \| --merge]`                           | Build a card or one Linear issue: learned start tier, escalate on failure                                                                                                                                                                                |
-| `keel poll [--project <name>] [--limit N \| --issue ID]`                  | One pass of the Linear loop (needs `LINEAR_API_KEY`)                                                                                                                                                                                                     |
-| `keel report [--value] [--dora] [--escaped] [--recur]`                    | Cost, tiers, time; value against your baseline; DORA; escaped-defect list; failure classes that recur across gates, to prevent at their source                                                                                                           |
-| `keel audit [--limit N]`                                                  | Re-review merged PRs that only a fallback reviewer saw, with the reviewer that was out; findings join the found-work queue                                                                                                                               |
-| `keel test`                                                               | Run the test command inside a machine-wide gate slot, so builders' test runs queue with the gates                                                                                                                                                        |
-| `keel clean [--force \| --auto]`                                          | List parked worktrees; `--force` removes the clean ones; `--auto` (also run before every `run` and `poll`) the finished ones                                                                                                                             |
+| Command                                                                                | What it does                                                                                                                                                                                                                                             |
+| -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `keel init`                                                                            | Propose `keel.json` from the project's marker files                                                                                                                                                                                                      |
+| `keel doctor --base <ref>`                                                             | Run install and every check on a clean base; show merge readiness                                                                                                                                                                                        |
+| `keel gate [--base <ref>] [--card <card>] [--author <family>] [--status]`              | Gate the committed HEAD against origin's default branch; card from commit types if none; reviewer of another family than the author; JSON receipt; a `timing` line and `IMPROVE:` lines for slow or slowing stages; `--status` posts `keel/gate` on HEAD |
+| `keel run <card \| ISSUE-ID> [--pr \| --merge]`                                        | Build a card or one Linear issue: learned start tier, escalate on failure                                                                                                                                                                                |
+| `keel poll [--project <name>] [--limit N \| --issue ID] [--propose]`                   | One pass of the Linear loop (needs `LINEAR_API_KEY`); `--propose` drafts cards when nothing is eligible                                                                                                                                                  |
+| `keel poll --projects [--limit N] [--merge]`                                           | One pass over each active project in your ranked list                                                                                                                                                                                                    |
+| `keel projects [add <dir> [--rank N] \| remove \| pause \| resume \| active <N\|all>]` | List or edit the ranked project list                                                                                                                                                                                                                     |
+| `keel propose [--focus <text>] [--file]`                                               | Draft the cards most worth building next, as files to `keel run` or Linear issues awaiting approval                                                                                                                                                      |
+| `keel report [--value] [--dora] [--escaped] [--recur]`                                 | Cost, tiers, time; value against your baseline; DORA; escaped-defect list; failure classes that recur across gates, to prevent at their source                                                                                                           |
+| `keel audit [--limit N]`                                                               | Re-review merged PRs that only a fallback reviewer saw, with the reviewer that was out; findings join the found-work queue                                                                                                                               |
+| `keel test`                                                                            | Run the test command inside a machine-wide gate slot, so builders' test runs queue with the gates                                                                                                                                                        |
+| `keel clean [--force \| --auto]`                                                       | List parked worktrees; `--force` removes the clean ones; `--auto` (also run before every `run` and `poll`) the finished ones                                                                                                                             |
 
 Unattended use (launchd, many repos, exit codes): `docs/UNATTENDED.md`. Design and every requirement with its
 test: `docs/DESIGN.md`.
 
 ## Config (`keel.json`)
 
-Keys: `checks`, `testCommand`, `testFilesCommand`, `heldOutCommand`, `testGlobs`, `protected`, `verificationPaths`, `bypassAllow`,
-`heldOutRequired`, `heldOutAuthorTier`, `shareDirs`, `workerEnvAllow`, `linearProject`, `dailyBudgetUsd`, `planLimits`,
-`cardBudgetUsd`, `learnStart`, `acceptance`, `install`, `mutation`, `review`, `reviewBlock`, `reviewFallback`, `approveAllowEdits`, `fixLowFindings`, `reviewWindows`, `lightReview`, `smoke`, `tiers`, `startTier`,
-`maxAttempts`, `workerTimeoutSec`, `failureTailChars`, `claudePermissionMode`, `workerArgs`. Unknown keys are errors.
-Defaults: `src/config.js`.
+`keel init` proposes the file; review it and commit it on the default branch (policy is read from the base commit).
+Unknown keys are errors. Defaults and validation: `src/config.js`.
+
+| Area           | Keys                                                                                                                                                                                            |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Commands       | `checks` (required), `testCommand` (required), `testFilesCommand`, `heldOutCommand`, `install`, `acceptance`, `mutation`, `smoke`                                                               |
+| What is locked | `testGlobs`, `verificationPaths`, `protected`, `bypassAllow`, `shareDirs`, `workerEnvAllow`                                                                                                     |
+| Held-out tests | `heldOutRequired`, `heldOutAuthorTier`                                                                                                                                                          |
+| Review         | `review`, `reviewBlock`, `reviewFallback`, `reviewWindows`, `lightReview`, `fixLowFindings`, `approveAllowEdits`                                                                                |
+| Models         | `tiers`, `startTier`, `learnStart`, `maxAttempts`, `workerTimeoutSec`, `failureTailChars`, `claudePermissionMode`, `workerArgs`                                                                 |
+| Spending       | `dailyBudgetUsd`, `cardBudgetUsd`, `planLimits`                                                                                                                                                 |
+| Linear loop    | `linearProject`, `refineIssues`, `followUpsPerDay`, `followUpHoldAt`, `selfMergeTimeoutMinutes`, `worktreeKeepDays`                                                                             |
+| Proposing      | `proposeMax` (cards per turn, default 3), `proposeApproval` (filed cards wait for you, default on), `proposeTier` (default the strongest), `sourceGlobs` (files read for untested-file signals) |
 
 Optional `priceInPerM` / `priceOutPerM` / `priceCachedPerM` (USD per million tokens; the last for cache reads) on a tier let `keel report --value` show what the same tokens would have cost at the top tier.
 
@@ -172,6 +230,9 @@ ln -s "$PWD/skills/<name>" ~/.claude/skills/<name>   # Codex: ~/.agents/skills/<
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Security reports: [SECURITY.md](SECURITY.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md) and the [code of conduct](CODE_OF_CONDUCT.md). Security reports:
+[SECURITY.md](SECURITY.md). Release notes: [CHANGELOG.md](CHANGELOG.md).
 
-MIT licensed.
+## License
+
+[MIT](LICENSE).

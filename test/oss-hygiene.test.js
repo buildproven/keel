@@ -40,3 +40,19 @@ test('REQ-OSS-3 DESIGN says in one line that BUI- and KEEL- ids are internal tra
 test('REQ-OSS-4 the README gives the command that links the skills', () => {
   assert.ok(readme.includes('ln -s "$PWD/skills/<name>" ~/.claude/skills/<name>'));
 });
+
+test('REQ-OSS-5 the README names every keel.json key, so no setting is undocumented', async () => {
+  const { DEFAULTS } = await import('../src/config.js');
+  const missing = Object.keys(DEFAULTS).filter((k) => !readme.includes(`\`${k}\``));
+  assert.deepEqual(missing, [], 'keel.json keys the README does not name');
+});
+
+test('REQ-OSS-5 the repo carries the files an open-source user looks for', () => {
+  for (const f of ['LICENSE', 'README.md', 'CONTRIBUTING.md', 'SECURITY.md', 'CODE_OF_CONDUCT.md', 'CHANGELOG.md', '.editorconfig'])
+    assert.ok(read(f).trim().length > 0, `${f} is empty`);
+  assert.match(
+    read('CHANGELOG.md'),
+    new RegExp(`^## ${JSON.parse(read('package.json')).version.replace(/\./g, '\\.')}\\b`, 'm'),
+    'CHANGELOG has no entry for the package version',
+  );
+});
