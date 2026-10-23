@@ -11,9 +11,16 @@ import { join } from 'node:path';
  */
 const SECRET_WORD = /(^|_)(KEY|TOKEN|SECRET|PASSWORD|PASSWD)(_|$)/i;
 
+/** git's environment config (`GIT_CONFIG_COUNT` with `GIT_CONFIG_KEY_<n>`/`GIT_CONFIG_VALUE_<n>`) is one unit (REQ-RUN-50). */
+const GIT_CONFIG = /^GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)$/;
+
 export function scrubEnv(env, allow = []) {
   const keep = new Set(allow);
-  return Object.fromEntries(Object.entries(env).filter(([name]) => keep.has(name) || !SECRET_WORD.test(name)));
+  const kept = Object.entries(env).filter(([name]) => keep.has(name) || !SECRET_WORD.test(name));
+  // `GIT_CONFIG_KEY_0` reads as a secret name; dropping it but not `GIT_CONFIG_COUNT` makes every git call fail with
+  // "missing config key". A value can carry a credential (`http.extraHeader`), so a broken set goes whole (REQ-RUN-50).
+  const broken = Object.keys(env).some((name) => GIT_CONFIG.test(name) && !kept.some(([k]) => k === name));
+  return Object.fromEntries(broken ? kept.filter(([name]) => !GIT_CONFIG.test(name)) : kept);
 }
 
 let emptyGhDir = null;
