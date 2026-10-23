@@ -260,7 +260,7 @@ async function archiveClosed(archiveFn, log) {
     if (ids.length) log(`archived ${ids.length} closed issue(s): ${ids.join(', ')}`);
     return [];
   } catch (e) {
-    // REQ-LINEAR-39: any Linear error here is logged and fails the poll, never stops it.
+    // Every Linear error here is logged and fails the poll, never stops it (REQ-LINEAR-39).
     log(`closed issues not archived: ${e.message}`);
     return [{ outcome: 'followUpsFailed', detail: `closed issues not archived: ${e.message}` }];
   }
