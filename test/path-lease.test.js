@@ -134,7 +134,6 @@ const client = (issues) => ({
   },
   review: async () => {},
   stateType: async () => 'started',
-  capacity: async () => ({ open: 0, teams: [] }), // room in the workspace: no hold (REQ-LINEAR-37)
   createIssue: async () => assert.fail('no follow-ups'),
 });
 

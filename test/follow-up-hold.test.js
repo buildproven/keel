@@ -44,6 +44,7 @@ const fileOnly = (dir, client, over = {}) => {
     config: fixtureConfig({ followUpsPerDay: 5, ...over }),
     runFn: () => assert.fail('file-only must not build'),
     fileOnly: true,
+    capacityFn: () => client.capacity(),
     log: (l) => logs.push(l),
   });
   return r.then((results) => ({ results, logs }));
@@ -105,6 +106,17 @@ test('REQ-LINEAR-37 followUpHoldAt 0 turns the hold off and the count is not rea
   await fileOnly(dir, client, { followUpHoldAt: 0 });
   assert.equal(client.created.length, 1);
   assert.equal(client.reads(), 0);
+});
+
+test('REQ-LINEAR-37 a real poll reads the count from the Linear client', async () => {
+  const { dir } = fixtureRepo();
+  queue(dir, ['finding five']);
+  const client = fakeClient(250);
+  const logs = [];
+  // No injected runFn: the real run is the default, so the client's count is read and the item is held.
+  await poll({ repo: dir, project: 'x', client, config: fixtureConfig({ followUpsPerDay: 5 }), fileOnly: true, log: (l) => logs.push(l) });
+  assert.equal(client.reads(), 1);
+  assert.deepEqual(client.created, []);
 });
 
 test('REQ-LINEAR-37 with nothing queued the count is not read', async () => {

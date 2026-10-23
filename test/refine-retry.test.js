@@ -46,7 +46,6 @@ function fakeClient(issues) {
     comment: async (id, body) => c.comments.push({ id, body }),
     review: async () => {},
     stateType: async () => 'started',
-    capacity: async () => ({ open: 0, teams: [] }), // room in the workspace: no hold (REQ-LINEAR-37)
     createIssue: async (sourceId, fields) => {
       c.created.push(fields);
       return `BUI-${next++}`;

@@ -28,7 +28,6 @@ test('REQ-LINEAR-22 a follow-up whose title a recently closed issue has is marke
     comment: async () => {},
     review: async () => {},
     stateType: async () => 'started',
-    capacity: async () => ({ open: 0, teams: [] }), // room in the workspace: no hold (REQ-LINEAR-37)
     createIssue: async (sourceId, fields) => {
       created.push(fields.title);
       return `BUI-${100 + created.length}`;

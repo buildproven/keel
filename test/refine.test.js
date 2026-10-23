@@ -73,7 +73,6 @@ function fakeClient(issues) {
       c.descriptions.push({ id, description });
       byId.set(id, { ...byId.get(id), description });
     },
-    capacity: async () => ({ open: 0, teams: [] }), // room in the workspace: no hold (REQ-LINEAR-37)
     createIssue: async (sourceId, fields, project) => {
       const id = `BUI-${next++}`;
       c.created.push({ id, sourceId, fields, project });
