@@ -108,7 +108,8 @@ export function reviewCostOf(r) {
 export function report(rows) {
   const cards = new Map();
   for (const r of rows) {
-    if (r.role === 'refine') continue; // a refine turn is spend before a run, not a run (REQ-LED-17)
+    // A refine turn (REQ-LED-17) and a propose turn (REQ-PROPOSE-4) are spend before a run, not a run.
+    if (r.role === 'refine' || r.role === 'propose') continue;
     const c = cards.get(r.run) ?? {
       card: r.card,
       attempts: 0,
@@ -183,6 +184,16 @@ export function report(rows) {
         unpriced: refines.filter((r) => attemptCost(r) === null).length,
       }
     : null;
+  // What the propose turns cost (REQ-PROPOSE-4), and how many cards they drafted.
+  const proposes = rows.filter((r) => r.role === 'propose');
+  const proposeTurns = proposes.length
+    ? {
+        n: proposes.length,
+        cards: proposes.reduce((n, r) => n + (r.proposed ?? 0), 0),
+        cost: proposes.reduce((n, r) => n + (attemptCost(r) ?? 0), 0),
+        unpriced: proposes.filter((r) => attemptCost(r) === null).length,
+      }
+    : null;
   const gateTimes = rows.filter((r) => typeof r.gateMs === 'number' && r.gateMs > 0).map((r) => r.gateMs);
   return {
     medianAcceptedMs: median(passed.map((c) => c.durationMs)),
@@ -203,6 +214,7 @@ export function report(rows) {
     costPerAccepted: per(sum('cost')),
     findingsTurns,
     refineTurns,
+    proposeTurns,
   };
 }
 
@@ -221,6 +233,7 @@ export function formatReport({
   medianGateMs,
   findingsTurns = null,
   refineTurns = null,
+  proposeTurns = null,
 }) {
   const lines = cards.map(
     (c) =>
@@ -244,6 +257,11 @@ export function formatReport({
     ...(refineTurns
       ? [
           `refine turns: ${refineTurns.n} (card ${refineTurns.card}, already done ${refineTurns.done}, split ${refineTurns.split}, needs human ${refineTurns.human}, unparsed ${refineTurns.unparsed}); tokens ${refineTurns.tokens}; cost ${refineTurns.unpriced ? '≥' : ''}$${refineTurns.cost.toFixed(2)}`,
+        ]
+      : []),
+    ...(proposeTurns
+      ? [
+          `propose turns: ${proposeTurns.n}, ${proposeTurns.cards} cards drafted; cost ${proposeTurns.unpriced ? '≥' : ''}$${proposeTurns.cost.toFixed(2)}`,
         ]
       : []),
   ].join('\n');

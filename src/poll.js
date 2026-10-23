@@ -3,6 +3,7 @@ import { exec, isDirty, revParse, showFile } from './git.js';
 import { ALREADY_SATISFIED, verifyDone } from './done.js';
 import {
   attemptedIssueIds,
+  awaitsApproval,
   cardFromIssue,
   filedToday,
   notKeelIssueIds,
@@ -18,6 +19,7 @@ import { cardLease, describeConflicts } from './lease.js';
 import { readLedger, spentToday, stateDir } from './ledger.js';
 import { finishSelfMerges, recordSelfMerge } from './merge.js';
 import { REFINED_HEADING, refineIssue, refineReason } from './refine.js';
+import { fileProposals, proposeCards } from './propose.js';
 import { nextReset, planLine, readPlan, reservedProviders, savePlan } from './plan.js';
 import { run } from './run.js';
 import { locksAny, matchesAny } from './scan.js';
@@ -35,8 +37,9 @@ export function pollExitCode(results) {
   if (
     results.some(
       (r) =>
-        ['failed', 'blocked', 'needsHuman', 'prFailed', 'followUpsFailed', 'mergeFailed', 'closeFailed'].includes(r.outcome) ||
-        r.result?.merge?.state === 'failed',
+        ['failed', 'blocked', 'needsHuman', 'prFailed', 'followUpsFailed', 'mergeFailed', 'closeFailed', 'proposeFailed'].includes(
+          r.outcome,
+        ) || r.result?.merge?.state === 'failed',
     )
   )
     return 1;
@@ -772,6 +775,48 @@ async function withTextPrerequisites(issues, { client, log, states }) {
   return out;
 }
 
+/** Days of closed issues a proposal is checked against, so work just finished is not proposed again (REQ-PROPOSE-7). */
+const PROPOSE_CLOSED_DAYS = 30;
+
+/**
+ * `keel poll --propose` once nothing is eligible (REQ-PROPOSE-7): one propose turn, its cards filed in the project.
+ * It proposes nothing while an earlier proposal still waits for approval, or once the workspace is at
+ * `followUpHoldAt` (REQ-LINEAR-37), so an unattended loop never piles up cards nobody asked for.
+ */
+async function proposeStep({ repo, base, config, client, project, issues, log, proposeFn, capacityFn, reserved }) {
+  const waiting = issues.filter(awaitsApproval).map((i) => i.id);
+  if (waiting.length) {
+    log(`propose: ${waiting.join(', ')} still wait for approval; delete the approval line to let keel build them`);
+    return { outcome: 'none', detail: { waiting } };
+  }
+  if (!proposeFn) return { outcome: 'none' };
+  if (config.followUpHoldAt > 0 && capacityFn) {
+    const { open } = await capacityFn();
+    if (open >= config.followUpHoldAt) {
+      log(`propose: held, ${open} unarchived issues in the workspace (followUpHoldAt ${config.followUpHoldAt})`);
+      return { outcome: 'none', detail: { held: open } };
+    }
+  }
+  const known = (await client.listIssues(project, { closedWithinDays: PROPOSE_CLOSED_DAYS })).map((i) => i.title);
+  const r = proposeFn({ repo, base, config, open: [...new Set([...issues.map((i) => i.title), ...known])], reserved, log });
+  const p = r.parsed;
+  if (r.status === 'quota') return { outcome: 'plan', detail: { propose: p.why } };
+  if (p.kind === 'unparsed') {
+    log(`propose: the answer did not parse (${p.why})`);
+    return { outcome: 'proposeFailed', detail: { why: p.why } };
+  }
+  if (p.kind === 'none') {
+    log(`propose: nothing proposed: ${p.why}`);
+    return { outcome: 'none', detail: { why: p.why } };
+  }
+  for (const d of p.dropped) log(`propose: dropped "${d.title}": ${d.why}`);
+  const ids = await fileProposals({ client, project, config, cards: p.cards });
+  log(
+    `propose: filed ${ids.join(', ') || 'nothing'}${ids.length && config.proposeApproval ? ' — each waits for your approval: delete its first line to let keel build it' : ''}`,
+  );
+  return { outcome: 'proposed', issue: ids.join(', ') || null, detail: { issues: ids, dropped: p.dropped } };
+}
+
 /**
  * `--project` wins; otherwise the repo's own keel.json names its Linear project (REQ-LINEAR-10). A `--project`
  * that differs from that `linearProject` is a usage error: it would build another project's issues in this repo
@@ -814,9 +859,12 @@ export async function poll({
   // Closed issues are archived through the Linear client (REQ-LINEAR-39); linearHttpClient always can. An in-memory
   // client without `archiveClosed` (a test fake of other behavior) archives nothing; tests of archiving inject `archiveFn`.
   archiveFn = client.archiveClosed ? () => client.archiveClosed(project) : null,
+  // The propose turn belongs to a real run: a test that injects `runFn` injects `proposeFn` too (REQ-PROPOSE-7).
+  proposeFn = runFn === run ? proposeCards : null,
   limit = 1,
   issue: only = null,
   fileOnly = false,
+  propose = false,
 }) {
   // A project that is not this repo's stops before Linear is read or a worktree made (REQ-LINEAR-34).
   resolveProject(project, config, repo);
@@ -902,7 +950,11 @@ export async function poll({
       recordPollAttempt(repo, { issue: id, outcome: 'notKeel', detail: { category, match } });
     }
     if (!issue) {
-      results.push({ outcome: 'none' });
+      results.push(
+        propose
+          ? await proposeStep({ repo, base, config, client, project, issues, log, proposeFn, capacityFn, reserved: plan.reserved })
+          : { outcome: 'none' },
+      );
       break;
     }
     const outcome = await runOne({ repo, base, pr, merge, log, config, client, issue, project, runFn, refineFn, reserved: plan.reserved });
