@@ -9,6 +9,7 @@ const NOT_A_RUN = new Set([
   'dup',
   'stale',
   'file-error',
+  'held', // filing waits for room in the Linear workspace (REQ-LINEAR-37)
   'skipped',
   'leased',
   'budget',

@@ -223,10 +223,12 @@ const DUP_CLOSED_DAYS = 30;
 /**
  * File queued found work as Low issues in the same project (REQ-LINEAR-22), oldest first: a title an open issue already
  * has is marked `dup`; at followUpsPerDay for this repo today the rest waits in the queue for a later poll. Each item
- * leaves the queue when its issue is created, marked `dup`, or failed FILE_TRIES times. Filed issues are not attempts,
+ * leaves the queue when its issue is created, marked `dup`, or failed FILE_TRIES times. At followUpHoldAt unarchived
+ * issues in the workspace, nothing more is filed and the rest waits, logged and recorded as `held` (REQ-LINEAR-37); an
+ * unreadable count is a filing error that counts no try. Filed issues are not attempts,
  * so the loop builds them. A Linear error never stops a poll: it returns `{ error }`, and the poll reports it.
  */
-async function fileFollowUps({ repo, project, config, client, log, base = 'HEAD' }) {
+async function fileFollowUps({ repo, project, config, client, log, base = 'HEAD', capacityFn = null }) {
   const pending = pendingFollowUps(repo, FILE_TRIES);
   if (!pending.length || !(config.followUpsPerDay > 0)) return {};
   const filed = new Map(); // source → new issue IDs
@@ -254,6 +256,7 @@ async function fileFollowUps({ repo, project, config, client, log, base = 'HEAD'
         );
   };
   let current = null;
+  let unarchived = null; // the workspace's unarchived issues, once read (REQ-LINEAR-37)
   // Every Linear error is caught here (REQ-LINEAR-22), recorded against the item, and returned, so one bad item cannot
   // stop every later poll.
   try {
@@ -274,6 +277,18 @@ async function fileFollowUps({ repo, project, config, client, log, base = 'HEAD'
         log(`follow-up cap reached (${config.followUpsPerDay} per day); ${pending.length - pending.indexOf(f)} wait in the queue`);
         break;
       }
+      // The workspace's room is read once, just before the first issue this pass would file (REQ-LINEAR-37).
+      if (config.followUpHoldAt > 0 && capacityFn) {
+        unarchived ??= (await capacityFn()).open;
+        if (unarchived >= config.followUpHoldAt) {
+          const waiting = pending.length - pending.indexOf(f);
+          recordPollAttempt(repo, { issue: null, outcome: 'held', detail: { open: unarchived, holdAt: config.followUpHoldAt, waiting } });
+          log(
+            `follow-ups held: ${unarchived} unarchived issues >= ${config.followUpHoldAt} (followUpHoldAt); ${waiting} wait in the queue`,
+          );
+          break;
+        }
+      }
       current = f;
       const blockedBy = f.source && (await isOpen(f.source)) ? { blockedBy: [f.source] } : {};
       const id = await client.createIssue(
@@ -282,6 +297,7 @@ async function fileFollowUps({ repo, project, config, client, log, base = 'HEAD'
         project,
       );
       current = null;
+      if (unarchived !== null) unarchived++;
       recordPollAttempt(repo, { issue: id, outcome: 'filed', detail: { source: f.source, title: f.title } });
       known.add(titleKey(f.title));
       filed.set(f.source, [...(filed.get(f.source) ?? []), id]);
@@ -612,7 +628,7 @@ function planCheck({ config, log, planFn }) {
  * `keel poll --issue <ID>` (REQ-LINEAR-14): an explicit human retry of one open issue, even if a previous poll
  * decided it. The `no-keel` opt-out still wins, and an invalid card raises its reason instead of skipping.
  */
-async function pollOne({ repo, project, client, config, base, pr, merge, log, runFn, refineFn, only, reserved }) {
+async function pollOne({ repo, project, client, config, base, pr, merge, log, runFn, refineFn, only, reserved, capacityFn }) {
   const issues = await client.listIssues(project);
   const issue = issues.find((i) => i.id === only);
   if (!issue || (issue.labels ?? []).some((l) => l.toLowerCase() === 'no-keel')) {
@@ -630,7 +646,7 @@ async function pollOne({ repo, project, client, config, base, pr, merge, log, ru
   if (outcome.outcome === 'leased') return [outcome];
   // The outcome keeps its own detail (a NEEDS_HUMAN question, SPLIT child IDs, REQ-LINEAR-33); byHand marks the run.
   recordPollAttempt(repo, { issue: issue.id, outcome: outcome.outcome, detail: outcome.detail, byHand: true });
-  return [outcome, ...filingFailed(await fileFollowUps({ repo, project, config, client, log, base }))];
+  return [outcome, ...filingFailed(await fileFollowUps({ repo, project, config, client, log, base, capacityFn }))];
 }
 
 const CLOSED = new Set(['completed', 'canceled']);
@@ -702,6 +718,9 @@ export async function poll({
   refineFn = runFn === run ? refineIssue : null,
   // Plan windows are read for a real run only: a test that injects `runFn` injects `planFn` too (REQ-PLAN-3).
   planFn = runFn === run ? readPlan : null,
+  // The workspace's issue count is read for a real run only: a test that injects `runFn` injects `capacityFn` too
+  // (REQ-LINEAR-37).
+  capacityFn = runFn === run ? () => client.capacity() : null,
   limit = 1,
   issue: only = null,
   fileOnly = false,
@@ -709,14 +728,14 @@ export async function poll({
   // A project that is not this repo's stops before Linear is read or a worktree made (REQ-LINEAR-34).
   resolveProject(project, config, repo);
   // File the queued follow-ups and stop: no issue is built, commented on, or recorded (REQ-LINEAR-31).
-  if (fileOnly) return filingFailed(await fileFollowUps({ repo, project, config, client, log, base }));
+  if (fileOnly) return filingFailed(await fileFollowUps({ repo, project, config, client, log, base, capacityFn }));
   const results = [];
   const prereqStates = new Map(); // prerequisite states read this poll (REQ-LINEAR-26)
   const deferredNow = new Set(); // issues this poll deferred (REQ-LINEAR-19)
   const leasedNow = new Set(); // issues whose paths an open branch holds (REQ-LEASE-3)
   // Self-merges whose checks were pending at an earlier poll go first; none waits on CI here (REQ-MERGE-2).
   if (merge) results.push(...(await finishSelfMerges({ repo, config, client, log })));
-  results.push(...filingFailed(await fileFollowUps({ repo, project, config, client, log, base }))); // what an earlier poll could not file
+  results.push(...filingFailed(await fileFollowUps({ repo, project, config, client, log, base, capacityFn }))); // what an earlier poll could not file
   await rebuildConflicts({ repo, client, log });
   if (only) {
     const budget = overBudget({ repo, config, log });
@@ -739,6 +758,7 @@ export async function poll({
             refineFn,
             only,
             reserved: plan.reserved,
+            capacityFn,
           })),
     ];
   }
@@ -801,7 +821,7 @@ export async function poll({
     recordPollAttempt(repo, { issue: issue.id, outcome: outcome.outcome, detail: outcome.detail });
     // A deferred issue is retried by the next poll, not again in this one: move on to other work (REQ-LINEAR-19).
     if (outcome.outcome === 'deferred') deferredNow.add(issue.id);
-    results.push(outcome, ...filingFailed(await fileFollowUps({ repo, project, config, client, log, base })));
+    results.push(outcome, ...filingFailed(await fileFollowUps({ repo, project, config, client, log, base, capacityFn })));
   }
   return results;
 }

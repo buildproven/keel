@@ -86,8 +86,9 @@ function audited(repo) {
 
 /**
  * `keel audit` (REQ-CLI-11): review each merged PR that only a fallback reviewer saw (REQ-GATE-22) again, with the
- * reviewer that was out, once it answers. Findings at `reviewBlock` or above, and notes, join the found-work queue
- * (REQ-LINEAR-22) under the issue the PR closes, or with no source when it closes none, so the next poll files them. Each audited merge is recorded in
+ * reviewer that was out, once it answers. Findings at `reviewBlock` or above join the found-work queue (REQ-LINEAR-22)
+ * under the issue the PR closes, or with no source when it closes none, so the next poll files them; notes below
+ * `reviewBlock` are reported and recorded, never filed (REQ-CLI-17). Each audited merge is recorded in
  * audit.jsonl and never reviewed again; an unavailable reviewer records nothing, so the next audit retries.
  */
 export function audit({ repo, config, limit = 500, days = 30 }) {
@@ -125,13 +126,15 @@ export function audit({ repo, config, limit = 500, days = 30 }) {
       results.push({ pr: m.pr, sha: m.sha, outcome: 'unavailable', reviewer: r.reviewer });
       break; // the provider is out; the rest waits for the next audit
     }
-    const findings = [...r.problems.filter((p) => p.rule === 'review-finding'), ...(r.notes ?? [])];
+    // Only findings at or above reviewBlock are filed; notes below it stay in audit.jsonl and the output (REQ-CLI-17).
+    const blocking = r.problems.filter((p) => p.rule === 'review-finding');
+    const findings = [...blocking, ...(r.notes ?? [])];
     const source = /Closes\s+([A-Z]+-\d+)/.exec(m.body)?.[1] ?? null;
-    if (findings.length)
+    if (blocking.length)
       queueFollowUps(
         resolve(repo),
         source,
-        findings.map((f) => ({
+        blocking.map((f) => ({
           kind: 'bug',
           title: `Audit #${m.pr}: ${f.text}`.slice(0, 200),
           detail: `${f.severity} ${f.path}:${f.line}`,
@@ -151,7 +154,15 @@ export function audit({ repo, config, limit = 500, days = 30 }) {
       at: new Date().toISOString(),
     };
     appendJsonl(auditFile(), row);
-    results.push({ pr: m.pr, sha: m.sha, outcome: findings.length ? 'findings' : 'pass', reviewer: r.reviewer, findings, source });
+    results.push({
+      pr: m.pr,
+      sha: m.sha,
+      outcome: blocking.length ? 'findings' : 'pass',
+      reviewer: r.reviewer,
+      findings,
+      queued: blocking.length,
+      source,
+    });
   }
   return results;
 }

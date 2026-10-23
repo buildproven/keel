@@ -116,6 +116,8 @@ export const DEFAULTS = {
   planLimits: { fiveHour: 90, week: 80 },
   // Found-work issues `keel poll` may file per repo per UTC day (REQ-LINEAR-22); 0 turns filing off.
   followUpsPerDay: 5,
+  // Unarchived Linear issues in the workspace at which `keel poll` stops filing found work (REQ-LINEAR-37); 0 = off.
+  followUpHoldAt: 200,
   // One read-only refine turn before `keel poll` builds an unclear or too-big issue (REQ-LINEAR-32).
   refineIssues: true,
   // How long `keel poll --merge` waits for every check on a certified SHA before it gives up a self-merge (REQ-MERGE-4).
@@ -223,6 +225,7 @@ function validate(c) {
   if (pl !== null && !(table(pl) && Object.keys(pl).sort().join() === 'fiveHour,week' && pct(pl.fiveHour) && pct(pl.week)))
     bad('"planLimits" must be null or { fiveHour, week }, each a percent above 0 and at most 100');
   if (!Number.isInteger(c.followUpsPerDay) || c.followUpsPerDay < 0) bad('"followUpsPerDay" must be an integer ≥ 0');
+  if (!Number.isInteger(c.followUpHoldAt) || c.followUpHoldAt < 0) bad('"followUpHoldAt" must be an integer ≥ 0');
   if (!Number.isInteger(c.worktreeKeepDays) || c.worktreeKeepDays < 0) bad('"worktreeKeepDays" must be an integer ≥ 0');
   if (!positive(c.selfMergeTimeoutMinutes)) bad('"selfMergeTimeoutMinutes" must be a positive number');
   for (const d of c.shareDirs) if (d.includes('..') || d.startsWith('/')) bad(`shareDirs entry "${d}" must be a plain relative name`);
