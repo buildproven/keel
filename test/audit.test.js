@@ -121,3 +121,34 @@ test('REQ-CLI-11 keel audit prints one line per merge and exits 1 on findings, 3
   assert.ok(existsSync(join(process.env.KEEL_STATE_DIR, 'audit.jsonl')));
   assert.ok(readFileSync(join(process.env.KEEL_STATE_DIR, 'audit.jsonl'), 'utf8').includes('"pr":1'));
 });
+
+test('REQ-CLI-17 an audit queues only findings at or above reviewBlock; notes below it stay in audit.jsonl', () => {
+  const { dir, bin } = setup();
+  const mixed = reviewer(
+    "console.log('FINDING medium src/add.js:1 add ignores NaN'); console.log('FINDING low src/add.js:1 add has no doc comment'); console.log('VERDICT: block')",
+  );
+  const [r] = withPath(bin, () => audit({ repo: dir, config: fixtureConfig({ tiers: [mixed] }), limit: 20 }));
+  assert.deepEqual(
+    pendingFollowUps(dir).map((f) => f.title),
+    ['Audit #1: add ignores NaN'],
+  );
+  assert.deepEqual(
+    r.findings.map((f) => f.text),
+    ['add ignores NaN', 'add has no doc comment'],
+    'the note is still reported',
+  );
+  const row = readFileSync(join(process.env.KEEL_STATE_DIR, 'audit.jsonl'), 'utf8')
+    .trim()
+    .split('\n')
+    .map(JSON.parse)
+    .find((x) => x.pr === 1);
+  assert.equal(row.findings.length, 2);
+});
+
+test('REQ-CLI-17 an audit with only notes queues nothing and passes', () => {
+  const { dir, bin } = setup();
+  const notes = reviewer("console.log('FINDING low src/add.js:1 add has no doc comment'); console.log('VERDICT: pass')");
+  const [r] = withPath(bin, () => audit({ repo: dir, config: fixtureConfig({ tiers: [notes] }), limit: 20 }));
+  assert.deepEqual(pendingFollowUps(dir), []);
+  assert.equal(r.outcome, 'pass');
+});

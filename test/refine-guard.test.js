@@ -81,6 +81,7 @@ test('REQ-LINEAR-33 when the split comment fails after the sub-issues are filed,
       throw new Error('Linear down');
     },
     stateType: async () => 'started',
+    capacity: async () => ({ open: 0, teams: [] }), // room in the workspace: no hold (REQ-LINEAR-37)
     createIssue: async (source, fields) => `BUI-${fields.title.length}`,
   };
   const cards = [

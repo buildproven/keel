@@ -303,11 +303,15 @@ if (values.version && command) {
         const at = `audit #${r.pr} ${r.sha.slice(0, 7)}`;
         if (r.outcome === 'unavailable') log(`${at}: unavailable (${r.reviewer}); the next audit retries`);
         else if (r.outcome === 'no-reviewer') log(`${at}: no tier is ${r.from}; not audited`);
-        else if (r.outcome === 'pass') log(`${at}: pass by ${r.reviewer}`);
         else {
-          log(
-            `${at}: ${r.findings.length} finding(s) by ${r.reviewer}; ${r.source ? `queued under ${r.source}` : 'queued with no source (no Closes ID); poll files it in its project'}`,
-          );
+          // Notes below reviewBlock are shown, never filed (REQ-CLI-17).
+          const notes = r.findings.length - r.queued;
+          const unfiled = notes ? `; ${notes} note(s) below reviewBlock, not filed` : '';
+          if (r.outcome === 'pass') log(`${at}: pass by ${r.reviewer}${unfiled}`);
+          else
+            log(
+              `${at}: ${r.queued} finding(s) by ${r.reviewer}; ${r.source ? `queued under ${r.source}` : 'queued with no source (no Closes ID); poll files it in its project'}${unfiled}`,
+            );
           for (const f of r.findings) log(`  ${f.severity} ${f.path}:${f.line} ${f.text}`);
         }
       }

@@ -82,6 +82,7 @@ test('REQ-LINEAR-22 found work with no source issue is filed in the polled proje
   const client = {
     listIssues: async () => [],
     comment: async (id, body) => comments.push({ id, body }),
+    capacity: async () => ({ open: 0, teams: [] }), // room in the workspace: no hold (REQ-LINEAR-37)
     createIssue: async (sourceId, fields, project) => {
       created.push({ sourceId, fields, project });
       return 'BUI-300';

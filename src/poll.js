@@ -223,7 +223,9 @@ const DUP_CLOSED_DAYS = 30;
 /**
  * File queued found work as Low issues in the same project (REQ-LINEAR-22), oldest first: a title an open issue already
  * has is marked `dup`; at followUpsPerDay for this repo today the rest waits in the queue for a later poll. Each item
- * leaves the queue when its issue is created, marked `dup`, or failed FILE_TRIES times. Filed issues are not attempts,
+ * leaves the queue when its issue is created, marked `dup`, or failed FILE_TRIES times. At followUpHoldAt unarchived
+ * issues in the workspace, nothing more is filed and the rest waits, logged and recorded as `held` (REQ-LINEAR-37); an
+ * unreadable count is a filing error that counts no try. Filed issues are not attempts,
  * so the loop builds them. A Linear error never stops a poll: it returns `{ error }`, and the poll reports it.
  */
 async function fileFollowUps({ repo, project, config, client, log, base = 'HEAD' }) {
@@ -254,6 +256,7 @@ async function fileFollowUps({ repo, project, config, client, log, base = 'HEAD'
         );
   };
   let current = null;
+  let unarchived = null; // the workspace's unarchived issues, once read (REQ-LINEAR-37)
   // Every Linear error is caught here (REQ-LINEAR-22), recorded against the item, and returned, so one bad item cannot
   // stop every later poll.
   try {
@@ -274,6 +277,18 @@ async function fileFollowUps({ repo, project, config, client, log, base = 'HEAD'
         log(`follow-up cap reached (${config.followUpsPerDay} per day); ${pending.length - pending.indexOf(f)} wait in the queue`);
         break;
       }
+      // The workspace's room is read once, just before the first issue this pass would file (REQ-LINEAR-37).
+      if (config.followUpHoldAt > 0) {
+        unarchived ??= (await client.capacity()).open;
+        if (unarchived >= config.followUpHoldAt) {
+          const waiting = pending.length - pending.indexOf(f);
+          recordPollAttempt(repo, { issue: null, outcome: 'held', detail: { open: unarchived, holdAt: config.followUpHoldAt, waiting } });
+          log(
+            `follow-ups held: ${unarchived} unarchived issues >= ${config.followUpHoldAt} (followUpHoldAt); ${waiting} wait in the queue`,
+          );
+          break;
+        }
+      }
       current = f;
       const blockedBy = f.source && (await isOpen(f.source)) ? { blockedBy: [f.source] } : {};
       const id = await client.createIssue(
@@ -282,6 +297,7 @@ async function fileFollowUps({ repo, project, config, client, log, base = 'HEAD'
         project,
       );
       current = null;
+      if (unarchived !== null) unarchived++;
       recordPollAttempt(repo, { issue: id, outcome: 'filed', detail: { source: f.source, title: f.title } });
       known.add(titleKey(f.title));
       filed.set(f.source, [...(filed.get(f.source) ?? []), id]);

@@ -19,6 +19,7 @@ function fakeClient() {
     listIssues: async () => [],
     comment: async () => {},
     stateType: async () => 'completed',
+    capacity: async () => ({ open: 0, teams: [] }), // room in the workspace: no hold (REQ-LINEAR-37)
     createIssue: async (sourceId, fields) => {
       const id = `BUI-${next++}`;
       created.push({ id, sourceId, fields });

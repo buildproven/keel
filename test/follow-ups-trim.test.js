@@ -26,6 +26,7 @@ test('REQ-LINEAR-22 a queued title with trailing space matches the trimmed title
     comment: async () => {},
     review: async () => {},
     stateType: async () => 'started',
+    capacity: async () => ({ open: 0, teams: [] }), // room in the workspace: no hold (REQ-LINEAR-37)
     createIssue: async (sourceId, fields) => {
       created.push(fields.title);
       return `BUI-${100 + created.length}`;
