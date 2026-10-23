@@ -160,3 +160,35 @@ test('REQ-LINEAR-38 an append does not count toward followUpsPerDay', async () =
   assert.equal(client.set.length, 1);
   assert.equal(client.created.length, 1, 'the append left the one daily filing for the other item');
 });
+
+test('REQ-LINEAR-38 a finding joins only a card of its own kind', async () => {
+  const chore = card('src/sub.js', ['x']).replace('kind: bug', 'kind: chore');
+  const client = fakeClient([{ id: 'BUI-20', description: chore, createdAt: '2026-10-01T00:00:00Z', stateType: 'backlog' }]);
+  await file(client, [finding('sub() is reversed')]);
+  assert.deepEqual(client.set, []);
+  assert.equal(client.created.length, 1);
+});
+
+test('REQ-LINEAR-38 a finding whose source is open joins only a card that source already blocks', async () => {
+  const open = { stateType: async () => 'started' };
+  const free = {
+    ...fakeClient([{ id: 'BUI-21', description: card('src/sub.js', ['x']), createdAt: '2026-10-01T00:00:00Z', stateType: 'backlog' }]),
+    ...open,
+  };
+  await file(free, [finding('sub() is reversed')]);
+  assert.deepEqual(free.set, []);
+  assert.equal(free.created.length, 1, 'filed as its own card, blocked by the source');
+  const held = fakeClient([
+    { id: 'BUI-22', description: card('src/sub.js', ['x']), createdAt: '2026-10-01T00:00:00Z', stateType: 'backlog' },
+  ]);
+  held.listIssues = async (_p, { stateTypes } = {}) =>
+    held.open
+      .filter((i) => !stateTypes || stateTypes.includes(i.stateType))
+      .map(({ id, description, createdAt }) => ({ id, title: id, description, createdAt, labels: [], blockedBy: ['BUI-7'] }));
+  held.stateType = async () => 'started';
+  await file(held, [finding('sub() is reversed')]);
+  assert.deepEqual(
+    held.set.map((s) => s.id),
+    ['BUI-22'],
+  );
+});

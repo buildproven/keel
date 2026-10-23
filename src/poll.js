@@ -234,6 +234,9 @@ const APPEND_STATES = ['backlog', 'unstarted', 'triage'];
 const PROBLEM = /\n## Problem\n\n[\s\S]*?(?=\n\n## Requirements\n)/;
 const REQUIREMENTS = /\n## Requirements\n\n[\s\S]*?(?=\n\n## Acceptance\n)/;
 
+/** The `kind:` of a description's keel block, or null (REQ-LINEAR-38). */
+const cardKind = (description) => /```keel\n(?:[^`]*\n)?kind:\s*(\w+)/.exec(description ?? '')?.[1] ?? null;
+
 /**
  * `description` with finding `f` on `path` appended (REQ-LINEAR-38): its bullet at the end of `## Problem`, its EARS
  * line at the end of `## Requirements`; null when a section is missing or the card holds FINDINGS_PER_CARD findings.
@@ -333,10 +336,18 @@ async function fileFollowUps({ repo, project, config, client, log, base = 'HEAD'
         cards ??= (await client.listIssues(project, { stateTypes: APPEND_STATES })).sort((a, b) =>
           String(a.createdAt).localeCompare(String(b.createdAt)),
         );
+        // A card takes the finding only when its kind is the finding's (a bug never runs as a chore without red proof),
+        // and when the finding's open source already blocks it, so the card still waits for that source (REQ-LINEAR-28).
+        const waits = f.source && (await isOpen(f.source));
         let into = null;
         let text = null;
         for (const c of cards)
-          if ((c.description ?? '').split('\n').includes(appendMarker(path)) && (text = appendFinding(c.description, f, path))) {
+          if (
+            (c.description ?? '').split('\n').includes(appendMarker(path)) &&
+            cardKind(c.description) === f.kind &&
+            (!waits || (c.blockedBy ?? []).includes(f.source)) &&
+            (text = appendFinding(c.description, f, path))
+          ) {
             into = c;
             break;
           }
