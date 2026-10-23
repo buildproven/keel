@@ -24,6 +24,18 @@ import { GATE_CONTEXT, gateState, postGateStatus } from '../src/status.js';
 import { cardLease, describeConflicts, overlapWarnings } from '../src/lease.js';
 import { linearHttpClient } from '../src/linear-http.js';
 import { poll, pollExitCode, resolveProject } from '../src/poll.js';
+import {
+  activeProjects,
+  addProject,
+  formatProjects,
+  projectsFile,
+  readProjects,
+  removeProject,
+  setActive,
+  setPaused,
+  writeProjects,
+} from '../src/projects.js';
+import { fileProposals, proposeCards, proposedTitles, writeProposals } from '../src/propose.js';
 import { describeStop, run } from '../src/run.js';
 import { sizeWarning, stackWarnings } from '../src/stack.js';
 import { UsageError } from '../src/usage.js';
@@ -48,8 +60,21 @@ const USAGE = `keel — quality gate that picks the model
                                                                an issue ID builds that Linear issue (as poll --issue);
                                                                --merge also enables GitHub auto-merge of the certified SHA
   keel poll [--project <name>] [--base <ref>] [--repo <dir>] [--pr | --merge] [--limit N | --issue <ID> | --file-only]
+            [--projects] [--propose]
                                                                pick, build, and report on the next N Linear issues (needs LINEAR_API_KEY);
-                                                               --file-only files queued follow-ups and builds nothing
+                                                               --file-only files queued follow-ups and builds nothing;
+                                                               --projects: one pass over each active project in your
+                                                               project list (keel projects); --propose: when nothing is
+                                                               eligible, draft cards (keel propose --file)
+  keel projects [add <dir> [--rank N] | remove <dir> | pause <dir> | resume <dir> | active <N|all>]
+                                                               the ranked list of repos keel works on; only the top N
+                                                               unpaused ones are active (KEEL_PROJECTS_FILE, else
+                                                               ~/.config/keel/projects.json)
+  keel propose [--repo <dir>] [--base <ref>] [--focus <text>] [--file]
+                                                               one read-only model turn: what is most worth building next,
+                                                               written as up to proposeMax cards; card files to run with
+                                                               keel run, or with --file Linear issues that wait for your
+                                                               approval
   keel doctor [--repo <dir>] [--base <ref>]                  run the configured checks on a clean checkout of base; find red ones before a card does
   keel report [--escaped] [--dora] [--value [--days N]] [--recur]
                                                                ledger summary; --escaped lists fix: commits on files of merged
@@ -94,6 +119,11 @@ try {
       limit: { type: 'string' },
       issue: { type: 'string' },
       'file-only': { type: 'boolean' },
+      projects: { type: 'boolean' },
+      propose: { type: 'boolean' },
+      rank: { type: 'string' },
+      focus: { type: 'string' },
+      file: { type: 'boolean' },
       author: { type: 'string' },
       status: { type: 'boolean' },
       'wait-review': { type: 'string' },
@@ -137,12 +167,18 @@ if (values.version && command) {
   // An issue ID that is not a file builds that Linear issue (REQ-CLI-8).
   const isIssueRun = command === 'run' && /^[A-Z]+-[0-9]+$/.test(arg ?? '') && !existsSync(arg);
   try {
-    if (['init', 'gate', 'run', 'poll', 'doctor', 'audit', 'test'].includes(command) && !isDirectory(repo)) {
+    if (['init', 'gate', 'run', 'poll', 'doctor', 'audit', 'test', 'propose'].includes(command) && !isDirectory(repo)) {
       throw new UsageError(`--repo ${repo} is not a directory`);
     }
     if (values.author !== undefined && command !== 'gate') throw new UsageError('--author is an option of gate only');
     if (values.status && command !== 'gate') throw new UsageError('--status is an option of gate only');
     if (values['wait-review'] !== undefined && command !== 'gate') throw new UsageError('--wait-review is an option of gate only');
+    if (values.rank !== undefined && !(command === 'projects' && arg === 'add'))
+      throw new UsageError('--rank is an option of projects add only');
+    if ((values.focus !== undefined || values.file) && command !== 'propose')
+      throw new UsageError('--focus and --file are options of propose only');
+    if ((values.projects || values.propose) && command !== 'poll')
+      throw new UsageError('--projects and --propose are options of poll only');
     if (values.days !== undefined && !(command === 'report' && values.value))
       throw new UsageError('--days is an option of report --value only');
     const waitReviewHours = values['wait-review'] === undefined ? 0 : Number(values['wait-review']);
@@ -238,6 +274,42 @@ if (values.version && command) {
         if (result.pr) log(result.pr.ok ? `PR ${result.pr.out}` : `PR failed:\n${result.pr.out}`);
         process.exitCode = result.pass && (!result.pr || result.pr.ok) && result.merge?.state !== 'failed' ? 0 : 1;
       }
+    } else if (command === 'poll' && values.projects) {
+      // One pass over the active projects, in rank order (REQ-MULTI-5); each keeps its own keel.json and Linear project.
+      for (const flag of ['repo', 'project', 'issue', 'base', 'file-only'])
+        if (values[flag] !== undefined) throw new UsageError(`--${flag} cannot be combined with --projects`);
+      const file = projectsFile();
+      const active = activeProjects(readProjects(file));
+      if (!active.length) throw new UsageError(`no active projects in ${file}; add one with keel projects add <dir>`);
+      autoClean({ log }); // REQ-CLEAN-3
+      const results = [];
+      for (const [i, p] of active.entries()) {
+        log(`project ${i + 1}/${active.length}: ${p.repo}`);
+        try {
+          if (!isDirectory(p.repo)) throw new UsageError(`${p.repo} is not a directory`);
+          const base = p.base ?? 'HEAD';
+          const config = loadConfig(p.repo, base);
+          const rows = await poll({
+            repo: p.repo,
+            project: resolveProject(undefined, config, p.repo),
+            client: linearHttpClient(),
+            config,
+            base,
+            pr: values.pr,
+            merge: values.merge,
+            log,
+            limit: p.limit ?? limitOption(values.limit, 1),
+            propose: Boolean(values.propose),
+          });
+          for (const r of rows) log(`${p.repo}: ${r.issue ?? '(none)'}: ${r.outcome}`);
+          results.push(...rows);
+        } catch (e) {
+          // REQ-MULTI-5: one project's error is reported with its repo and fails the pass, and the next project still runs.
+          log(`${p.repo}: ${e.message}`);
+          results.push({ outcome: 'failed', repo: p.repo, detail: e.message });
+        }
+      }
+      process.exitCode = pollExitCode(results);
     } else if (command === 'poll' || isIssueRun) {
       // `keel run <ISSUE-ID>` is `keel poll --issue <ISSUE-ID>` (REQ-CLI-8).
       if (isIssueRun) values.issue = arg;
@@ -261,9 +333,59 @@ if (values.version && command) {
         limit,
         issue: values.issue ?? null,
         fileOnly: Boolean(values['file-only']),
+        propose: Boolean(values.propose),
       });
       for (const r of results) log(`${r.issue ?? '(none)'}: ${r.outcome}`);
       process.exitCode = pollExitCode(results);
+    } else if (command === 'projects') {
+      // The ranked project list (REQ-MULTI-3, -4): no subcommand lists it; a change writes the file and lists it.
+      const file = projectsFile();
+      const data = readProjects(file);
+      const target = positionals[2];
+      const needsDir = ['add', 'remove', 'pause', 'resume'];
+      if (needsDir.includes(arg) && !target) throw new UsageError(`projects ${arg} needs a directory`);
+      const rank = values.rank === undefined ? null : Number(values.rank);
+      const changed =
+        arg === undefined || arg === 'list'
+          ? null
+          : arg === 'add'
+            ? addProject(data, target, rank)
+            : arg === 'remove'
+              ? removeProject(data, target)
+              : arg === 'pause' || arg === 'resume'
+                ? setPaused(data, target, arg === 'pause')
+                : arg === 'active'
+                  ? setActive(data, target)
+                  : null;
+      if (changed === null && arg !== undefined && arg !== 'list') throw new UsageError(`unknown projects subcommand "${arg}"`);
+      if (changed) writeProjects(file, changed);
+      process.stdout.write(`${formatProjects(changed ?? data, file)}\n`);
+    } else if (command === 'propose') {
+      // What to build next, as cards (REQ-PROPOSE-1..6): files to run, or Linear issues that wait for approval.
+      if (arg !== undefined) throw new UsageError('propose takes no argument');
+      const base = values.base ?? 'HEAD';
+      const config = loadConfig(repo, base);
+      const client = values.file ? linearHttpClient() : null;
+      const project = values.file ? resolveProject(undefined, config, repo) : null;
+      const open = client ? (await client.listIssues(project, { closedWithinDays: 30 })).map((i) => i.title) : proposedTitles(repo);
+      const r = proposeCards({ repo, base, config, open, focus: values.focus ?? null, log });
+      const p = r.parsed;
+      if (p.kind === 'unparsed') {
+        log(`propose: ${p.why}`);
+        if (r.output) process.stderr.write(`${r.output.slice(-2000)}\n`);
+        process.exitCode = r.status === 'quota' ? 3 : 1;
+      } else if (p.kind === 'none') log(`propose: nothing worth a card now: ${p.why}`);
+      else {
+        for (const d of p.dropped) log(`propose: dropped "${d.title}": ${d.why}`);
+        if (client) {
+          const ids = await fileProposals({ client, project, config, cards: p.cards });
+          log(
+            `propose: filed ${ids.join(', ') || 'nothing'} in ${project}${config.proposeApproval && ids.length ? '; each waits for your approval: delete its first line' : ''}`,
+          );
+        } else
+          for (const [i, path] of writeProposals(repo, p.cards).entries())
+            process.stdout.write(`${path}  ${p.cards[i].title}\n  keel run ${path} --repo ${repo} --pr\n`);
+      }
     } else if (command === 'doctor') {
       const base = values.base ?? 'HEAD';
       const rows = doctor({ repo, base, config: loadConfig(repo, base) });
