@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { beforeEach, test } from 'node:test';
+import { humanTouch } from '../src/autonomy.js';
 import { DEFAULTS, loadConfig } from '../src/config.js';
-import { pendingFollowUps, pollLedgerFile, recordPollAttempt } from '../src/linear.js';
+import { attemptedIssueIds, pendingFollowUps, pollLedgerFile, recordPollAttempt } from '../src/linear.js';
 import { readJsonl } from '../src/ledger.js';
 import { poll, pollExitCode } from '../src/poll.js';
 import { FIXTURE_TEST, commit, fixtureConfig, fixtureRepo, tmp } from './helpers.js';
@@ -132,4 +133,14 @@ test('REQ-LINEAR-37 followUpHoldAt defaults to 200 and must be an integer >= 0',
   const at = (cfg) => commit(dir, { 'keel.json': JSON.stringify({ checks: { test: FIXTURE_TEST }, testCommand: FIXTURE_TEST, ...cfg }) });
   for (const bad of [-1, 1.5, '200', null]) assert.throws(() => loadConfig(dir, at({ followUpHoldAt: bad })), /followUpHoldAt/);
   assert.equal(loadConfig(dir, at({ followUpHoldAt: 0 })).followUpHoldAt, 0);
+});
+
+test('REQ-LINEAR-37 a held row is not a run: no issue is attempted or counted by the human touch rate', async () => {
+  const { dir } = fixtureRepo();
+  queue(dir, ['finding six']);
+  await fileOnly(dir, fakeClient(220));
+  const rows = readJsonl(pollLedgerFile());
+  assert.ok(rows.some((r) => r.outcome === 'held'));
+  assert.deepEqual([...attemptedIssueIds(dir)], []);
+  assert.equal(humanTouch({ pollRows: rows, ledgerRows: [], prsFor: () => [] }).issues, 0);
 });

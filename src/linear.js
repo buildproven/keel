@@ -8,7 +8,8 @@ export const pollLedgerFile = () => join(stateDir(), 'poll-ledger.jsonl');
 export const SELF_MERGE_ROWS = ['self-merge', 'self-merged', 'self-merge-failed', 'self-merge-closed'];
 
 // A `refined` row (REQ-LINEAR-33) is the step before a build, not an attempt; the build's own outcome follows it.
-const SKIP_ROWS = ['filed', 'found', 'dup', 'stale', 'file-error', 'refined'];
+// A `held` row (REQ-LINEAR-37) records filing that waits for room in the workspace.
+const SKIP_ROWS = ['filed', 'found', 'dup', 'stale', 'file-error', 'held', 'refined'];
 
 /** Every issue id previously attempted by `keel poll` for this repo (REQ-LINEAR-6). */
 export function attemptedIssueIds(repo) {
