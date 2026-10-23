@@ -9,7 +9,7 @@ export const SELF_MERGE_ROWS = ['self-merge', 'self-merged', 'self-merge-failed'
 
 // A `refined` row (REQ-LINEAR-33) is the step before a build, not an attempt; the build's own outcome follows it.
 // A `held` row (REQ-LINEAR-37) records filing that waits for room in the workspace.
-const SKIP_ROWS = ['filed', 'found', 'dup', 'stale', 'file-error', 'held', 'refined'];
+const SKIP_ROWS = ['filed', 'appended', 'found', 'dup', 'stale', 'file-error', 'held', 'refined'];
 
 /** Every issue id previously attempted by `keel poll` for this repo (REQ-LINEAR-6). */
 export function attemptedIssueIds(repo) {
@@ -43,7 +43,7 @@ export const titleKey = (title) => title.trim().toLowerCase();
 
 /**
  * Found work not yet filed (REQ-LINEAR-22), oldest first. The poll ledger is read in order: a `found` row queues each
- * item whose title (case-insensitive; the first source wins) is not queued yet; a `filed`, `dup`, or `stale` (REQ-LINEAR-27) row settles the queued
+ * item whose title (case-insensitive; the first source wins) is not queued yet; a `filed`, `appended` (REQ-LINEAR-38), `dup`, or `stale` (REQ-LINEAR-27) row settles the queued
  * item with its title, and a `file-error` row counts one try against it; `maxTries` tries settle it too. A row settles only
  * work queued before it, so work found again later is queued again and the Linear dedupe decides. Each item carries its
  * `tries`.
@@ -55,7 +55,7 @@ export function pendingFollowUps(repo, maxTries = Infinity) {
   for (const r of rows) {
     if (r.outcome === 'found') {
       for (const f of r.detail) if (!pending.has(key(f.title))) pending.set(key(f.title), { source: r.issue, ...f, tries: 0 });
-    } else if (['filed', 'dup', 'stale'].includes(r.outcome)) pending.delete(key(r.detail.title));
+    } else if (['filed', 'appended', 'dup', 'stale'].includes(r.outcome)) pending.delete(key(r.detail.title));
     else if (r.outcome === 'file-error') {
       const item = pending.get(key(r.detail.title));
       if (item && ++item.tries >= maxTries) pending.delete(key(r.detail.title));
