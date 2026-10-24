@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { beforeEach, test } from 'node:test';
 import { loadConfig, parseCard } from '../src/config.js';
@@ -7,7 +7,7 @@ import { escapedDefects } from '../src/escaped.js';
 import { appendAttempt, formatReport, readLedger, report } from '../src/ledger.js';
 import { learnedStart, run } from '../src/run.js';
 import { parseFindings } from '../src/review.js';
-import { commit, fixtureConfig, fixtureRepo, g, tmp } from './helpers.js';
+import { commit, fixtureConfig, fixtureRepo, g, tmp, unlockDir } from './helpers.js';
 
 // A scripted builder: each call takes the next behaviour from a JSON list, prints a session id `s<call>` and its reply.
 const BUILDER = `
@@ -26,7 +26,11 @@ if (mode === 'good' || mode === 'good-nosession') {
 }
 if (mode === 'improve' || mode === 'lock-receipts')
   fs.writeFileSync('test/add-neg.test.js', "import assert from 'node:assert';\\nimport { add } from '../src/add.js';\\nassert.strictEqual(add(-1, -1), -2);\\n");
-if (mode === 'lock-receipts') fs.chmodSync(state + '/receipts', 0o500);
+if (mode === 'lock-receipts') {
+  // A mode does not stop root: there the dir is made immutable too (unlockDir undoes both).
+  fs.chmodSync(state + '/receipts', 0o500);
+  if (process.getuid?.() === 0) require('child_process').execFileSync('chattr', ['+i', state + '/receipts']);
+}
 if (mode === 'wander') {
   fs.writeFileSync('src/extra.js', 'export const x = 1;\\n');
   require('child_process').execSync('git add -A && git commit -q -m unverified && git checkout -q -b wander');
@@ -259,9 +263,9 @@ test('REQ-RUN-37 an error during the turn (here the re-gate cannot write its rec
     assert.equal(g(r.worktree, 'ls-files', 'test/add-neg.test.js'), '', 'the unverified fix is gone');
     const [row] = fixRows();
     assert.equal(row.outcome, 'reverted');
-    assert.match(row.error, /EACCES|permission/i);
+    assert.match(row.error, /EACCES|EPERM|permission|not permitted/i); // EPERM: the immutable flag under root
   } finally {
-    chmodSync(receipts, 0o700);
+    unlockDir(receipts);
   }
 });
 

@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
-import { chmodSync, readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { parseCard } from '../src/config.js';
 import { readLedger } from '../src/ledger.js';
 import { run } from '../src/run.js';
-import { fixtureConfig, fixtureRepo, tmp } from './helpers.js';
+import { fixtureConfig, fixtureRepo, tmp, unlockDir } from './helpers.js';
 
 const BUILDER = `
 const fs = require('fs');
@@ -19,7 +19,9 @@ if (n === 0) {
   fs.writeFileSync('test/add.test.js', "import assert from 'node:assert';\\nimport { add } from '../src/add.js';\\nassert.strictEqual(add(2, 3), 5);\\n");
 } else {
   fs.writeFileSync('test/add-negative.test.js', "import assert from 'node:assert';\\nimport { add } from '../src/add.js';\\nassert.strictEqual(add(-2, -3), -5);\\n");
+  // A mode does not stop root: there the dir is made immutable too (unlockDir undoes both).
   fs.chmodSync(state + '/receipts', 0o500);
+  if (process.getuid?.() === 0) require('child_process').execFileSync('chattr', ['+i', state + '/receipts']);
 }
 console.log(JSON.stringify({
   result: 'done',
@@ -79,6 +81,6 @@ test('REQ-RUN-38 a findings re-gate that throws after review records its time, r
     assert.equal(row.reviewCost, 0.03);
     assert.deepEqual(row.reviewUsage, { in: 7, out: 3, cached: 0 });
   } finally {
-    chmodSync(receipts, 0o700);
+    unlockDir(receipts);
   }
 });
