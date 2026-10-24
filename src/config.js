@@ -120,6 +120,30 @@ export const DEFAULTS = {
   followUpHoldAt: 200,
   // One read-only refine turn before `keel poll` builds an unclear or too-big issue (REQ-LINEAR-32).
   refineIssues: true,
+  // Source-file globs `keel propose` reads for files no test names (REQ-PROPOSE-1); language knowledge lives here.
+  sourceGlobs: [
+    '**/*.js',
+    '**/*.mjs',
+    '**/*.cjs',
+    '**/*.jsx',
+    '**/*.ts',
+    '**/*.tsx',
+    '**/*.py',
+    '**/*.go',
+    '**/*.rs',
+    '**/*.rb',
+    '**/*.java',
+    '**/*.kt',
+    '**/*.cs',
+    '**/*.php',
+    '**/*.swift',
+  ],
+  // Cards one propose turn may draft (REQ-PROPOSE-8). Filed ones are built with no human step unless proposeApproval
+  // holds them for the owner (REQ-PROPOSE-6, -9): the gate, not a person, decides what merges.
+  proposeMax: 3,
+  proposeApproval: false,
+  // Tier of the propose turn; null is the strongest tier (REQ-PROPOSE-4).
+  proposeTier: null,
   // How long `keel poll --merge` waits for every check on a certified SHA before it gives up a self-merge (REQ-MERGE-4).
   selfMergeTimeoutMinutes: 30,
   // Stop a card once its priced cost reaches this many dollars (REQ-RUN-22); default none.
@@ -182,7 +206,16 @@ function validate(c) {
   if (extraStart.length) bad(`startTier: unknown keys: ${extraStart.join(', ')}`);
   for (const [k, v] of Object.entries(c.startTier))
     if (!Number.isInteger(v) || v < 0 || v >= c.tiers.length) bad(`startTier.${k} is not a tier index`);
-  for (const k of ['testGlobs', 'verificationPaths', 'heldOutRequired', 'protected', 'bypassAllow', 'shareDirs', 'workerEnvAllow'])
+  for (const k of [
+    'testGlobs',
+    'sourceGlobs',
+    'verificationPaths',
+    'heldOutRequired',
+    'protected',
+    'bypassAllow',
+    'shareDirs',
+    'workerEnvAllow',
+  ])
     if (!Array.isArray(c[k]) || !c[k].every((v) => typeof v === 'string')) bad(`"${k}" must be an array of strings`);
   if (!c.heldOutRequired.every((v) => SIZES.includes(v))) bad('"heldOutRequired" entries must be S, M, or L');
   if (!Number.isInteger(c.workerTimeoutSec) || c.workerTimeoutSec < 1) bad('"workerTimeoutSec" must be an integer ≥ 1');
@@ -207,6 +240,10 @@ function validate(c) {
     bad('"lightReview" must be null or { maxLines: integer ≥ 0, effort: string }');
   if (!SEVERITIES.includes(c.reviewBlock)) bad(`"reviewBlock" must be one of ${SEVERITIES.join(', ')}`);
   if (typeof c.refineIssues !== 'boolean') bad('"refineIssues" must be true or false');
+  if (!Number.isInteger(c.proposeMax) || c.proposeMax < 1 || c.proposeMax > 10) bad('"proposeMax" must be an integer from 1 to 10');
+  if (typeof c.proposeApproval !== 'boolean') bad('"proposeApproval" must be true or false');
+  if (c.proposeTier !== null && !(Number.isInteger(c.proposeTier) && c.proposeTier >= 0 && c.proposeTier < c.tiers.length))
+    bad('"proposeTier" must be null or a tier index');
   if (typeof c.learnStart !== 'boolean') bad('"learnStart" must be true or false');
   if (c.cardBudgetUsd !== null && !(typeof c.cardBudgetUsd === 'number' && c.cardBudgetUsd > 0))
     bad('"cardBudgetUsd" must be a positive number');

@@ -80,13 +80,26 @@ issue (REQ-LINEAR-12).
 
 ## Many repos
 
-There is no fleet mode by design. Loop in the shell; each repo carries its own project and ceiling:
+Rank the repos once, and choose how many Keel works on (README, "Many projects"):
 
 ```sh
-for repo in ~/src/*/; do
-  [ -f "$repo/keel.json" ] && keel poll --repo "$repo" --limit 1
-done
+keel projects add ~/src/shop --rank 1
+keel projects add ~/src/api
+keel projects active 5           # only the top 5 unpaused repos
 ```
+
+Then the wrapper above runs one pass over all of them, in rank order, instead of one repo. Each still uses its own
+`keel.json`, Linear project, and budget; Keel fetches `origin` in each and polls against its default branch (or the
+project's `base` from the list), so the wrapper needs no fetch of its own:
+
+```sh
+exec keel poll --projects --propose --merge
+```
+
+With `--propose`, a repo whose backlog is empty gets up to `proposeMax` drafted cards in its Linear project instead of
+an idle pass (at most one propose turn per repo per day), and the next pass builds them: the loop keeps itself fed.
+Set `"proposeApproval": true` in a repo's `keel.json` to hold its proposals until you delete each one's first line.
+The pass is still one pass that exits: the schedule stays yours.
 
 ## Exit codes
 

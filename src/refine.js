@@ -41,7 +41,7 @@ export function refineReason(issue) {
 }
 
 /** The card format the refine turn must write, from skills/cards (REQ-LINEAR-33). Embedded, not referenced. */
-const CARD_FORMAT = `<one to three lines of context: who needs this and why>
+export const CARD_FORMAT = `<one to three lines of context: who needs this and why>
 
 ## Requirements
 
@@ -108,9 +108,10 @@ function sectionText(body, name) {
 /**
  * Why a refined card body is not a buildable card (REQ-LINEAR-33), or null: it needs a `shall` line under
  * `## Requirements`, an open checkbox under `## Acceptance`, and a `keel` block with kind, size S or M, and paths that
- * map to a valid card.
+ * map to a valid card. `before` is the policy the card may not loosen: the issue's own card for a refine, none (no
+ * allowEdits) for a proposal (REQ-PROPOSE-3).
  */
-function cardProblem(issue, body) {
+export function cardProblem(issue, body, before = cardFromIssue(issue)) {
   if (!/\bshall\b/i.test(sectionText(body, 'Requirements') ?? '')) return 'no "## Requirements" with a "shall" line';
   if (!OPEN_CHECKBOX.test(sectionText(body, 'Acceptance') ?? '')) return 'no "## Acceptance" with a checkbox';
   if (!KEEL_BLOCK.test(body)) return 'no keel block';
@@ -125,7 +126,6 @@ function cardProblem(issue, body) {
   if (!['S', 'M'].includes(card.size)) return `size ${card.size} is not S or M`;
   // The issue text is untrusted and the card is built unattended: a refined card may not loosen the policy the issue
   // already had. A bug or feature keeps red proof, and allowEdits stays what the issue itself allowed.
-  const before = cardFromIssue(issue);
   if (STRICT_KINDS.includes(before.kind) && !STRICT_KINDS.includes(card.kind))
     return `kind ${card.kind} would drop the red proof the issue's kind ${before.kind} needs`;
   const extra = card.allowEdits.filter((p) => !before.allowEdits.includes(p));

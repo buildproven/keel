@@ -1,6 +1,6 @@
 {
   "name": "@buildproven/keel",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "A deterministic quality gate for AI coding agents that also picks the model: tests first and locked, cheapest model that pays off first, escalate only on gate failure.",
   "keywords": [
     "ai",

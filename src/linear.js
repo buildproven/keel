@@ -171,6 +171,13 @@ export function textPrerequisites(issue) {
   return [...new Set(ids)];
 }
 
+/**
+ * The line that holds a proposed issue for the owner (REQ-PROPOSE-6): `keel poll` never picks an issue whose
+ * description has it. Deleting the line approves the card.
+ */
+export const APPROVAL_LINE = 'keel: proposed card, waiting for approval. Delete this line to let keel build it.';
+export const awaitsApproval = (issue) => (issue.description ?? '').split('\n').some((l) => l.trim() === APPROVAL_LINE);
+
 /** The owner's opt-out for tracking and decision issues (REQ-LINEAR-11): never picked, commented on, or recorded. */
 const optedOut = (issue) => (issue.labels ?? []).some((l) => l.toLowerCase() === 'no-keel');
 
@@ -187,6 +194,8 @@ export function pickIssue(issues, attemptedIds, onSkip = () => {}, onWait = () =
   const sorted = [...issues].sort((a, b) => rank(a) - rank(b) || new Date(a.createdAt) - new Date(b.createdAt));
   for (const issue of sorted) {
     if (attemptedIds.has(issue.id) || optedOut(issue)) continue;
+    // A proposed card waits, unrecorded, until the owner deletes its approval line (REQ-PROPOSE-6).
+    if (awaitsApproval(issue)) continue;
     const human = notKeelReason(issue);
     if (human) {
       onNotKeel(issue.id, human);
