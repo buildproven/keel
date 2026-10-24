@@ -193,7 +193,7 @@ function linearFake(issues = []) {
 test('REQ-PROPOSE-6 filed proposals are Low issues that wait for approval; deleting the line approves them', async () => {
   const { cards } = parseProposals(`PROPOSALS\n${card('Fix add to sum')}`, { max: 3 });
   const client = linearFake();
-  const ids = await fileProposals({ client, project: 'web', config: fixtureConfig(), cards });
+  const ids = await fileProposals({ client, project: 'web', config: fixtureConfig({ proposeApproval: true }), cards });
   assert.deepEqual(ids, ['BUI-101']);
   const [{ sourceId, fields, project }] = client.created;
   assert.equal(sourceId, null);
@@ -261,10 +261,42 @@ test('REQ-PROPOSE-8 keel.json validates proposeMax, proposeApproval, proposeTier
   };
   const defaults = at({})();
   assert.equal(defaults.proposeMax, 3);
-  assert.equal(defaults.proposeApproval, true);
+  assert.equal(defaults.proposeApproval, false);
   assert.throws(at({ proposeMax: 0 }), /"proposeMax" must be an integer from 1 to 10/);
   assert.throws(at({ proposeMax: 11 }), /"proposeMax"/);
   assert.throws(at({ proposeApproval: 'yes' }), /"proposeApproval" must be true or false/);
   assert.throws(at({ proposeTier: 9 }), /"proposeTier" must be null or a tier index/);
   assert.throws(at({ sourceGlobs: '**/*.js' }), /"sourceGlobs" must be an array of strings/);
+});
+
+test('REQ-PROPOSE-9 proposeApproval is off by default: filed proposals are built by the loop with no human step', async () => {
+  const { cards } = parseProposals(`PROPOSALS\n${card('Fix add to sum')}`, { max: 3 });
+  const client = linearFake();
+  await fileProposals({ client, project: 'web', config: fixtureConfig(), cards });
+  assert.ok(!client.created[0].fields.description.includes(APPROVAL_LINE));
+});
+
+test('REQ-PROPOSE-9 with approval off, poll --propose runs at most one propose turn per repo per UTC day', async () => {
+  const { dir } = fixtureRepo();
+  const calls = [];
+  const parsed = parseProposals(`PROPOSALS\n${card('Fix add to sum')}`, { max: 3 });
+  const fn = (args) => {
+    calls.push(args);
+    return { status: 'ok', output: '', parsed, tier: 0 };
+  };
+  const { appendAttempt } = await import('../src/ledger.js');
+  const opts = {
+    repo: dir,
+    project: 'web',
+    config: fixtureConfig({ linearProject: 'web' }),
+    runFn: noBuild,
+    capacityFn: null,
+    propose: true,
+    proposeFn: fn,
+  };
+  await poll({ ...opts, client: linearFake([]) });
+  appendAttempt({ run: 'propose-x', card: 'propose', repo: dir, role: 'propose', outcome: 'proposals', durationMs: 1 });
+  const again = await poll({ ...opts, client: linearFake([]) });
+  assert.equal(calls.length, 1);
+  assert.deepEqual(again.at(-1), { outcome: 'none', detail: { proposedToday: 1 } });
 });

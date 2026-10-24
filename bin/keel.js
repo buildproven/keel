@@ -27,6 +27,7 @@ import { poll, pollExitCode, resolveProject } from '../src/poll.js';
 import {
   activeProjects,
   addProject,
+  projectBase,
   formatProjects,
   projectsFile,
   readProjects,
@@ -287,7 +288,8 @@ if (values.version && command) {
         log(`project ${i + 1}/${active.length}: ${p.repo}`);
         try {
           if (!isDirectory(p.repo)) throw new UsageError(`${p.repo} is not a directory`);
-          const base = p.base ?? 'HEAD';
+          const base = projectBase(p, log); // REQ-MULTI-6: fetched, origin's default branch unless the list names one
+          log(`${p.repo}: base ${base}`);
           const config = loadConfig(p.repo, base);
           const rows = await poll({
             repo: p.repo,

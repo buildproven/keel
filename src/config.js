@@ -138,9 +138,10 @@ export const DEFAULTS = {
     '**/*.php',
     '**/*.swift',
   ],
-  // Cards one propose turn may draft (REQ-PROPOSE-8); filed ones wait for the owner while proposeApproval is on (REQ-PROPOSE-6).
+  // Cards one propose turn may draft (REQ-PROPOSE-8). Filed ones are built with no human step unless proposeApproval
+  // holds them for the owner (REQ-PROPOSE-6, -9): the gate, not a person, decides what merges.
   proposeMax: 3,
-  proposeApproval: true,
+  proposeApproval: false,
   // Tier of the propose turn; null is the strongest tier (REQ-PROPOSE-4).
   proposeTier: null,
   // How long `keel poll --merge` waits for every check on a certified SHA before it gives up a self-merge (REQ-MERGE-4).

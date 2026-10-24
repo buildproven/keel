@@ -131,9 +131,10 @@ keel propose --file                           # files them in the repo's Linear 
 keel poll --propose --merge                   # when the backlog runs dry, propose instead of idling
 ```
 
-Filed proposals start with an approval line and the loop never builds them until you delete it
-(`proposeApproval`, default on; turn it off to let the loop build its own ideas). While one proposal waits, no new
-turn is paid for. Propose turns show in `keel report` as spend.
+Filed proposals are built by the loop like any other issue, through the same gate and cross-model review: no human
+step (`keel poll --propose` runs at most one propose turn per repo per day). Want to vet ideas first? Set
+`"proposeApproval": true`: each proposal then starts with an approval line, the loop skips it until you delete that
+line, and no new turn is paid for while one waits. Propose turns show in `keel report` as spend.
 
 ## Many projects: choose which ones Keel works on
 
@@ -146,7 +147,8 @@ keel projects add ~/src/blog                   # add at the end
 keel projects active 5                         # only the top 5 unpaused repos are worked on ("all" for every one)
 keel projects pause ~/src/blog                 # skip it for now, keep its rank; resume puts it back
 keel projects                                  # rank, active/waiting/paused, and what each repo still lacks
-keel poll --projects --merge                   # one pass over each active repo, in rank order
+keel poll --projects --propose --merge         # one pass over each active repo, in rank order: fetch, build, merge,
+                                               # and propose new cards where the backlog is empty
 ```
 
 The file is plain JSON you can edit by hand; a project can carry its own `limit` (issues per pass) and `base`:
@@ -159,7 +161,8 @@ The file is plain JSON you can edit by hand; a project can carry its own `limit`
 ```
 
 Each repo keeps its own `keel.json`, Linear project, and budget; one repo's error is reported and the next still
-runs. `keel poll --projects` is still one pass that exits: run it from your own schedule (`docs/UNATTENDED.md`).
+runs. Before each repo's pass Keel fetches `origin` and polls against its default branch (or the project's `base`).
+`keel poll --projects` is still one pass that exits: run it from your own schedule (`docs/UNATTENDED.md`).
 
 ## Commands
 
@@ -186,16 +189,16 @@ test: `docs/DESIGN.md`.
 `keel init` proposes the file; review it and commit it on the default branch (policy is read from the base commit).
 Unknown keys are errors. Defaults and validation: `src/config.js`.
 
-| Area           | Keys                                                                                                                                                                                            |
-| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Commands       | `checks` (required), `testCommand` (required), `testFilesCommand`, `heldOutCommand`, `install`, `acceptance`, `mutation`, `smoke`                                                               |
-| What is locked | `testGlobs`, `verificationPaths`, `protected`, `bypassAllow`, `shareDirs`, `workerEnvAllow`                                                                                                     |
-| Held-out tests | `heldOutRequired`, `heldOutAuthorTier`                                                                                                                                                          |
-| Review         | `review`, `reviewBlock`, `reviewFallback`, `reviewWindows`, `lightReview`, `fixLowFindings`, `approveAllowEdits`                                                                                |
-| Models         | `tiers`, `startTier`, `learnStart`, `maxAttempts`, `workerTimeoutSec`, `failureTailChars`, `claudePermissionMode`, `workerArgs`                                                                 |
-| Spending       | `dailyBudgetUsd`, `cardBudgetUsd`, `planLimits`                                                                                                                                                 |
-| Linear loop    | `linearProject`, `refineIssues`, `followUpsPerDay`, `followUpHoldAt`, `selfMergeTimeoutMinutes`, `worktreeKeepDays`                                                                             |
-| Proposing      | `proposeMax` (cards per turn, default 3), `proposeApproval` (filed cards wait for you, default on), `proposeTier` (default the strongest), `sourceGlobs` (files read for untested-file signals) |
+| Area           | Keys                                                                                                                                                                                             |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Commands       | `checks` (required), `testCommand` (required), `testFilesCommand`, `heldOutCommand`, `install`, `acceptance`, `mutation`, `smoke`                                                                |
+| What is locked | `testGlobs`, `verificationPaths`, `protected`, `bypassAllow`, `shareDirs`, `workerEnvAllow`                                                                                                      |
+| Held-out tests | `heldOutRequired`, `heldOutAuthorTier`                                                                                                                                                           |
+| Review         | `review`, `reviewBlock`, `reviewFallback`, `reviewWindows`, `lightReview`, `fixLowFindings`, `approveAllowEdits`                                                                                 |
+| Models         | `tiers`, `startTier`, `learnStart`, `maxAttempts`, `workerTimeoutSec`, `failureTailChars`, `claudePermissionMode`, `workerArgs`                                                                  |
+| Spending       | `dailyBudgetUsd`, `cardBudgetUsd`, `planLimits`                                                                                                                                                  |
+| Linear loop    | `linearProject`, `refineIssues`, `followUpsPerDay`, `followUpHoldAt`, `selfMergeTimeoutMinutes`, `worktreeKeepDays`                                                                              |
+| Proposing      | `proposeMax` (cards per turn, default 3), `proposeApproval` (filed cards wait for you, default off), `proposeTier` (default the strongest), `sourceGlobs` (files read for untested-file signals) |
 
 Optional `priceInPerM` / `priceOutPerM` / `priceCachedPerM` (USD per million tokens; the last for cache reads) on a tier let `keel report --value` show what the same tokens would have cost at the top tier.
 

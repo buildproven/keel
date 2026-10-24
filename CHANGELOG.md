@@ -15,7 +15,10 @@ it adds or changes. Keel is not on npm yet: install from a clone (README, Quick 
   source files no test names), then asks the strongest tier, in one read-only turn, what is most worth building next.
   The answer is checked like a refined card (EARS requirements, acceptance checks, size S/M, no `allowEdits`) and
   written as `PROP-<n>.md` card files outside the repo, or filed with `--file` as Linear issues that wait for your
-  approval. `keel poll --propose` does this when the backlog runs dry, and holds while a proposal still waits.
+  approval when `proposeApproval` is on. `keel poll --propose` does this when the backlog runs dry; by default the
+  loop then builds its own proposals with no human step, at most one propose turn per repo per day (REQ-PROPOSE-9).
+- `keel poll --projects` fetches each repo and polls against origin's default branch unless the list names a base
+  (REQ-MULTI-6), so a schedule needs one line: `keel poll --projects --propose --merge`.
   New `keel.json` keys: `proposeMax`, `proposeApproval`, `proposeTier`, `sourceGlobs`.
 - `keel report` shows propose turns and their cost.
 - `CHANGELOG.md`, `.editorconfig`, Dependabot for GitHub Actions and dev dependencies, and an issue-template chooser
@@ -23,6 +26,8 @@ it adds or changes. Keel is not on npm yet: install from a clone (README, Quick 
 
 ### Fixed
 
+- Two tests that lock the receipts directory with `chmod` also set the immutable flag when run as root, whom a mode
+  does not stop, so the suite passes in root containers too (REQ-RUN-37, REQ-RUN-38).
 - Workers and checks no longer break when git config comes from the environment (REQ-RUN-50): the secret scrub
   dropped `GIT_CONFIG_KEY_<n>` but kept `GIT_CONFIG_COUNT`, so every git call failed with "missing config key". The
   whole set now goes, values included (they can carry credentials).

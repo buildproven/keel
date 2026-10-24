@@ -790,6 +790,16 @@ async function proposeStep({ repo, base, config, client, project, issues, log, p
     return { outcome: 'none', detail: { waiting } };
   }
   if (!proposeFn) return { outcome: 'none' };
+  // With no owner to hold proposals back, one turn per repo per UTC day keeps an idle loop from paying for ideas on
+  // every pass (REQ-PROPOSE-9).
+  if (!config.proposeApproval) {
+    const day = new Date().toISOString().slice(0, 10);
+    const today = readLedger().filter((r) => r.role === 'propose' && r.repo === resolve(repo) && String(r.at).startsWith(day)).length;
+    if (today) {
+      log(`propose: already ran today for ${resolve(repo)}; the next turn is tomorrow`);
+      return { outcome: 'none', detail: { proposedToday: today } };
+    }
+  }
   if (config.followUpHoldAt > 0 && capacityFn) {
     const { open } = await capacityFn();
     if (open >= config.followUpHoldAt) {

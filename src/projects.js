@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { findDefaultBase } from './defaults.js';
 import { exec, showFile } from './git.js';
 import { UsageError } from './usage.js';
 
@@ -163,4 +164,20 @@ export function formatProjects(data, file, inspect = inspectProject) {
     return `  ${String(i + 1).padStart(2)}. ${projectState(data, p).padEnd(7)} ${p.repo} — ${notes.join(', ')}`;
   });
   return [head, ...lines].join('\n');
+}
+
+/**
+ * The base a `poll --projects` pass uses for a project (REQ-MULTI-6): fetch origin first, then the project's `base`,
+ * else origin's default branch, else HEAD for a repo with no origin. An unattended pass must build on what is merged,
+ * not on whatever the local checkout last saw. A failed fetch (offline, auth) is a visible warning, and the pass uses
+ * the refs it has: polling yesterday's base beats skipping the repo.
+ */
+export function projectBase({ repo, base }, log = () => {}) {
+  const hasOrigin = exec('git', ['remote', 'get-url', 'origin'], repo).status === 0;
+  if (hasOrigin) {
+    const fetched = exec('git', ['fetch', '--quiet', 'origin'], repo);
+    if (fetched.status !== 0)
+      log(`WARN git fetch origin failed in ${repo}; polling against the refs it has: ${fetched.stderr.trim().split('\n')[0]}`);
+  }
+  return base ?? (hasOrigin ? findDefaultBase(repo) : null) ?? 'HEAD';
 }

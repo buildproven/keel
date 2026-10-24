@@ -19,15 +19,15 @@ To write cards for Keel, use the `cards` skill.
 
 ## Everyday commands
 
-| When                                    | Command                                                              |
-| --------------------------------------- | -------------------------------------------------------------------- |
-| Before a PR                             | `keel gate`                                                          |
-| Build one Linear issue                  | `keel run BUI-123 --merge`                                           |
-| Work the backlog                        | `keel poll --limit N --merge`                                        |
-| Work the backlog of your top N repos    | `keel poll --projects --merge`                                       |
-| Choose which repos Keel works on        | `keel projects add <dir> --rank 1`, `keel projects active 5`         |
-| No card yet: ask what is worth building | `keel propose [--focus "tests"]`, then `keel run <PROP file>`        |
-| Backlog empty: draft cards for approval | `keel poll --propose` (cards wait until you delete their first line) |
+| When                                    | Command                                                             |
+| --------------------------------------- | ------------------------------------------------------------------- |
+| Before a PR                             | `keel gate`                                                         |
+| Build one Linear issue                  | `keel run BUI-123 --merge`                                          |
+| Work the backlog                        | `keel poll --limit N --merge`                                       |
+| Work the backlog of your top N repos    | `keel poll --projects --merge`                                      |
+| Choose which repos Keel works on        | `keel projects add <dir> --rank 1`, `keel projects active 5`        |
+| No card yet: ask what is worth building | `keel propose [--focus "tests"]`, then `keel run <PROP file>`       |
+| Fully autonomous, all your top repos    | `keel poll --projects --propose --merge` (builds its own proposals) |
 
 `keel gate` defaults to origin's default branch and, without `--card`, gates a size-S card whose kind comes
 from the branch's commit types (`feat:` → feature, `fix:` → bug, …). Pass `--card` to set scope, size M/L, or
