@@ -25,19 +25,22 @@ export function defaultRef(repo) {
   return r.status === 0 ? r.stdout.trim() : 'HEAD';
 }
 
-/** Each remote's default branch as last fetched: its remote HEAD, else its main branch (REQ-LED-20). */
+/** Origin's default (else HEAD), then each other remote's HEAD or main as last fetched (REQ-LED-6, REQ-LED-20). */
 export function defaultRefs(repo) {
   const remotes = git(['remote'], repo)
     .split('\n')
     .filter(Boolean)
-    .sort((a, b) => (a === 'origin' ? -1 : b === 'origin' ? 1 : a.localeCompare(b)));
-  if (!remotes.length) return [{ remote: null, ref: defaultRef(repo), exists: true }];
-  return remotes.map((remote) => {
-    const head = exec('git', ['rev-parse', '--abbrev-ref', `${remote}/HEAD`], repo);
-    const ref = head.status === 0 ? head.stdout.trim() : `${remote}/main`;
-    const resolved = exec('git', ['rev-parse', '--verify', `${ref}^{commit}`], repo);
-    return { remote, ref, exists: resolved.status === 0 };
-  });
+    .sort((a, b) => a.localeCompare(b));
+  const primary = { remote: remotes.includes('origin') ? 'origin' : null, ref: defaultRef(repo), exists: true };
+  const others = remotes
+    .filter((remote) => remote !== 'origin')
+    .map((remote) => {
+      const head = exec('git', ['rev-parse', '--abbrev-ref', `${remote}/HEAD`], repo);
+      const ref = head.status === 0 ? head.stdout.trim() : `${remote}/main`;
+      const resolved = exec('git', ['rev-parse', '--verify', `${ref}^{commit}`], repo);
+      return { remote, ref, exists: resolved.status === 0 };
+    });
+  return [primary, ...others];
 }
 
 /** Rows before REQ-LED-6 carry no base; the gate receipt for the same card and head has it. */

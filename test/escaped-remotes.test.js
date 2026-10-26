@@ -51,6 +51,24 @@ test("REQ-LED-20 a merge only on a second remote's main is measured", () => {
   assert.deepEqual(measured.other, { changes: 2, followed: 0 }, 'the value baseline uses the second remote too');
 });
 
+test('REQ-LED-20 uses checked-out HEAD when origin/HEAD is missing', () => {
+  const { dir, base } = fixtureRepo();
+  g(dir, 'remote', 'add', 'origin', 'https://example.invalid/origin.git');
+  g(dir, 'checkout', '-q', '-b', 'keel/BUI-1477');
+  const head = commit(dir, { ...FIXED_SRC, ...REGRESSION_TEST }, 'fix: add sums');
+  g(dir, 'checkout', '-q', 'main');
+  commit(dir, { ...FIXED_SRC, ...REGRESSION_TEST }, 'BUI-1477: add sums (#1)');
+  commit(dir, { 'src/add.js': 'export const add = (a, b) => Number(a) + Number(b);\n' }, 'fix: add coerces strings');
+
+  const result = escapedDefects([accepted({ card: 'BUI-1477', repo: dir, base, head })]);
+
+  assert.equal(result.notFound.length, 0);
+  assert.deepEqual(
+    result.merged[0].candidates.map((candidate) => candidate.subject),
+    ['fix: add coerces strings'],
+  );
+});
+
 test('REQ-LED-20 a merge on no remote stays not found and names the remotes', () => {
   const { dir, base, head } = twoRemoteRepo({ mergeOnDev: false });
   const result = escapedDefects([accepted({ card: 'BUI-1477', repo: dir, base, head })]);
