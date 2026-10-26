@@ -60,7 +60,10 @@ test('REQ-RUN-5 stops after maxAttempts and keeps the worktree', () => {
   assert.equal(r.stopped, 'max-attempts');
   assert.ok(existsSync(r.worktree));
   assert.equal(calls().length, 2);
-  assert.throws(() => run({ repo: dir, card: card(), config: fixtureConfig() }), /worktree exists/);
+  const retry = run({ repo: dir, card: card(), config: fixtureConfig({ tiers: [tier('good')] }) });
+  assert.equal(retry.pass, true, retry.failure);
+  assert.equal(retry.worktree, r.worktree);
+  assert.equal(calls().length, 3);
 });
 
 test('REQ-RUN-6 a crashing worker escalates; auth stops; quota switches provider or stops', () => {
