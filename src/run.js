@@ -794,8 +794,10 @@ const cardHash = hashOf;
  * has changed since, so the head must be built again.
  */
 function keptHead({ repo, card, config, baseSha, branch, wt }) {
-  // A refine turn (REQ-LED-17) is not an attempt: it must not hide a kept head.
-  const last = readLedger().findLast((r) => r.card === card.id && r.repo === resolve(repo) && !r.poll && r.role !== 'refine');
+  // Refine and held-out author turns are not build attempts: neither may hide a kept head (REQ-LED-17, REQ-RUN-41).
+  const last = readLedger().findLast(
+    (r) => r.card === card.id && r.repo === resolve(repo) && !r.poll && !['refine', 'held-out-author'].includes(r.role),
+  );
   if (!last?.pendingReview) return null;
   if (!existsSync(wt)) {
     // The worktree is gone; a branch still at the kept head is Keel's own and is deleted so the card builds again.
@@ -862,6 +864,7 @@ function runLocked({ repo, card, config, baseSha, baseBranch, branch, wt, pr, me
       return {
         pass: false,
         stopped: error.status === 'quota' ? 'quota' : 'held-out-author',
+        pendingReview: error.status === 'quota' && Boolean(kept),
         branch,
         worktree: kept ? wt : null,
         failure: error.failure,
