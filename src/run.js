@@ -267,7 +267,8 @@ function keptNames(dir, added, config) {
 
 /**
  * Held-out tests from the author tier (REQ-RUN-17), written on a temporary checkout of base the builder never sees.
- * They are kept only when they fail on base as a real test failure that names them. Returns an error text, or null.
+ * They are kept only when they fail on base as a real test failure that names them. Returns the failure and its worker
+ * status, or null.
  */
 function authorHeldOut({ repo, card, config, baseSha, runId, heldDir, log, defect = null }) {
   const index = config.heldOutAuthorTier;
@@ -287,11 +288,13 @@ function authorHeldOut({ repo, card, config, baseSha, runId, heldDir, log, defec
     gatePass: false,
     head: null,
   };
+  let status = null;
   try {
-    return withTempWorktree(repo, baseSha, (dir) => {
+    const failure = withTempWorktree(repo, baseSha, (dir) => {
       const installed = prepareCheckout(repo, dir, config);
       if (installed) return `install failed:\n${installed.out.slice(-2000)}`;
       const w = runWorker(t, authorPrompt(card, defect), dir, config);
+      status = w.status;
       Object.assign(row, { workerStatus: w.status, usage: w.usage, cost: w.cost, durationMs: w.durationMs });
       if (w.status !== 'ok') return `author worker ${w.status}:\n${w.output}`;
       git(['add', '-A'], dir);
@@ -312,6 +315,7 @@ function authorHeldOut({ repo, card, config, baseSha, runId, heldDir, log, defec
       }
       return null;
     });
+    return failure ? { failure, status } : null;
   } finally {
     appendAttempt({ usage: null, durationMs: 0, workerStatus: 'harness-error', ...row });
   }
@@ -352,7 +356,7 @@ function checkHeldOut({ repo, card, config, t, baseSha, runId, heldDir, wt, head
   const error = authorHeldOut({ repo, card, config, baseSha, runId, heldDir, log, defect: answer.reason });
   if (!error) return true;
   row.heldOutDefect = { ...verdict, replaced: false };
-  log(`held-out re-author failed, so the old tests stay; escalating:\n${error}`);
+  log(`held-out re-author failed, so the old tests stay; escalating:\n${error.failure}`);
   return false;
 }
 
@@ -855,7 +859,13 @@ function runLocked({ repo, card, config, baseSha, baseBranch, branch, wt, pr, me
     if (error) {
       // No build attempt ran: the worktree and branch this run made hold no work, and would block the next run (REQ-RUN-41).
       if (!kept) removeParkedWorktree({ repo, path: wt, branch });
-      return { pass: false, stopped: 'held-out-author', branch, worktree: wt, failure: error };
+      return {
+        pass: false,
+        stopped: error.status === 'quota' ? 'quota' : 'held-out-author',
+        branch,
+        worktree: kept ? wt : null,
+        failure: error.failure,
+      };
     }
     card = { ...card, heldOut: heldDir }; // The card text, and so the builder prompt, never carries this path (REQ-GATE-10).
   }
