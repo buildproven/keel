@@ -37,7 +37,7 @@ test('REQ-RUN-41 a held-out author that fails on quota stops the run and removes
   const { dir } = fixtureRepo();
   const r = run({ repo: dir, card: card(), config: fixtureConfig({ tiers: [builder, quotaAuthor], heldOutAuthorTier: 1 }) });
   assert.equal(r.pass, false);
-  assert.equal(r.stopped, 'held-out-author');
+  assert.equal(r.stopped, 'quota');
   assert.ok(!existsSync(r.worktree), `worktree still exists: ${r.worktree}`);
   assert.ok(!branchExists(dir, r.branch), `branch still exists: ${r.branch}`);
 });
@@ -45,7 +45,7 @@ test('REQ-RUN-41 a held-out author that fails on quota stops the run and removes
 test('REQ-RUN-42 after a held-out-author stop, the next run on the same card starts without a "worktree exists" error', () => {
   const { dir } = fixtureRepo();
   const first = run({ repo: dir, card: card(), config: fixtureConfig({ tiers: [builder, quotaAuthor], heldOutAuthorTier: 1 }) });
-  assert.equal(first.stopped, 'held-out-author');
+  assert.equal(first.stopped, 'quota');
   const second = run({ repo: dir, card: card(), config: fixtureConfig({ tiers: [builder, goodAuthor], heldOutAuthorTier: 1 }) });
   assert.equal(second.pass, true, second.failure);
 });
