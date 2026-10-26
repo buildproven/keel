@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { escapeRe, expectedBranch, listParkedWorktrees, removeParkedWorktree } from './clean.js';
 import { loadConfig } from './config.js';
+import { policyRef } from './defaults.js';
 import { exec, git, makeRemovable } from './git.js';
 import { readLedger, stateDir } from './ledger.js';
 import { runLockHeld } from './run-lock.js';
@@ -69,7 +70,7 @@ function judge(w, { rows, now, keepDays }) {
   if (!only.length) return { remove: true, why: 'no commit only there' };
   if (!keepDays.has(w.repo)) {
     try {
-      keepDays.set(w.repo, loadConfig(w.repo, 'HEAD').worktreeKeepDays);
+      keepDays.set(w.repo, loadConfig(w.repo, policyRef(w.repo)).worktreeKeepDays);
     } catch (e) {
       keepDays.set(w.repo, e); // REQ-CLEAN-4: reported as the reason this worktree stays
     }
