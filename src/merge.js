@@ -91,7 +91,8 @@ function decide(repo, p, timeoutMinutes, now) {
   if (pr.mergeStateStatus === 'BEHIND')
     return { act: 'fail', reason: 'the branch is behind its base, and Keel never changes the certified head' };
   if (waiting.length) return wait(waiting.join(', '));
-  if (!MERGEABLE_STATES.has(pr.mergeStateStatus)) return wait(`merge state ${pr.mergeStateStatus}`);
+  const canAttemptMerge = MERGEABLE_STATES.has(pr.mergeStateStatus) || (pr.mergeStateStatus === 'UNKNOWN' && pr.mergeable === 'MERGEABLE');
+  if (!canAttemptMerge) return wait(`merge state ${pr.mergeStateStatus}`);
   return { act: 'merge' };
 }
 

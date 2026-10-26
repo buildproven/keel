@@ -239,7 +239,7 @@ test('REQ-MERGE-2 a missing keel/gate status, a queued workflow run, or an unset
   for (const state of [
     { pr: green({ statusCheckRollup: [{ __typename: 'CheckRun', name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' }] }) },
     { pr: green(), runs: [{ name: 'CI', status: 'queued', conclusion: null }] },
-    { pr: green({ mergeStateStatus: 'UNKNOWN' }) },
+    { pr: green({ mergeable: 'UNKNOWN', mergeStateStatus: 'UNKNOWN' }) },
     { pr: green(), runsExit: 1 },
   ]) {
     setGh(state);
