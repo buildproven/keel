@@ -64,8 +64,9 @@ const usd = (x) => `$${x.toFixed(2)}`;
  */
 export function learnedStart(rows, repo, ruleTier, config) {
   if (!config.learnStart) return { tier: ruleTier, note: null };
-  // Authoring, a findings turn (REQ-RUN-38), and a refine turn (REQ-LED-17) are not attempts of a tier.
-  const mine = rows.filter((r) => r.repo === repo && !['held-out-author', 'fix-findings', 'refine'].includes(r.role));
+  // Authoring, a findings turn (REQ-RUN-38), a refine turn (REQ-LED-17), and a propose turn (REQ-PROPOSE-4) are not
+  // attempts of a tier.
+  const mine = rows.filter((r) => r.repo === repo && !['held-out-author', 'fix-findings', 'refine', 'propose'].includes(r.role));
   // Rows are read by their tier label, not by the index they were written with (REQ-RUN-35): a row whose tier is no
   // longer on the ladder (-1) counts for none. A row with no label it can be matched by (no provider, an exec row
   // without tierLabel) and a ladder with twin labels keep the index.

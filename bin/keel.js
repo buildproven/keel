@@ -282,6 +282,8 @@ if (values.version && command) {
       const file = projectsFile();
       const active = activeProjects(readProjects(file));
       if (!active.length) throw new UsageError(`no active projects in ${file}; add one with keel projects add <dir>`);
+      // A bad --limit is one usage error up front, never a failure per project (REQ-MULTI-5).
+      const limit = limitOption(values.limit, 1);
       autoClean({ log }); // REQ-CLEAN-3
       const results = [];
       for (const [i, p] of active.entries()) {
@@ -300,7 +302,7 @@ if (values.version && command) {
             pr: values.pr,
             merge: values.merge,
             log,
-            limit: p.limit ?? limitOption(values.limit, 1),
+            limit: p.limit ?? limit,
             propose: Boolean(values.propose),
           });
           for (const r of rows) log(`${p.repo}: ${r.issue ?? '(none)'}: ${r.outcome}`);

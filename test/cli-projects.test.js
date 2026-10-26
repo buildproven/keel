@@ -115,3 +115,12 @@ test('REQ-PROPOSE-5 keel propose writes the cards as files outside the repo and 
   assert.equal(keelWith(join(state, 'p.json'), state)('propose', '--repo', dir, 'extra').status, 2, 'propose takes no argument');
   assert.equal(keelWith(join(state, 'p.json'), state)('gate', '--focus', 'x').status, 2, '--focus is an option of propose only');
 });
+
+test('REQ-MULTI-5 a bad --limit with --projects is one usage error before any project runs', () => {
+  const file = join(tmp('keel-cli-projects-'), 'projects.json');
+  writeFileSync(file, JSON.stringify({ projects: [{ repo: fixtureRepo().dir, limit: 2 }] }));
+  const r = keelWith(file)('poll', '--projects', '--limit', 'abc');
+  assert.equal(r.status, 2, r.stderr);
+  assert.match(r.stderr, /--limit must be a positive integer/);
+  assert.doesNotMatch(r.stderr, /project 1\/1/);
+});
