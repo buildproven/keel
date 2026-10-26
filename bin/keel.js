@@ -23,6 +23,7 @@ import { formatReport, readJsonl, readLedger, report, stateDir } from '../src/le
 import { GATE_CONTEXT, gateState, postGateStatus } from '../src/status.js';
 import { cardLease, describeConflicts, overlapWarnings } from '../src/lease.js';
 import { linearHttpClient } from '../src/linear-http.js';
+import { networkFailure } from '../src/network.js';
 import { poll, pollExitCode, resolveProject } from '../src/poll.js';
 import { describeStop, run } from '../src/run.js';
 import { sizeWarning, stackWarnings } from '../src/stack.js';
@@ -365,7 +366,12 @@ if (values.version && command) {
       throw new UsageError(`unknown command "${command}"`);
     }
   } catch (e) {
-    if (!(e instanceof UsageError)) throw e;
-    usageFailure(e.message);
+    // REQ-LINEAR-40: a network that cannot be reached stops the command with one line and exit 4, no stack trace.
+    const down = networkFailure(e);
+    if (down) {
+      log(`${command} stopped: network unreachable (${down.host}: ${down.code})`);
+      process.exitCode = 4;
+    } else if (e instanceof UsageError) usageFailure(e.message);
+    else throw e;
   }
 }
