@@ -57,8 +57,15 @@ const tail = (s, n = 2000) => (s.length > n ? `…${s.slice(-n)}` : s);
 const fail = (name, rule, extra = {}) => ({ name, pass: false, problems: [{ rule, ...extra }] });
 export const inconclusive = (r) => r.timedOut || r.code === null || NOT_A_TEST_RESULT.has(r.code);
 
-/** Where shared dirs come from: the repo, then its main worktree when the repo is a git checkout (REQ-GATE-48). */
-const sharedRoots = (from) => (existsSync(join(from, '.git')) ? [from, mainWorktree(from)] : [from]);
+/**
+ * Where shared dirs come from: the repo, then its main worktree when the repo is a linked worktree (REQ-GATE-48). Only a
+ * linked worktree (or a submodule) has a `.git` file; a `.git` directory makes the repo its own main worktree, so no git
+ * process is started for it: every gate checkout and worker worktree is prepared here.
+ */
+const sharedRoots = (from) => {
+  const dotGit = join(from, '.git');
+  return existsSync(dotGit) && !statSync(dotGit).isDirectory() ? [from, mainWorktree(from)] : [from];
+};
 
 /** Symlink shared dependency dirs (node_modules, .venv) so temp checkouts can run tests. */
 export function linkShared(from, to, dirs) {
@@ -156,7 +163,9 @@ function staticChecks(ctx) {
   const allowed = (p) => matchesAny(p, card.allowEdits) && !approved(p);
   const commands = [...Object.values(config.checks), config.testCommand, config.testFilesCommand, config.heldOutCommand].filter(Boolean);
   // Runner files either side calls stay locked (REQ-GATE-40): the base may call a file the branch's fork point did not.
-  const runners = new Set([from, base].flatMap((ref) => scriptPaths(showFile(ref, 'package.json', repo), commands)).map(fold));
+  const runners = new Set(
+    [...new Set([from, base])].flatMap((ref) => scriptPaths(showFile(ref, 'package.json', repo), commands)).map(fold),
+  );
   const lines = addedLines(from, head, repo);
   const locked = [];
   const relaxed = []; // locked files whose edit is proved non-weakening (REQ-GATE-42..44)

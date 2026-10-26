@@ -45,3 +45,4 @@ Cards are markdown with a header (`kind`, `size`, `paths`, `allowEdits`, `heldOu
 - Tests build throwaway git repos with `test/helpers.js` (`tmp`, `commit`, `FIXTURE_TEST`).
 - `test/fake-worker.js` stands in for the model CLI; its first argument selects the behaviour (pass, crash, blocked, …), and `KEEL_FAKE_LOG` records what it was given.
 - Set `KEEL_STATE_DIR` to a temp dir in any test that writes the ledger; never touch the real one.
+- The suite's time is subprocess spawns (git, node, sh: about 20,000 per run, 7–70 ms each on macOS), not CPU. Start from `fixtureRepo()`, which copies a repo built once per process, instead of `git init` per test; inject `sleep` and clocks instead of waiting. A test over 30 s fails (`--test-timeout`).
