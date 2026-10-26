@@ -18,6 +18,7 @@ import { cardLease, describeConflicts } from './lease.js';
 import { readLedger, spentToday, stateDir } from './ledger.js';
 import { finishSelfMerges, recordSelfMerge } from './merge.js';
 import { REFINED_HEADING, refineIssue, refineReason } from './refine.js';
+import { networkFailure } from './network.js';
 import { nextReset, planLine, readPlan, reservedProviders, savePlan } from './plan.js';
 import { run } from './run.js';
 import { locksAny, matchesAny } from './scan.js';
@@ -71,6 +72,8 @@ async function closeDone(client, id, comment) {
   try {
     await client.done(id);
   } catch (e) {
+    // No network, no comment either: the poll stops (REQ-LINEAR-40) with the issue left open.
+    if (networkFailure(e)) throw e;
     // The failed move stays the error: a comment that fails too is added to it, never put in its place.
     await client
       .comment(
@@ -263,7 +266,9 @@ async function archiveClosed(archiveFn, log) {
     if (ids.length) log(`archived ${ids.length} closed issue(s): ${ids.join(', ')}`);
     return [];
   } catch (e) {
-    // Every Linear error here is logged and fails the poll, never stops it (REQ-LINEAR-39).
+    // An unreachable network stops the poll (REQ-LINEAR-40): every later Linear call would fail the same way.
+    if (networkFailure(e)) throw e;
+    // Every other Linear error here is logged and fails the poll, never stops it (REQ-LINEAR-39).
     log(`closed issues not archived: ${e.message}`);
     return [{ outcome: 'followUpsFailed', detail: `closed issues not archived: ${e.message}` }];
   }
@@ -296,6 +301,7 @@ async function fileFollowUps({ repo, project, config, client, log, base = 'HEAD'
     try {
       await client.comment(id, body);
     } catch (e) {
+      if (networkFailure(e)) throw e; // REQ-LINEAR-40
       errors.push(`comment on ${id}: ${e.message}`);
     }
   };
@@ -393,6 +399,8 @@ async function fileFollowUps({ repo, project, config, client, log, base = 'HEAD'
       filed.set(f.source, [...(filed.get(f.source) ?? []), id]);
     }
   } catch (e) {
+    // An unreachable network stops the poll and charges no item a try (REQ-LINEAR-40): the item did nothing wrong.
+    if (networkFailure(e)) throw e;
     const error = e.message;
     if (current) {
       recordPollAttempt(repo, {
@@ -561,8 +569,10 @@ async function refineStep({ repo, base, config, client, issue, project, log, ref
         `${refineHead(r)}: too big for one build; split into ${children.join(', ')}. They build in that order; this issue builds nothing itself.`,
       );
     } catch (e) {
-      // Recorded before the error goes on, so the next poll does not split the issue again (REQ-LINEAR-33).
-      recordPollAttempt(repo, { issue: issue.id, outcome: 'split', detail: { children, error: e.message } });
+      // Recorded before the error goes on, so the next poll does not split the issue again (REQ-LINEAR-33). With no
+      // child filed for lack of network, nothing happened: the next poll refines the issue again (REQ-LINEAR-40).
+      if (children.length || !networkFailure(e))
+        recordPollAttempt(repo, { issue: issue.id, outcome: 'split', detail: { children, error: e.message } });
       throw e;
     }
     return { outcome: { outcome: 'split', issue: issue.id, children, detail: { children } } };
@@ -605,6 +615,12 @@ async function runOne({ repo, base, pr, merge, log, config, client, issue: picke
     // (REQ-LINEAR-6). A transient stop stays retryable (REQ-LINEAR-19).
     const outcome = TRANSIENT_STOPS.has(result.stopped) ? 'deferred' : 'reportFailed';
     recordPollAttempt(repo, { issue: issue.id, outcome, detail: e.message });
+    const down = networkFailure(e);
+    // Linear never heard of this build, and the issue state is unchanged: say which issue, so a human reports it (REQ-LINEAR-40).
+    if (down)
+      log(
+        `${issue.id} built (branch ${result.branch}) but not reported to Linear: network unreachable (${down.host}: ${down.code}); recorded ${outcome}`,
+      );
     throw e;
   }
 }
@@ -760,6 +776,7 @@ async function withTextPrerequisites(issues, { client, log, states }) {
         try {
           states.set(id, { state: await client.stateType(id) });
         } catch (e) {
+          if (networkFailure(e)) throw e; // no network is no typo: stop the poll (REQ-LINEAR-40)
           states.set(id, { error: e.message });
         }
       }
