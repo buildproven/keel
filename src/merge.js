@@ -101,13 +101,17 @@ function decide(repo, p, timeoutMinutes, now) {
  * integration closes it only for repos it is installed on. Returns null, or the error message of a failed move, which
  * is also commented on the issue so it shows where a human looks.
  */
-async function closeMerged(client, p) {
+async function closeMerged(client, p, log) {
   try {
     if (['completed', 'canceled'].includes(await client.stateType(p.issue))) return null;
     await client.done(p.issue);
   } catch (e) {
-    // No network stops the poll (REQ-LINEAR-40): the comment would fail the same way.
-    if (networkFailure(e)) throw e;
+    // No network stops the poll (REQ-LINEAR-40): the comment would fail the same way. Only the read or move failed here.
+    const down = networkFailure(e);
+    if (down) {
+      log(`${p.issue}: merged ${p.pr} but not moved to Done: network unreachable (${down.host}: ${down.code})`);
+      throw e;
+    }
     // A failed read or move is reported, never thrown: the merge is already settled, so no later poll retries it.
     return client.comment(p.issue, `keel: ${p.pr} merged, but keel could not move it to Done (${e.message}). Close it by hand.`).then(
       () => e.message,
@@ -142,11 +146,7 @@ export async function finishSelfMerges({ repo, config, client, log, now = Date.n
         results.push({ outcome: 'merged', issue: p.issue });
       } else log(`${p.issue}: ${p.pr} was ${d.outcome === 'self-merged' ? 'merged' : 'closed'} outside Keel; self-merge dropped`);
       if (d.outcome === 'self-merged') {
-        const failed = await closeMerged(client, p).catch((e) => {
-          const down = networkFailure(e);
-          if (down) log(`${p.issue}: merged ${p.pr} but not moved to Done: network unreachable (${down.host}: ${down.code})`);
-          throw e;
-        });
+        const failed = await closeMerged(client, p, log);
         if (failed) {
           log(`${p.issue}: merged but could not move to Done (${failed})`);
           results.push({ outcome: 'closeFailed', issue: p.issue, detail: failed });

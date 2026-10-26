@@ -280,3 +280,42 @@ test('REQ-LINEAR-40 a self-merged PR whose issue cannot be moved to Done for lac
     'the merge stays settled',
   );
 });
+
+test('REQ-LINEAR-40 a self-merged issue moved to Done whose comment then loses the network is not logged as unmoved', async () => {
+  const { dir } = fixtureRepo();
+  const pr = 'https://example.test/pr/7';
+  recordPollAttempt(dir, { issue: 'BUI-1', outcome: 'self-merge', detail: { pr, sha: 'a'.repeat(40), since: new Date().toISOString() } });
+  const bin = tmp('keel-bin-');
+  writeFileSync(join(bin, 'gh'), `#!/bin/sh\n[ "$1 $2" = "pr view" ] && echo '{"state":"MERGED"}'\nexit 0\n`);
+  chmodSync(join(bin, 'gh'), 0o755);
+  const logs = [];
+  const moved = [];
+  const client = {
+    listIssues: async () => [],
+    comment: async () => {
+      throw offline('ENETDOWN');
+    },
+    stateType: async () => 'started',
+    done: async (id) => moved.push(id),
+  };
+  const old = process.env.PATH;
+  process.env.PATH = `${bin}:${old}`;
+  try {
+    await assert.rejects(
+      poll({
+        repo: dir,
+        project: 'x',
+        client,
+        config: { selfMergeTimeoutMinutes: 30, followUpsPerDay: 0 },
+        merge: true,
+        log: (m) => logs.push(m),
+        runFn: () => assert.fail('no build'),
+      }),
+      (e) => networkFailure(e)?.code === 'ENETDOWN',
+    );
+  } finally {
+    process.env.PATH = old;
+  }
+  assert.deepEqual(moved, ['BUI-1']);
+  assert.ok(!logs.some((l) => /not moved to Done/.test(l)), logs.join('\n'));
+});
