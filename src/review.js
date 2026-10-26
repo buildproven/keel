@@ -4,6 +4,7 @@ import { git, withTempWorktree } from './git.js';
 import { PROSE } from './scan.js';
 import { UsageError } from './usage.js';
 import { learnLimit, nearlyUsed, recordReviewSpend, windowUse } from './window.js';
+import { signInFix } from './env.js';
 import { addUsage, runWorker } from './workers.js';
 
 export const family = (tier) => tier.family ?? tier.provider;
@@ -197,12 +198,6 @@ function reason(r, down, tier) {
   };
 }
 
-const SIGN_IN = {
-  claude:
-    'run `claude auth status` where Keel runs; over SSH on macOS the login Keychain is locked, so set CLAUDE_CODE_OAUTH_TOKEN (made once by `claude setup-token`) in that shell',
-  codex: 'run `codex login status` where Keel runs, then `codex login`',
-};
-
 /**
  * One IMPROVE line per reviewer that was out because it cannot sign in (REQ-GATE-53). Waiting never fixes this, and
  * each such reviewer is a fallback lost (REQ-GATE-22): on 2026-10-21 a gate waited about 2 h for a Codex reset while
@@ -211,10 +206,7 @@ const SIGN_IN = {
 export function signInFixes(unavailable = []) {
   const lines = unavailable
     .filter((u) => u.status === 'auth')
-    .map(
-      (u) =>
-        `IMPROVE: reviewer ${u.reviewer} cannot sign in, so a fallback is lost; ${SIGN_IN[u.family] ?? 'log its CLI in where Keel runs'}`,
-    );
+    .map((u) => `IMPROVE: reviewer ${u.reviewer} cannot sign in, so a fallback is lost; ${signInFix(u.family)}`);
   return [...new Set(lines)];
 }
 

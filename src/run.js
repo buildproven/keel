@@ -764,7 +764,11 @@ export function startReserved(tiers, tier, ruleTier, reserved, log = () => {}) {
 /** The message `keel run` prints when it stops without a pass (REQ-RUN-13, REQ-RUN-49). */
 export const describeStop = ({ stopped, failure, worktree }) => {
   const detail =
-    stopped === 'blocked' ? `: the worker reports the card blocked:\n${failure}\n` : stopped === 'config' ? `:\n${failure}\n` : ' —';
+    stopped === 'blocked'
+      ? `: the worker reports the card blocked:\n${failure}\n`
+      : stopped === 'config' || stopped === 'auth' // REQ-RUN-49, REQ-RUN-50: the failure names the fix
+        ? `:\n${failure}\n`
+        : ' —';
   return `STOPPED (${stopped})${detail} ${worktree ? `worktree kept at ${worktree}` : `no worktree kept: ${failure}`}`;
 };
 

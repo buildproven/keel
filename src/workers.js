@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { candidateEnv } from './env.js';
+import { missingSignIn, workerEnv } from './env.js';
 
 /** Build the provider command for one tier. `exec` runs any CLI; the prompt goes to its stdin. */
 // The prompt goes on stdin: an argument has a size limit (cmux's claude wrapper: 120 KiB; Linux: 128 KiB) (REQ-RUN-31).
@@ -181,7 +181,11 @@ export function classifyFailure(output) {
  */
 export function runWorker(tier, prompt, cwd, config, resume = null) {
   const { cmd, args, input } = workerCommand(tier, prompt, config, resume);
-  const env = { ...candidateEnv(process.env, config.workerEnvAllow), KEEL_MODEL: tier.model ?? '', KEEL_EFFORT: tier.effort ?? '' };
+  const env = {
+    ...workerEnv(tier.provider, process.env, config.workerEnvAllow), // REQ-RUN-12, REQ-RUN-50: its own sign-in only
+    KEEL_MODEL: tier.model ?? '',
+    KEEL_EFFORT: tier.effort ?? '',
+  };
   delete env.KEEL_RESUME; // only Keel decides what a worker continues; an inherited value would resume a stranger's session
   if (resume && tier.provider === 'exec') env.KEEL_RESUME = resume;
   const started = Date.now();
@@ -194,12 +198,15 @@ export function runWorker(tier, prompt, cwd, config, resume = null) {
     timeout: config.workerTimeoutSec * 1000,
   });
   const parsed = parseUsage(tier.provider, r.stdout ?? '');
-  const output = `${r.stdout ?? ''}${r.stderr ?? ''}`.slice(-4000);
+  let output = `${r.stdout ?? ''}${r.stderr ?? ''}`.slice(-4000);
   let status = 'ok';
   if (r.error?.code === 'ETIMEDOUT') status = 'timeout';
   // An early exit before the prompt is read gives EPIPE on stdin; the exit and output still classify it (REQ-RUN-29).
   else if (r.error && !(r.error.code === 'EPIPE' && r.status !== null)) status = `spawn-error: ${r.error.message}`;
   else if (r.status !== 0 || parsed.isError) status = classifyFailure(output);
+  // REQ-RUN-50: every caller (builder, held-out author, reviewer) reports the sign-in fix with the failure.
+  const fix = status === 'auth' ? missingSignIn(tier.provider, process.env) : null;
+  if (fix) output = `${output.trimEnd()}\nfix: ${fix}`;
   const text = resultText(tier.provider, r.stdout ?? '').slice(-100000);
   const session = sessionId(tier.provider, r.stdout ?? '');
   const cost = parsed.cost ?? priceUsage(tier, parsed.usage); // REQ-LED-12: Codex prints usage but no cost
