@@ -25,6 +25,30 @@ export function defaultRef(repo) {
   return r.status === 0 ? r.stdout.trim() : 'HEAD';
 }
 
+/** Origin's default (else HEAD), then each other remote's HEAD or main as last fetched (REQ-LED-6, REQ-LED-21). */
+export function defaultRefs(repo) {
+  const remotes = git(['remote'], repo)
+    .split('\n')
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b));
+  const primaryRef = defaultRef(repo);
+  const primary = {
+    remote: primaryRef === 'HEAD' ? null : 'origin',
+    ref: primaryRef,
+    exists: true,
+    label: remotes.length ? (primaryRef === 'HEAD' ? 'HEAD' : 'origin') : null,
+  };
+  const others = remotes
+    .filter((remote) => remote !== 'origin')
+    .map((remote) => {
+      const head = exec('git', ['rev-parse', '--abbrev-ref', `${remote}/HEAD`], repo);
+      const ref = head.status === 0 ? head.stdout.trim() : `${remote}/main`;
+      const resolved = exec('git', ['rev-parse', '--verify', `${ref}^{commit}`], repo);
+      return { remote, ref, exists: resolved.status === 0, label: remote };
+    });
+  return [primary, ...others];
+}
+
 /** Rows before REQ-LED-6 carry no base; the gate receipt for the same card and head has it. */
 function receiptBase(card, head) {
   const dir = join(stateDir(), 'receipts');
@@ -174,12 +198,19 @@ export function escapedDefects(rows, { windowDays = 30 } = {}) {
       for (const r of repoRuns) notFound.push({ card: r.card, repo, reason: repo ? 'repo missing' : 'repo unknown' });
       continue;
     }
-    const ref = defaultRef(repo);
     // A merge never precedes its run; reading history from a day before the oldest run keeps big repos fast.
     const since = new Date(Math.min(...repoRuns.map((r) => Date.parse(r.at))) - DAY_MS).toISOString();
-    const commits = mainCommits(repo, ref, since);
-    const log = git(['log', '-p', '--no-merges', `--since=${since}`, '--format=commit %H', ref], repo);
-    const idOf = new Map(patchIds(log, repo).map(([id, sha]) => [sha, id]));
+    const refs = defaultRefs(repo);
+    const histories = new Map();
+    const historyFor = ({ remote, ref, exists }) => {
+      if (!exists) return null;
+      if (!histories.has(ref)) {
+        const commits = mainCommits(repo, ref, since);
+        const log = git(['log', '-p', '--no-merges', `--since=${since}`, '--format=commit %H', ref], repo);
+        histories.set(ref, { remote, ref, commits, idOf: new Map(patchIds(log, repo).map(([id, sha]) => [sha, id])) });
+      }
+      return histories.get(ref);
+    };
     for (const r of repoRuns) {
       const base = r.base ?? receiptBase(r.card, r.head);
       if (!base) {
@@ -188,16 +219,37 @@ export function escapedDefects(rows, { windowDays = 30 } = {}) {
       }
       const target = patchIds(`commit ${r.head}\n${git(['diff', base, r.head], repo)}`, repo)[0]?.[0];
       const named = LINEAR_ID.test(r.card) ? new RegExp(`\\b${r.card}\\b`) : null;
-      const index = commits.findIndex((c) => idOf.get(c.sha) === target || named?.test(c.subject));
-      if (index === -1) {
-        notFound.push({ card: r.card, repo, reason: 'not on the default branch' });
+      let found;
+      for (const candidate of refs) {
+        const history = historyFor(candidate);
+        if (!history) continue;
+        const index = history.commits.findIndex((c) => history.idOf.get(c.sha) === target || named?.test(c.subject));
+        if (index !== -1) {
+          found = { ...history, index };
+          break;
+        }
+      }
+      if (!found) {
+        const labels = refs.map((candidate) => candidate.label).filter(Boolean);
+        const onlyRemotes = refs.filter((candidate) => candidate.label).every((candidate) => candidate.remote);
+        const looked = labels.length ? ` (looked at ${onlyRemotes ? 'remotes' : 'refs'}: ${labels.join(', ')})` : '';
+        notFound.push({ card: r.card, repo, reason: `not on the default branch${looked}` });
         continue;
       }
-      const merge = commits[index];
+      const merge = found.commits[found.index];
       if (counted.has(`${repo}\0${merge.sha}`)) continue;
       counted.add(`${repo}\0${merge.sha}`);
-      const { candidates, reverts } = laterFailures(commits, index, repo, windowDays);
-      merged.push({ card: r.card, run: r.run, repo, mergeSha: merge.sha, mergedAt: merge.at, candidates, reverts });
+      const { candidates, reverts } = laterFailures(found.commits, found.index, repo, windowDays);
+      merged.push({
+        card: r.card,
+        run: r.run,
+        repo,
+        ref: found.ref,
+        mergeSha: merge.sha,
+        mergedAt: merge.at,
+        candidates,
+        reverts,
+      });
     }
   }
   return { merged, notFound };
