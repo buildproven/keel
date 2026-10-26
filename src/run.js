@@ -832,8 +832,10 @@ function keptHead({ repo, card, config, baseSha, branch, wt }) {
  * commit (REQ-RUN-44). A pending-review head or worktree with any other work stays for a human.
  */
 function replaceableKept({ repo, card, branch, wt }) {
-  const last = readLedger().findLast((r) => r.card === card.id && r.repo === resolve(repo) && !r.poll && !r.role);
-  if (!last || last.pendingReview || !onBranch(wt, branch) || isDirty(wt)) return false;
+  const rows = readLedger().filter((r) => r.card === card.id && r.repo === resolve(repo) && !r.poll);
+  const lastBuild = rows.findLast((r) => !r.role);
+  // A held-out-author or other role row is enough evidence of the earlier run, but must not hide a pending-review build.
+  if (!rows.length || lastBuild?.pendingReview || !onBranch(wt, branch) || isDirty(wt)) return false;
   const leftovers = new RegExp(`^chore\\(${escapeRe(card.id)}\\): keel attempt \\d+ leftovers$`);
   return git(['log', '--format=%s', `refs/heads/${branch}`, '--not', '--exclude=keel/*', '--branches', '--remotes'], repo)
     .split('\n')

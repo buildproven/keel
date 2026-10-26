@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import { beforeEach, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { parseCard } from '../src/config.js';
+import { appendAttempt } from '../src/ledger.js';
 import { run } from '../src/run.js';
 import { commit, fixtureConfig, fixtureRepo, g, tmp } from './helpers.js';
 
@@ -84,4 +85,23 @@ test('REQ-RUN-48 a retry replaces a worktree kept after max attempts and builds 
   const second = run({ repo: dir, card: card(), config: config('good'), log: (line) => lines.push(line) });
   assert.equal(second.pass, true, second.failure);
   assert.ok(lines.includes(`removed kept worktree ${first.worktree} of an earlier blocked run`), lines.join('\n'));
+});
+
+test('REQ-RUN-48 a role-only ledger row identifies a safe worktree left before any build attempt', () => {
+  const { dir } = fixtureRepo();
+  const first = run({ repo: dir, card: card(), config: config('blocked') });
+  writeFileSync(join(process.env.KEEL_STATE_DIR, 'ledger.jsonl'), '');
+  appendAttempt({
+    run: 'author-only',
+    card: 'T-48',
+    repo: resolve(dir),
+    role: 'held-out-author',
+    workerStatus: 'quota',
+    gatePass: false,
+    usage: null,
+  });
+
+  const second = run({ repo: dir, card: card(), config: config('good') });
+  assert.equal(second.pass, true, second.failure);
+  assert.equal(second.worktree, first.worktree);
 });
