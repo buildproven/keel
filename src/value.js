@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { formatTouch, humanTouch } from './autonomy.js';
-import { escapedDefects, laterFailures, mainCommits } from './escaped.js';
+import { defaultRefs, escapedDefects, laterFailures, mainCommits } from './escaped.js';
 import { loadConfig } from './config.js';
 import { attemptCost, readJsonl, report, stateDir } from './ledger.js';
 import { pollLedgerFile } from './linear.js';
@@ -31,9 +31,12 @@ export function value(ledgerRows, { windowDays = 30, prsFor, now = new Date() } 
   const { merged } = escapedDefects(rows, { windowDays }); // each merge commit once (REQ-LED-6)
   const keelShas = new Set(merged.map((m) => m.mergeSha));
   const baseline = new Map();
-  const histories = new Map(merged.map((m) => [`${m.repo}\0${m.ref}`, { repo: m.repo, ref: m.ref }]));
-  for (const { repo, ref } of histories.values()) {
+  const histories = new Map();
+  for (const repo of new Set(merged.map((m) => m.repo))) {
     if (!existsSync(repo)) continue;
+    for (const { ref, exists } of defaultRefs(repo)) if (exists) histories.set(`${repo}\0${ref}`, { repo, ref });
+  }
+  for (const { repo, ref } of histories.values()) {
     const at = rows.filter((r) => r.repo === repo && r.attemptPass).map((r) => Date.parse(r.at));
     const commits = mainCommits(repo, ref, new Date(Math.min(...at) - DAY_MS).toISOString());
     commits.forEach((c, i) => {

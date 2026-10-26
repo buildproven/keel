@@ -25,20 +25,26 @@ export function defaultRef(repo) {
   return r.status === 0 ? r.stdout.trim() : 'HEAD';
 }
 
-/** Origin's default (else HEAD), then each other remote's HEAD or main as last fetched (REQ-LED-6, REQ-LED-20). */
+/** Origin's default (else HEAD), then each other remote's HEAD or main as last fetched (REQ-LED-6, REQ-LED-21). */
 export function defaultRefs(repo) {
   const remotes = git(['remote'], repo)
     .split('\n')
     .filter(Boolean)
     .sort((a, b) => a.localeCompare(b));
-  const primary = { remote: remotes.includes('origin') ? 'origin' : null, ref: defaultRef(repo), exists: true };
+  const primaryRef = defaultRef(repo);
+  const primary = {
+    remote: primaryRef === 'HEAD' ? null : 'origin',
+    ref: primaryRef,
+    exists: true,
+    label: remotes.length ? (primaryRef === 'HEAD' ? 'HEAD' : 'origin') : null,
+  };
   const others = remotes
     .filter((remote) => remote !== 'origin')
     .map((remote) => {
       const head = exec('git', ['rev-parse', '--abbrev-ref', `${remote}/HEAD`], repo);
       const ref = head.status === 0 ? head.stdout.trim() : `${remote}/main`;
       const resolved = exec('git', ['rev-parse', '--verify', `${ref}^{commit}`], repo);
-      return { remote, ref, exists: resolved.status === 0 };
+      return { remote, ref, exists: resolved.status === 0, label: remote };
     });
   return [primary, ...others];
 }
@@ -224,9 +230,9 @@ export function escapedDefects(rows, { windowDays = 30 } = {}) {
         }
       }
       if (!found) {
-        const looked = refs.some((candidate) => candidate.remote)
-          ? ` (looked at remotes: ${refs.map((candidate) => candidate.remote).join(', ')})`
-          : '';
+        const labels = refs.map((candidate) => candidate.label).filter(Boolean);
+        const onlyRemotes = refs.filter((candidate) => candidate.label).every((candidate) => candidate.remote);
+        const looked = labels.length ? ` (looked at ${onlyRemotes ? 'remotes' : 'refs'}: ${labels.join(', ')})` : '';
         notFound.push({ card: r.card, repo, reason: `not on the default branch${looked}` });
         continue;
       }
