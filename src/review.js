@@ -281,13 +281,14 @@ const APPROVAL = /^(APPROVE|DENY):\s*(.+)$/m;
 /**
  * Ask `tiers` in turn, in a scratch checkout of `ref` (whatever they write never reaches the build), until one answers
  * a line `pattern` matches: `APPROVE: …` or `DENY: …` (REQ-RUN-30, REQ-GATE-44), or `DEFECT: …` or `VALID: …`
- * (REQ-RUN-46). Returns { answer: { word, approved, by, reason } | null, cost, usage, unpriced? }, with what every tier
- * that ran spent (REQ-LED-13).
+ * (REQ-RUN-46). Returns { answer: { word, approved, by, reason } | null, missed, spent: { cost, usage, unpriced? } }:
+ * how each tier that gave no answer ended (REQ-GATE-44), and what every tier that ran spent (REQ-LED-13).
  */
 function askApproval({ tiers, prompt, repo, ref, config, pattern = APPROVAL }) {
   let cost = null;
   let usage = null;
   let unknown = false;
+  const missed = [];
   return withTempWorktree(repo, ref, (dir) => {
     let answer = null;
     for (const t of tiers) {
@@ -300,10 +301,30 @@ function askApproval({ tiers, prompt, repo, ref, config, pattern = APPROVAL }) {
         answer = { word: m[1], approved: m[1] === 'APPROVE', by: label(t), reason: m[2].trim() };
         break;
       }
+      const at = retryAt(w.output);
+      missed.push({ reviewer: label(t), family: family(t), status: w.status, ...(at ? { retryAt: at } : {}), output: w.output });
     }
-    return { answer, cost, usage, ...(unknown ? { unpriced: true } : {}) };
+    return { answer, missed, spent: { cost, usage, ...(unknown ? { unpriced: true } : {}) } };
   });
 }
+
+/**
+ * How each asked tier ended when none answered (REQ-GATE-44): `<tier>: <status> (<first 200 chars of its output>)` for
+ * a failed worker, `<tier>: no <words> line` for one that ran and answered off-format. On 2026-10-21 three gates said
+ * only "gave no APPROVE or DENY line" while `codex exec` was out of quota.
+ */
+function missedLine(missed, words) {
+  return missed
+    .map((m) => {
+      if (m.status === 'ok') return `${m.reviewer}: no ${words} line`;
+      const failure = m.output.replace(/\s+/g, ' ').trim().slice(0, 200);
+      return `${m.reviewer}: ${m.status}${failure ? ` (${failure})` : ''}`;
+    })
+    .join('; ');
+}
+
+/** Every asked tier was out of quota or could not sign in, so the question was never judged (REQ-GATE-44, REQ-CLI-10). */
+const allOut = (missed) => missed.length > 0 && missed.every((m) => m.status === 'quota' || m.status === 'auth');
 
 /**
  * Ask the other family whether a builder may edit existing test files it asked for (REQ-RUN-30). The tiers are tried
@@ -329,7 +350,7 @@ export function approveEdits({ config, builder, card, request, paths, cwd }) {
     request,
   ].join('\n');
   const tiers = [first, ...(config.reviewFallback ? fallbackReviewers(config, first) : [])];
-  const { answer, ...spent } = askApproval({ tiers, prompt, repo: cwd, ref: 'HEAD', config });
+  const { answer, spent } = askApproval({ tiers, prompt, repo: cwd, ref: 'HEAD', config });
   return answer ? { approved: answer.approved, by: answer.by, reason: answer.reason, ...spent } : null;
 }
 
@@ -339,7 +360,8 @@ const HELD_OUT_VERDICT = /^(DEFECT|VALID):\s*(.+)$/m;
  * Ask the other family whether held-out tests that failed the same way on two builds are defective (REQ-RUN-46): the
  * cross-family reviewer first, then the fallbacks (REQ-GATE-22), in a scratch checkout of `head`. `files` are the
  * held-out tests as { path, text }; `output` is their private output on head. Returns { answer: { defect, by, reason }
- * | null, cost, usage, unpriced? }; the spend counts whether or not a tier answered (REQ-LED-13).
+ * | null, why?, cost, usage, unpriced? }; the spend counts whether or not a tier answered (REQ-LED-13), and `why` names
+ * each tier's outcome when none did (REQ-GATE-44).
  */
 export function judgeHeldOut({ config, builder, card, files, output, cwd, head }) {
   const first = reviewerFor(config, builder);
@@ -360,8 +382,9 @@ export function judgeHeldOut({ config, builder, card, files, output, cwd, head }
     output,
   ].join('\n');
   const tiers = [first, ...(config.reviewFallback ? fallbackReviewers(config, first) : [])];
-  const { answer, ...spent } = askApproval({ tiers, prompt, repo: cwd, ref: head, config, pattern: HELD_OUT_VERDICT });
-  return { answer: answer && { defect: answer.word === 'DEFECT', by: answer.by, reason: answer.reason }, ...spent };
+  const { answer, missed, spent } = askApproval({ tiers, prompt, repo: cwd, ref: head, config, pattern: HELD_OUT_VERDICT });
+  if (answer) return { answer: { defect: answer.word === 'DEFECT', by: answer.by, reason: answer.reason }, ...spent };
+  return { answer: null, why: `no verdict: ${missedLine(missed, 'DEFECT or VALID')}`, ...spent };
 }
 
 /**
@@ -371,11 +394,11 @@ export function judgeHeldOut({ config, builder, card, files, output, cwd, head }
  * the spend; with no answer, or a denial, the files stay locked.
  */
 export function testEditStage({ repo, from, head, card, config, reviewer, files }) {
-  const result = (pass, why, extra = {}) => ({
+  const result = (pass, why, extra = {}, problem = { rule: 'existing-test-changed' }) => ({
     name: 'test-edits',
     pass,
     files,
-    problems: pass ? [] : files.map((path) => ({ rule: 'existing-test-changed', path, why })),
+    problems: pass ? [] : files.map((path) => ({ ...problem, path, why })),
     ...extra,
   });
   if (!reviewer) return result(false, 'no cross-family reviewer to approve the edit');
@@ -395,10 +418,18 @@ export function testEditStage({ repo, from, head, card, config, reviewer, files 
     reviewer,
     ...(config.reviewFallback ? fallbackReviewers(config, reviewer).filter((t) => family(t) === family(reviewer)) : []),
   ];
-  const { answer, ...spent } = askApproval({ tiers, prompt, repo, ref: head, config });
+  const { answer, missed, spent } = askApproval({ tiers, prompt, repo, ref: head, config });
   // The tier that answered, else the first one asked, names the spend when no regular review runs (REQ-LED-13).
   spent.reviewer = answer?.by ?? label(reviewer);
-  if (!answer) return result(false, `no approval: ${tiers.map(label).join(', ')} gave no APPROVE or DENY line`, spent);
+  if (!answer) {
+    const why = `no approval: ${missedLine(missed, 'APPROVE or DENY')}`;
+    // An approver that is out is not a denial: the edit was not judged, so the status is `error` (REQ-CLI-10).
+    if (allOut(missed)) {
+      const unavailable = missed.map((m) => ({ ...m, output: m.output.slice(-500) }));
+      return result(false, why, { ...spent, unavailable }, { rule: 'review-unavailable', status: missed[0].status });
+    }
+    return result(false, why, spent);
+  }
   const approval = { approved: answer.approved, by: answer.by, reason: answer.reason };
   return answer.approved
     ? result(true, null, { approval, ...spent })
