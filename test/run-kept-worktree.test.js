@@ -76,9 +76,12 @@ test('REQ-RUN-48 a blocked run’s worktree moved off its keel/ branch is never 
   assert.equal(g(blocked.worktree, 'symbolic-ref', '--short', 'HEAD'), 'mine');
 });
 
-test('REQ-RUN-48 a worktree kept by a run that stopped for another reason than blocked still stops the retry', () => {
+test('REQ-RUN-48 a retry replaces a worktree kept after max attempts and builds from base', () => {
   const { dir } = fixtureRepo();
   const first = run({ repo: dir, card: card(), config: config('crash') });
   assert.equal(first.stopped, 'max-attempts');
-  assert.throws(() => run({ repo: dir, card: card(), config: config('good') }), /worktree exists/);
+  const lines = [];
+  const second = run({ repo: dir, card: card(), config: config('good'), log: (line) => lines.push(line) });
+  assert.equal(second.pass, true, second.failure);
+  assert.ok(lines.includes(`removed kept worktree ${first.worktree} of an earlier blocked run`), lines.join('\n'));
 });

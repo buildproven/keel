@@ -827,13 +827,13 @@ function keptHead({ repo, card, config, baseSha, branch, wt }) {
 }
 
 /**
- * Whether the card's worktree is the one its last run kept when the worker blocked (REQ-RUN-48) and holds only Keel's own
- * work: on its own branch, clean, and every commit that no other branch outside keel/* or remote holds is a
- * `keel attempt <n> leftovers` commit (REQ-RUN-44). A worktree with any other work stays for a human.
+ * Whether an earlier run of this card kept the worktree and it holds only Keel's own work (REQ-RUN-48): on its own
+ * branch, clean, and every commit that no other branch outside keel/* or remote holds is a `keel attempt <n> leftovers`
+ * commit (REQ-RUN-44). A pending-review head or worktree with any other work stays for a human.
  */
-function blockedKept({ repo, card, branch, wt }) {
+function replaceableKept({ repo, card, branch, wt }) {
   const last = readLedger().findLast((r) => r.card === card.id && r.repo === resolve(repo) && !r.poll && !r.role);
-  if (last?.workerStatus !== 'blocked' || !onBranch(wt, branch) || isDirty(wt)) return false;
+  if (!last || last.pendingReview || !onBranch(wt, branch) || isDirty(wt)) return false;
   const leftovers = new RegExp(`^chore\\(${escapeRe(card.id)}\\): keel attempt \\d+ leftovers$`);
   return git(['log', '--format=%s', `refs/heads/${branch}`, '--not', '--exclude=keel/*', '--branches', '--remotes'], repo)
     .split('\n')
@@ -866,8 +866,8 @@ function runLocked({ repo, card, config, baseSha, baseBranch, branch, wt, pr, me
   }
   if (kept) log(`gating the kept head ${kept.row.head} again; it waited for review (tier ${kept.row.tier})`);
   else {
-    // Keel's own advice after a blocked stop is to retry the card: its kept worktree must not stop that retry (REQ-RUN-48).
-    if (existsSync(wt) && blockedKept({ repo, card, branch, wt })) {
+    // A stopped run's kept worktree must not stop a safe retry of the same card (REQ-RUN-48).
+    if (existsSync(wt) && replaceableKept({ repo, card, branch, wt })) {
       removeParkedWorktree({ repo, path: wt, branch });
       log(`removed kept worktree ${wt} of an earlier blocked run`);
     }
