@@ -20,7 +20,8 @@ import { escapeRe, removeParkedWorktree } from './clean.js';
 import { mergeReadiness } from './doctor.js';
 import { GATE_CONTEXT, postGateStatus } from './status.js';
 import { appendAttempt, readLedger, stateDir } from './ledger.js';
-import { approveEdits, judgeHeldOut, reviewerFor } from './review.js';
+import { approveEdits, judgeHeldOut, reviewerFor, signInFix } from './review.js';
+import { SIGN_IN_ENV } from './env.js';
 import { spendFile } from './window.js';
 import { matchesAny } from './scan.js';
 import { addUsage, runWorker } from './workers.js';
@@ -764,7 +765,11 @@ export function startReserved(tiers, tier, ruleTier, reserved, log = () => {}) {
 /** The message `keel run` prints when it stops without a pass (REQ-RUN-13, REQ-RUN-49). */
 export const describeStop = ({ stopped, failure, worktree }) => {
   const detail =
-    stopped === 'blocked' ? `: the worker reports the card blocked:\n${failure}\n` : stopped === 'config' ? `:\n${failure}\n` : ' —';
+    stopped === 'blocked'
+      ? `: the worker reports the card blocked:\n${failure}\n`
+      : stopped === 'config' || stopped === 'auth' // REQ-RUN-49, REQ-RUN-50: the failure names the fix
+        ? `:\n${failure}\n`
+        : ' —';
   return `STOPPED (${stopped})${detail} ${worktree ? `worktree kept at ${worktree}` : `no worktree kept: ${failure}`}`;
 };
 
@@ -1068,7 +1073,12 @@ function runLocked({ repo, card, config, baseSha, baseBranch, branch, wt, pr, me
     if (w.status === 'approved') continue; // same tier, now with the approved allowEdits (REQ-RUN-30)
     if (w.status === 'blocked')
       return { pass: false, stopped: 'blocked', branch, worktree: wt, failure: w.output, followUps, approvedEdits };
-    if (w.status === 'auth') return { pass: false, stopped: 'auth', branch, worktree: wt, failure: w.output, followUps };
+    if (w.status === 'auth') {
+      // REQ-RUN-50: a worker whose sign-in variable Keel does not have names the fix, as a reviewer does (REQ-GATE-53).
+      const unset = (SIGN_IN_ENV[t.provider] ?? []).some((name) => !process.env[name]);
+      const failure = unset ? `${w.output.trimEnd()}\nfix: ${signInFix(t.provider)}` : w.output;
+      return { pass: false, stopped: 'auth', branch, worktree: wt, failure, followUps };
+    }
     // A reviewer outage is not the builder's fault: stop rather than escalate (REQ-GATE-21).
     const unavailable = receipt?.results.find((r) => r.name === 'review' && r.problems.some((p) => p.rule === 'review-unavailable'));
     if (unavailable)

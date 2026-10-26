@@ -203,6 +203,9 @@ const SIGN_IN = {
   codex: 'run `codex login status` where Keel runs, then `codex login`',
 };
 
+/** How to sign a family's CLI in where Keel runs (REQ-GATE-53, REQ-RUN-50). */
+export const signInFix = (family) => SIGN_IN[family] ?? 'log its CLI in where Keel runs';
+
 /**
  * One IMPROVE line per reviewer that was out because it cannot sign in (REQ-GATE-53). Waiting never fixes this, and
  * each such reviewer is a fallback lost (REQ-GATE-22): on 2026-10-21 a gate waited about 2 h for a Codex reset while
@@ -211,10 +214,7 @@ const SIGN_IN = {
 export function signInFixes(unavailable = []) {
   const lines = unavailable
     .filter((u) => u.status === 'auth')
-    .map(
-      (u) =>
-        `IMPROVE: reviewer ${u.reviewer} cannot sign in, so a fallback is lost; ${SIGN_IN[u.family] ?? 'log its CLI in where Keel runs'}`,
-    );
+    .map((u) => `IMPROVE: reviewer ${u.reviewer} cannot sign in, so a fallback is lost; ${signInFix(u.family)}`);
   return [...new Set(lines)];
 }
 

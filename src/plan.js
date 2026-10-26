@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { candidateEnv } from './env.js';
+import { workerEnv } from './env.js';
 
 /**
  * Subscription plan windows (REQ-PLAN-1). A Claude or Codex subscription is not billed per token: the ceiling that
@@ -88,7 +88,7 @@ function probeClaude(tier, config) {
     ['-p', '--output-format', 'stream-json', '--verbose', '--model', tier.model, '--effort', 'low', ...(config.workerArgs?.claude ?? [])],
     {
       input: 'Reply with the word ok.',
-      env: candidateEnv(process.env, config.workerEnvAllow),
+      env: workerEnv('claude', process.env, config.workerEnvAllow), // REQ-RUN-50: the probe is the Claude CLI
       encoding: 'utf8',
       timeout: 60_000,
       maxBuffer: 16 * 1024 * 1024,

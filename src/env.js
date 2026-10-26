@@ -81,6 +81,24 @@ export function candidateEnv(env, allow = []) {
 }
 
 /**
+ * Each worker CLI's own sign-in variables (REQ-RUN-50). A worker is that provider's own CLI and must sign in with its
+ * own credential; over SSH on macOS the login Keychain is locked, so Claude Code signs in only through
+ * CLAUDE_CODE_OAUTH_TOKEN. Codex signs in through ~/.codex/auth.json (`codex login status`: "Logged in using ChatGPT"),
+ * so it needs none; OPENAI_API_KEY or CODEX_API_KEY would switch it to API billing, so neither is passed.
+ */
+export const SIGN_IN_ENV = { claude: ['CLAUDE_CODE_OAUTH_TOKEN'], codex: [] };
+
+/**
+ * The environment of one worker CLI (REQ-RUN-12, REQ-RUN-50): the candidate environment plus only that provider's own
+ * sign-in variables. Checks, tests, and `exec` workers never get them.
+ */
+export function workerEnv(provider, env, allow = []) {
+  const out = candidateEnv(env, allow);
+  for (const name of SIGN_IN_ENV[provider] ?? []) if (env[name] !== undefined) out[name] = env[name];
+  return out;
+}
+
+/**
  * The names std-env (vitest's reporter choice) reads as a coding agent (REQ-GATE-51). Names only: std-env also matches
  * patterns in PATH, EDITOR, and TERM_PROGRAM, which a command needs and Claude Code and Codex do not set that way.
  */
