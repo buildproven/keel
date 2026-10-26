@@ -4,6 +4,7 @@ import { git, withTempWorktree } from './git.js';
 import { PROSE } from './scan.js';
 import { UsageError } from './usage.js';
 import { learnLimit, nearlyUsed, recordReviewSpend, windowUse } from './window.js';
+import { signInFix } from './env.js';
 import { addUsage, runWorker } from './workers.js';
 
 export const family = (tier) => tier.family ?? tier.provider;
@@ -196,15 +197,6 @@ function reason(r, down, tier) {
     output: (r.output ?? '').slice(-500),
   };
 }
-
-const SIGN_IN = {
-  claude:
-    'run `claude auth status` where Keel runs; over SSH on macOS the login Keychain is locked, so set CLAUDE_CODE_OAUTH_TOKEN (made once by `claude setup-token`) in that shell',
-  codex: 'run `codex login status` where Keel runs, then `codex login`',
-};
-
-/** How to sign a family's CLI in where Keel runs (REQ-GATE-53, REQ-RUN-50). */
-export const signInFix = (family) => SIGN_IN[family] ?? 'log its CLI in where Keel runs';
 
 /**
  * One IMPROVE line per reviewer that was out because it cannot sign in (REQ-GATE-53). Waiting never fixes this, and

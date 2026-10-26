@@ -91,3 +91,31 @@ test('REQ-RUN-50 with CLAUDE_CODE_OAUTH_TOKEN set, an auth stop does not tell th
   assert.equal(r.stopped, 'auth');
   assert.doesNotMatch(r.failure, /setup-token/);
 });
+
+test('REQ-RUN-50 workerEnvAllow cannot pass CLAUDE_CODE_OAUTH_TOKEN to a codex worker or a check', () => {
+  const config = fixtureConfig({ workerEnvAllow: [TOKEN] });
+  const r = withEnv({ ...SECRETS, ...fakeClis() }, () =>
+    runWorker({ provider: 'codex', model: 'm', effort: 'low' }, 'p', process.cwd(), config),
+  );
+  assert.deepEqual(seen(r), []);
+  const { dir, base } = fixtureRepo();
+  commit(dir, { 'notes.txt': 'x\n' });
+  const check = `node -e "process.exit(process.env.${TOKEN} ? 1 : 0)"`;
+  const gated = withEnv({ [TOKEN]: 'oauth-secret' }, () =>
+    gate({
+      repo: dir,
+      base,
+      card: parseCard('# T-3: env\nkind: chore\nsize: S\n'),
+      config: { ...config, checks: { env: check }, testCommand: check },
+    }),
+  );
+  assert.equal(gated.pass, true, JSON.stringify(gated.results, null, 2));
+});
+
+test('REQ-RUN-50 every claude worker call that fails auth without the token names the fix in its output', () => {
+  const r = withEnv({ [TOKEN]: undefined, ...fakeClis(NOT_LOGGED_IN) }, () =>
+    runWorker({ provider: 'claude', model: 'm', effort: 'low' }, 'p', process.cwd(), fixtureConfig()),
+  );
+  assert.equal(r.status, 'auth');
+  assert.match(r.output, /fix: run `claude auth status`/);
+});

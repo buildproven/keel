@@ -72,6 +72,7 @@ function noGhConfig() {
  */
 export function candidateEnv(env, allow = []) {
   const out = scrubEnv(env, allow);
+  for (const name of SIGN_IN_NAMES) delete out[name]; // REQ-RUN-50: only workerEnv gives a CLI its own, even when allowlisted
   const keep = new Set(allow);
   if (!keep.has('GH_CONFIG_DIR')) out.GH_CONFIG_DIR = noGhConfig();
   if (!keep.has('SSH_AUTH_SOCK')) delete out.SSH_AUTH_SOCK;
@@ -87,6 +88,18 @@ export function candidateEnv(env, allow = []) {
  * so it needs none; OPENAI_API_KEY or CODEX_API_KEY would switch it to API billing, so neither is passed.
  */
 export const SIGN_IN_ENV = { claude: ['CLAUDE_CODE_OAUTH_TOKEN'], codex: [] };
+const SIGN_IN_NAMES = new Set(Object.values(SIGN_IN_ENV).flat());
+
+/** How to sign a family's CLI in where Keel runs (REQ-GATE-53, REQ-RUN-50). */
+const SIGN_IN = {
+  claude:
+    'run `claude auth status` where Keel runs; over SSH on macOS the login Keychain is locked, so set CLAUDE_CODE_OAUTH_TOKEN (made once by `claude setup-token`) in that shell',
+  codex: 'run `codex login status` where Keel runs, then `codex login`',
+};
+export const signInFix = (family) => SIGN_IN[family] ?? 'log its CLI in where Keel runs';
+
+/** The fix to add to a worker's `auth` failure when Keel itself lacks the provider's sign-in variable (REQ-RUN-50). */
+export const missingSignIn = (provider, env) => ((SIGN_IN_ENV[provider] ?? []).some((name) => !env[name]) ? signInFix(provider) : null);
 
 /**
  * The environment of one worker CLI (REQ-RUN-12, REQ-RUN-50): the candidate environment plus only that provider's own
