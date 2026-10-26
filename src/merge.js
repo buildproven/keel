@@ -1,6 +1,7 @@
 import { exec } from './git.js';
 import { readJsonl } from './ledger.js';
 import { SELF_MERGE_ROWS, pollLedgerFile, recordPollAttempt } from './linear.js';
+import { networkFailure } from './network.js';
 import { GATE_CONTEXT } from './status.js';
 
 const OK_CONCLUSIONS = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED']);
@@ -105,6 +106,8 @@ async function closeMerged(client, p) {
     if (['completed', 'canceled'].includes(await client.stateType(p.issue))) return null;
     await client.done(p.issue);
   } catch (e) {
+    // No network stops the poll (REQ-LINEAR-40): the comment would fail the same way.
+    if (networkFailure(e)) throw e;
     // A failed read or move is reported, never thrown: the merge is already settled, so no later poll retries it.
     return client.comment(p.issue, `keel: ${p.pr} merged, but keel could not move it to Done (${e.message}). Close it by hand.`).then(
       () => e.message,
@@ -139,7 +142,11 @@ export async function finishSelfMerges({ repo, config, client, log, now = Date.n
         results.push({ outcome: 'merged', issue: p.issue });
       } else log(`${p.issue}: ${p.pr} was ${d.outcome === 'self-merged' ? 'merged' : 'closed'} outside Keel; self-merge dropped`);
       if (d.outcome === 'self-merged') {
-        const failed = await closeMerged(client, p);
+        const failed = await closeMerged(client, p).catch((e) => {
+          const down = networkFailure(e);
+          if (down) log(`${p.issue}: merged ${p.pr} but not moved to Done: network unreachable (${down.host}: ${down.code})`);
+          throw e;
+        });
         if (failed) {
           log(`${p.issue}: merged but could not move to Done (${failed})`);
           results.push({ outcome: 'closeFailed', issue: p.issue, detail: failed });

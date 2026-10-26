@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { beforeEach, test } from 'node:test';
 import { pendingFollowUps, recordPollAttempt } from '../src/linear.js';
@@ -215,4 +215,68 @@ test('REQ-LINEAR-40 keel poll with no network prints one stop line, no stack tra
   assert.equal(r.status, 4, r.stderr);
   assert.match(r.stderr, /^keel: poll stopped: network unreachable \(api\.linear\.app: ENOTFOUND\)$/m);
   assert.doesNotMatch(r.stderr, /triggerUncaughtException|\n\s+at /);
+});
+
+test('REQ-LINEAR-40 a split whose first child cannot be filed for lack of network is not recorded, so the next poll retries it', async () => {
+  const { dir } = fixtureRepo();
+  const client = {
+    listIssues: async () => [{ id: 'BUI-9', title: 'a is off', description: 'a is off', labels: ['Bug'], estimate: null }],
+    comment: async () => assert.fail('no comment while the network is down'),
+    stateType: async () => 'started',
+    createIssue: async () => {
+      throw offline('ETIMEDOUT');
+    },
+  };
+  const body =
+    '## Requirements\n- When a runs, a shall be on.\n\n## Acceptance\n- [ ] test\n\n```keel\nkind: bug\nsize: S\npaths: src/**\n```';
+  const refineFn = () => ({ tier: 0, parsed: { kind: 'split', cards: [{ title: 'one', body }] } });
+  await assert.rejects(
+    poll({ repo: dir, project: 'p', client, config: fixtureConfig(), runFn: () => assert.fail('no build'), refineFn }),
+    (e) => networkFailure(e)?.code === 'ETIMEDOUT',
+  );
+  assert.deepEqual(pollRows(), []);
+});
+
+test('REQ-LINEAR-40 a self-merged PR whose issue cannot be moved to Done for lack of network stops the poll', async () => {
+  const { dir } = fixtureRepo();
+  const pr = 'https://example.test/pr/7';
+  recordPollAttempt(dir, { issue: 'BUI-1', outcome: 'self-merge', detail: { pr, sha: 'a'.repeat(40), since: new Date().toISOString() } });
+  const bin = tmp('keel-bin-');
+  writeFileSync(join(bin, 'gh'), `#!/bin/sh\n[ "$1 $2" = "pr view" ] && echo '{"state":"MERGED"}'\nexit 0\n`);
+  chmodSync(join(bin, 'gh'), 0o755);
+  const logs = [];
+  const client = {
+    listIssues: async () => [],
+    comment: async () => assert.fail('no comment while the network is down'),
+    stateType: async () => {
+      throw offline('EHOSTUNREACH');
+    },
+    done: async () => assert.fail('no move'),
+  };
+  const old = process.env.PATH;
+  process.env.PATH = `${bin}:${old}`;
+  try {
+    await assert.rejects(
+      poll({
+        repo: dir,
+        project: 'x',
+        client,
+        config: { selfMergeTimeoutMinutes: 30, followUpsPerDay: 0 },
+        merge: true,
+        log: (m) => logs.push(m),
+        runFn: () => assert.fail('no build'),
+      }),
+      (e) => networkFailure(e)?.code === 'EHOSTUNREACH',
+    );
+  } finally {
+    process.env.PATH = old;
+  }
+  assert.ok(
+    logs.some((l) => l.startsWith(`BUI-1: merged ${pr} but not moved to Done: network unreachable`)),
+    logs.join('\n'),
+  );
+  assert.ok(
+    pollRows().some((r) => r.outcome === 'self-merged'),
+    'the merge stays settled',
+  );
 });

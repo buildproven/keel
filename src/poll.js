@@ -569,8 +569,10 @@ async function refineStep({ repo, base, config, client, issue, project, log, ref
         `${refineHead(r)}: too big for one build; split into ${children.join(', ')}. They build in that order; this issue builds nothing itself.`,
       );
     } catch (e) {
-      // Recorded before the error goes on, so the next poll does not split the issue again (REQ-LINEAR-33).
-      recordPollAttempt(repo, { issue: issue.id, outcome: 'split', detail: { children, error: e.message } });
+      // Recorded before the error goes on, so the next poll does not split the issue again (REQ-LINEAR-33). With no
+      // child filed for lack of network, nothing happened: the next poll refines the issue again (REQ-LINEAR-40).
+      if (children.length || !networkFailure(e))
+        recordPollAttempt(repo, { issue: issue.id, outcome: 'split', detail: { children, error: e.message } });
       throw e;
     }
     return { outcome: { outcome: 'split', issue: issue.id, children, detail: { children } } };
