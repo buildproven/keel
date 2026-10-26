@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { formatTouch, humanTouch } from './autonomy.js';
 import { defaultRefs, escapedDefects, laterFailures, mainCommits } from './escaped.js';
 import { loadConfig } from './config.js';
+import { policyRef } from './defaults.js';
 import { attemptCost, readJsonl, report, stateDir } from './ledger.js';
 import { pollLedgerFile } from './linear.js';
 import { addUsage, priceUsage } from './workers.js';
@@ -96,7 +97,7 @@ export function withReviewUsage(rows, receiptDir = join(stateDir(), 'receipts'))
  * compare. An attempt with no usage or cost makes its side a lower bound (`incomplete`). `configFor(repo)` returns
  * that repo's config.
  */
-export function routedCost(rows, configFor = (repo) => loadConfig(repo, 'HEAD')) {
+export function routedCost(rows, configFor = (repo) => loadConfig(repo, policyRef(repo))) {
   const byRepo = new Map();
   for (const r of rows) {
     if (!r.repo) continue;

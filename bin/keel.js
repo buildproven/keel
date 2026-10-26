@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import { autoClean } from '../src/autoclean.js';
 import { expectedBranch, listParkedWorktrees, removeParkedWorktree } from '../src/clean.js';
 import { loadConfig, readTrustedCard } from '../src/config.js';
-import { branchCard, defaultBase, findDefaultBase } from '../src/defaults.js';
+import { branchCard, defaultBase, findDefaultBase, policyRef } from '../src/defaults.js';
 import { doctor, keelGateRequired, linearDoctor, mergeReadiness, setupAdvice } from '../src/doctor.js';
 import { git } from '../src/git.js';
 import { dora, formatDora } from '../src/dora.js';
@@ -59,10 +59,11 @@ const USAGE = `keel — quality gate that picks the model
                                                                all over the last N days (default 30); --recur: failure
                                                                classes that recur across gates in the last 14 days, to
                                                                prevent at their source
-  keel audit [--limit N] [--repo <dir>]                      review PRs merged in the last 30 days (up to N, default
+  keel audit [--limit N] [--base <ref>] [--repo <dir>]       review PRs merged in the last 30 days (up to N, default
                                                                500) that only a fallback reviewer saw, with the reviewer
                                                                that was out; findings join the found-work queue under the
-                                                               issue the PR closes
+                                                               issue the PR closes; keel.json is read at --base (default:
+                                                               origin's default branch)
   keel test [--repo <dir>]                                   run testCommand in the working tree inside a machine-wide gate
                                                                slot; exits with its exit code
   keel clean [--force | --auto]                               list parked worktrees; --force removes the clean ones;
@@ -298,7 +299,8 @@ if (values.version && command) {
     } else if (command === 'audit') {
       // Cross-family re-review of merges only a fallback reviewer saw (REQ-CLI-11).
       const limit = limitOption(values.limit, 500);
-      const results = audit({ repo, config: loadConfig(repo, 'HEAD'), limit });
+      // Policy from the base, never the primary checkout, which can be stale or on any branch (REQ-CFG-2).
+      const results = audit({ repo, config: loadConfig(repo, values.base ?? policyRef(repo)), limit });
       if (!results.length) log('audit: nothing to audit');
       for (const r of results) {
         const at = `audit #${r.pr} ${r.sha.slice(0, 7)}`;

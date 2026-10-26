@@ -11,6 +11,12 @@ export function findDefaultBase(repo) {
   return [...named, 'origin/main', 'origin/master'].find((ref) => refExists(ref, repo)) ?? null;
 }
 
+/**
+ * The ref whose keel.json sets policy outside a gate (`keel audit`, the cleanup's keep days, `report --value` prices):
+ * origin's default branch, else HEAD. The primary checkout can be stale or on any branch (REQ-CFG-2).
+ */
+export const policyRef = (repo) => findDefaultBase(repo) ?? 'HEAD';
+
 export function defaultBase(repo) {
   const ref = findDefaultBase(repo);
   if (!ref) throw new UsageError('gate needs --base <ref> (origin has no default branch)');
