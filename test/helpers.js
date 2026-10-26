@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { DEFAULTS } from '../src/config.js';
@@ -15,15 +15,6 @@ export function tmp(prefix = 'keel-test-') {
   }
   return mkdtempSync(join(parent, prefix));
 }
-/**
- * Undo a test's write lock on `dir`: mode 0o700, and for root, whom a mode does not stop, the immutable flag the test
- * set with `chattr +i` (REQ-RUN-37, REQ-RUN-38 lock the receipts dir that way).
- */
-export function unlockDir(dir) {
-  if (process.getuid?.() === 0) execFileSync('chattr', ['-i', dir]);
-  chmodSync(dir, 0o700);
-}
-
 export const g = (dir, ...args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim();
 
 export function write(dir, files) {

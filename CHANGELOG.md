@@ -26,8 +26,6 @@ it adds or changes. Keel is not on npm yet: install from a clone (README, Quick 
 
 ### Fixed
 
-- Two tests that lock the receipts directory with `chmod` also set the immutable flag when run as root, whom a mode
-  does not stop, so the suite passes in root containers too (REQ-RUN-37, REQ-RUN-38).
 - Workers and checks no longer break when git config comes from the environment (REQ-RUN-50): the secret scrub
   dropped `GIT_CONFIG_KEY_<n>` but kept `GIT_CONFIG_COUNT`, so every git call failed with "missing config key". The
   whole set now goes, values included (they can carry credentials).
