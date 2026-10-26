@@ -1,17 +1,20 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { DEFAULTS } from '../src/config.js';
 
 // REQ-TRACE-5: every tmp() dir lives in one mkdtemp parent per test process, and the 'exit' hook removes exactly
 // that recorded parent, so `npm test` leaves nothing in TMPDIR (BUI-1214: ~3,500 keel-* dirs had piled up).
+// The dirs go in a `.noindex` child, as gate checkouts do (REQ-GATE-34): macOS Spotlight skips it, so it does not
+// index the thousands of fixture repos a suite run makes.
 let parent;
 export function tmp(prefix = 'keel-test-') {
   if (!parent) {
     const created = mkdtempSync(join(tmpdir(), 'keel-test-'));
     process.on('exit', () => rmSync(created, { recursive: true, force: true }));
-    parent = created;
+    mkdirSync(join(created, 'tmp.noindex'));
+    parent = join(created, 'tmp.noindex');
   }
   return mkdtempSync(join(parent, prefix));
 }
@@ -47,14 +50,26 @@ export const REGRESSION_TEST = {
   'test/add.test.js': "import assert from 'node:assert';\nimport { add } from '../src/add.js';\nassert.strictEqual(add(2, 3), 5);\n",
 };
 
+/**
+ * Base repos built so far in this test process, by their files: each is built once with git (seven subprocesses, about
+ * 80 ms on macOS) and then copied, which takes a few ms. Over 400 tests start from a fixture repo.
+ */
+const templates = new Map();
+
 /** A fresh repo whose base commit contains the buggy add(). Returns { dir, base }. */
 export function fixtureRepo(files = BUGGY) {
+  const key = JSON.stringify(files);
+  if (!templates.has(key)) {
+    const dir = tmp('keel-template-');
+    g(dir, 'init', '-q', '-b', 'main');
+    g(dir, 'config', 'user.email', 'test@example.com');
+    g(dir, 'config', 'user.name', 'test');
+    g(dir, 'config', 'commit.gpgsign', 'false');
+    templates.set(key, { dir, base: commit(dir, { 'package.json': '{"type":"module"}\n', ...files }, 'base') });
+  }
+  const { dir: template, base } = templates.get(key);
   const dir = tmp('keel-repo-');
-  g(dir, 'init', '-q', '-b', 'main');
-  g(dir, 'config', 'user.email', 'test@example.com');
-  g(dir, 'config', 'user.name', 'test');
-  g(dir, 'config', 'commit.gpgsign', 'false');
-  const base = commit(dir, { 'package.json': '{"type":"module"}\n', ...files }, 'base');
+  cpSync(template, dir, { recursive: true });
   return { dir, base };
 }
 
