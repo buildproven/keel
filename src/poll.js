@@ -430,7 +430,7 @@ const FILE_TRIES = 3; // a follow-up Linear rejects this often leaves the queue 
 const filingFailed = (r) => (r.error ? [{ outcome: 'followUpsFailed', detail: r.error }] : []);
 
 /** gh pages through open PRs up to this many, so a repo's older PRs are checked too (REQ-LINEAR-41). */
-const OPEN_PR_LIMIT = 5000;
+export const OPEN_PR_LIMIT = 5000;
 
 /**
  * Keel's own open PRs (`keel/<ID>` branches) that GitHub reports as conflicting with their base (REQ-LINEAR-23), or as
@@ -458,7 +458,10 @@ async function rebuildConflicts({ repo, client, log }) {
     log(`conflict check skipped: gh pr list failed: ${`${r.stdout}${r.stderr}`.trim().slice(0, 300)}`);
     return;
   }
-  for (const pr of JSON.parse(r.stdout)) {
+  const prs = JSON.parse(r.stdout);
+  // gh lists newest first; at the limit, older PRs went unchecked, so say so (REQ-LINEAR-41).
+  if (prs.length >= OPEN_PR_LIMIT) log(`conflict check covered only the newest ${OPEN_PR_LIMIT} open PRs; older ones were not checked`);
+  for (const pr of prs) {
     const id = /^keel\/([A-Z]+-\d+)$/.exec(pr.headRefName)?.[1];
     if (!id) continue;
     // A strict branch rule needs an up-to-date branch; with auto-merge armed, a behind PR would never merge (REQ-LINEAR-41).

@@ -3,7 +3,7 @@ import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { beforeEach, test } from 'node:test';
 import { recordPollAttempt } from '../src/linear.js';
-import { poll } from '../src/poll.js';
+import { OPEN_PR_LIMIT, poll } from '../src/poll.js';
 import { fixtureRepo, g, tmp } from './helpers.js';
 
 beforeEach(() => {
@@ -158,4 +158,21 @@ test('REQ-LINEAR-41 a poll rebuilds its own PR that is behind its base with auto
   assert.notEqual(g(dir, 'branch', '--list', 'keel/BUI-8'), '', 'a PR without auto-merge waits for a human');
   assert.deepEqual(seen, ['BUI-7']);
   assert.ok(comments.some((c) => c.id === 'BUI-7' && /PR #5 was behind the base branch; building again/.test(c.body)));
+});
+
+test('REQ-LINEAR-41 a list that reaches the open-PR limit says older PRs were not checked', async () => {
+  const { dir } = fixtureRepo();
+  g(dir, 'remote', 'add', 'origin', tmp('keel-remote-'));
+  const prs = Array.from({ length: OPEN_PR_LIMIT }, (_, i) => ({ number: i + 1, headRefName: `feat/x${i}`, mergeable: 'MERGEABLE' }));
+  const gh = fakeGh(prs);
+  const client = { listIssues: async () => [], comment: async () => {}, review: async () => {}, stateType: async () => 'started' };
+  const lines = [];
+  const old = process.env.PATH;
+  process.env.PATH = `${gh.bin}:${old}`;
+  try {
+    await poll({ repo: dir, project: 'x', client, config: {}, runFn: () => ({}), log: (l) => lines.push(l) });
+  } finally {
+    process.env.PATH = old;
+  }
+  assert.ok(lines.some((l) => l === `conflict check covered only the newest ${OPEN_PR_LIMIT} open PRs; older ones were not checked`));
 });
