@@ -429,8 +429,15 @@ const FILE_TRIES = 3; // a follow-up Linear rejects this often leaves the queue 
 /** The poll result for a filing error, so the poll exits 1 without stopping (REQ-LINEAR-22). */
 const filingFailed = (r) => (r.error ? [{ outcome: 'followUpsFailed', detail: r.error }] : []);
 
-/** gh pages through open PRs up to this many, so a repo's older PRs are checked too (REQ-LINEAR-41). */
-export const OPEN_PR_LIMIT = 5000;
+/** Every open PR's merge state, a page of 100 at a time (REQ-LINEAR-23, REQ-LINEAR-41). */
+const OPEN_PRS_QUERY = `query($owner: String!, $name: String!, $endCursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequests(states: OPEN, first: 100, after: $endCursor) {
+      nodes { number headRefName mergeable mergeStateStatus autoMergeRequest { enabledAt } }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+}`;
 
 /**
  * Keel's own open PRs (`keel/<ID>` branches) that GitHub reports as conflicting with their base (REQ-LINEAR-23), or as
@@ -440,27 +447,33 @@ export const OPEN_PR_LIMIT = 5000;
  */
 async function rebuildConflicts({ repo, client, log }) {
   if (exec('git', ['remote', 'get-url', 'origin'], repo).status !== 0) return;
+  // GraphQL pages through every open PR; `gh pr list` stops at its --limit (REQ-LINEAR-41).
   const r = exec(
     'gh',
     [
-      'pr',
-      'list',
-      '--state',
-      'open',
-      '--limit',
-      String(OPEN_PR_LIMIT),
-      '--json',
-      'number,headRefName,mergeable,mergeStateStatus,autoMergeRequest',
+      'api',
+      'graphql',
+      '--paginate',
+      '-F',
+      'owner={owner}',
+      '-F',
+      'name={repo}',
+      '-f',
+      `query=${OPEN_PRS_QUERY}`,
+      '--jq',
+      '.data.repository.pullRequests.nodes[]',
     ],
     repo,
   );
   if (r.status !== 0) {
-    log(`conflict check skipped: gh pr list failed: ${`${r.stdout}${r.stderr}`.trim().slice(0, 300)}`);
+    log(`conflict check skipped: gh api graphql failed: ${`${r.stdout}${r.stderr}`.trim().slice(0, 300)}`);
     return;
   }
-  const prs = JSON.parse(r.stdout);
-  // gh lists newest first; at the limit, older PRs went unchecked, so say so (REQ-LINEAR-41).
-  if (prs.length >= OPEN_PR_LIMIT) log(`conflict check covered only the newest ${OPEN_PR_LIMIT} open PRs; older ones were not checked`);
+  // `--jq` prints one PR per line, across every page.
+  const prs = r.stdout
+    .split('\n')
+    .filter((l) => l.trim())
+    .map((l) => JSON.parse(l));
   for (const pr of prs) {
     const id = /^keel\/([A-Z]+-\d+)$/.exec(pr.headRefName)?.[1];
     if (!id) continue;

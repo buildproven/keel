@@ -3,7 +3,7 @@ import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { beforeEach, test } from 'node:test';
 import { recordPollAttempt } from '../src/linear.js';
-import { OPEN_PR_LIMIT, poll } from '../src/poll.js';
+import { poll } from '../src/poll.js';
 import { fixtureRepo, g, tmp } from './helpers.js';
 
 beforeEach(() => {
@@ -29,7 +29,7 @@ function fakeGh(prs) {
     `#!/usr/bin/env node
 const a = process.argv.slice(2);
 require('fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify(a) + '\\n');
-if (a[0] === 'pr' && a[1] === 'list') console.log(${JSON.stringify(JSON.stringify(prs))});
+if (a[0] === 'api' && a[1] === 'graphql') for (const p of JSON.parse(${JSON.stringify(JSON.stringify(prs))})) console.log(JSON.stringify(p));
 `,
   );
   chmodSync(join(bin, 'gh'), 0o755);
@@ -144,10 +144,12 @@ test('REQ-LINEAR-41 a poll rebuilds its own PR that is behind its base with auto
   } finally {
     process.env.PATH = old;
   }
-  const list = gh.calls().find((a) => a[0] === 'pr' && a[1] === 'list');
-  assert.match(list[list.indexOf('--json') + 1], /mergeStateStatus/);
-  assert.match(list[list.indexOf('--json') + 1], /autoMergeRequest/);
-  assert.ok(Number(list[list.indexOf('--limit') + 1]) >= 1000, 'older PRs past the first 100 are checked too');
+  const list = gh.calls().find((a) => a[0] === 'api' && a[1] === 'graphql');
+  assert.ok(list.includes('--paginate'), 'every page of open PRs is read');
+  const query = list.find((x) => x.startsWith('query='));
+  assert.match(query, /mergeStateStatus/);
+  assert.match(query, /autoMergeRequest/);
+  assert.match(query, /endCursor/);
   const closes = gh.calls().filter((a) => a[0] === 'pr' && a[1] === 'close');
   assert.deepEqual(
     closes.map((c) => c[2]),
@@ -158,21 +160,4 @@ test('REQ-LINEAR-41 a poll rebuilds its own PR that is behind its base with auto
   assert.notEqual(g(dir, 'branch', '--list', 'keel/BUI-8'), '', 'a PR without auto-merge waits for a human');
   assert.deepEqual(seen, ['BUI-7']);
   assert.ok(comments.some((c) => c.id === 'BUI-7' && /PR #5 was behind the base branch; building again/.test(c.body)));
-});
-
-test('REQ-LINEAR-41 a list that reaches the open-PR limit says older PRs were not checked', async () => {
-  const { dir } = fixtureRepo();
-  g(dir, 'remote', 'add', 'origin', tmp('keel-remote-'));
-  const prs = Array.from({ length: OPEN_PR_LIMIT }, (_, i) => ({ number: i + 1, headRefName: `feat/x${i}`, mergeable: 'MERGEABLE' }));
-  const gh = fakeGh(prs);
-  const client = { listIssues: async () => [], comment: async () => {}, review: async () => {}, stateType: async () => 'started' };
-  const lines = [];
-  const old = process.env.PATH;
-  process.env.PATH = `${gh.bin}:${old}`;
-  try {
-    await poll({ repo: dir, project: 'x', client, config: {}, runFn: () => ({}), log: (l) => lines.push(l) });
-  } finally {
-    process.env.PATH = old;
-  }
-  assert.ok(lines.some((l) => l === `conflict check covered only the newest ${OPEN_PR_LIMIT} open PRs; older ones were not checked`));
 });
