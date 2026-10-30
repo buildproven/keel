@@ -113,3 +113,48 @@ test('REQ-LINEAR-23 a conflicting branch checked out in a worktree is cleaned fi
     .map((l) => JSON.parse(l));
   assert.equal(rows.at(-1).outcome, 'deferred');
 });
+
+test('REQ-LINEAR-41 a poll rebuilds its own PR that is behind its base with auto-merge armed; one without auto-merge stays', async () => {
+  const { dir } = fixtureRepo();
+  g(dir, 'remote', 'add', 'origin', tmp('keel-remote-'));
+  g(dir, 'branch', 'keel/BUI-7');
+  g(dir, 'branch', 'keel/BUI-8');
+  recordPollAttempt(dir, { issue: 'BUI-7', outcome: 'autoMerge' });
+  recordPollAttempt(dir, { issue: 'BUI-8', outcome: 'autoMerge' });
+  const armed = { mergeMethod: 'SQUASH' };
+  const gh = fakeGh([
+    { number: 5, headRefName: 'keel/BUI-7', mergeable: 'MERGEABLE', mergeStateStatus: 'BEHIND', autoMergeRequest: armed },
+    { number: 6, headRefName: 'keel/BUI-8', mergeable: 'MERGEABLE', mergeStateStatus: 'BEHIND', autoMergeRequest: null },
+    { number: 7, headRefName: 'keel/BUI-9', mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', autoMergeRequest: armed },
+    { number: 8, headRefName: 'feat/mine', mergeable: 'MERGEABLE', mergeStateStatus: 'BEHIND', autoMergeRequest: armed },
+  ]);
+  const comments = [];
+  const client = {
+    listIssues: async () => [issue('BUI-7', '2026-09-01'), issue('BUI-8', '2026-09-02')],
+    comment: async (id, body) => comments.push({ id, body }),
+    review: async () => {},
+    stateType: async () => 'started',
+  };
+  const seen = [];
+  const runFn = ({ card: c }) => (seen.push(c.id), { pass: true, tier: 0, attempt: 1, branch: `keel/${c.id}`, worktree: '/tmp/x' });
+  const old = process.env.PATH;
+  process.env.PATH = `${gh.bin}:${old}`;
+  try {
+    await poll({ repo: dir, project: 'x', client, config: {}, runFn });
+  } finally {
+    process.env.PATH = old;
+  }
+  const list = gh.calls().find((a) => a[0] === 'pr' && a[1] === 'list');
+  assert.match(list[list.indexOf('--json') + 1], /mergeStateStatus/);
+  assert.match(list[list.indexOf('--json') + 1], /autoMergeRequest/);
+  const closes = gh.calls().filter((a) => a[0] === 'pr' && a[1] === 'close');
+  assert.deepEqual(
+    closes.map((c) => c[2]),
+    ['5'],
+  );
+  assert.match(closes[0][closes[0].indexOf('--comment') + 1], /behind the base branch/);
+  assert.equal(g(dir, 'branch', '--list', 'keel/BUI-7'), '');
+  assert.notEqual(g(dir, 'branch', '--list', 'keel/BUI-8'), '', 'a PR without auto-merge waits for a human');
+  assert.deepEqual(seen, ['BUI-7']);
+  assert.ok(comments.some((c) => c.id === 'BUI-7' && /PR #5 was behind the base branch; building again/.test(c.body)));
+});
