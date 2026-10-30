@@ -429,25 +429,61 @@ const FILE_TRIES = 3; // a follow-up Linear rejects this often leaves the queue 
 /** The poll result for a filing error, so the poll exits 1 without stopping (REQ-LINEAR-22). */
 const filingFailed = (r) => (r.error ? [{ outcome: 'followUpsFailed', detail: r.error }] : []);
 
+/** Every open PR's merge state, a page of 100 at a time (REQ-LINEAR-23, REQ-LINEAR-41). */
+const OPEN_PRS_QUERY = `query($owner: String!, $name: String!, $endCursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequests(states: OPEN, first: 100, after: $endCursor) {
+      nodes { number headRefName mergeable mergeStateStatus autoMergeRequest { enabledAt } }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+}`;
+
 /**
- * Keel's own open PRs (`keel/<ID>` branches) that GitHub reports as conflicting with their base (REQ-LINEAR-23): a later
- * merge touched the same lines, so auto-merge would wait forever. Close each one (GitHub keeps its commits), delete its
- * branch and clean worktree, comment on the issue, and mark it deferred so this poll builds it again on the current base.
- * Without an origin remote or a working `gh`, nothing is checked.
+ * Keel's own open PRs (`keel/<ID>` branches) that GitHub reports as conflicting with their base (REQ-LINEAR-23), or as
+ * behind it with auto-merge armed (REQ-LINEAR-41): auto-merge would wait forever, and Keel never moves a certified head.
+ * Close each one (GitHub keeps its commits), delete its branch and clean worktree, comment on the issue, and mark it
+ * deferred so this poll builds it again on the current base. Without an origin remote or a working `gh`, nothing is checked.
  */
 async function rebuildConflicts({ repo, client, log }) {
   if (exec('git', ['remote', 'get-url', 'origin'], repo).status !== 0) return;
-  const r = exec('gh', ['pr', 'list', '--state', 'open', '--limit', '100', '--json', 'number,headRefName,mergeable'], repo);
+  // GraphQL pages through every open PR; `gh pr list` stops at its --limit (REQ-LINEAR-41).
+  const r = exec(
+    'gh',
+    [
+      'api',
+      'graphql',
+      '--paginate',
+      '-F',
+      'owner={owner}',
+      '-F',
+      'name={repo}',
+      '-f',
+      `query=${OPEN_PRS_QUERY}`,
+      '--jq',
+      '.data.repository.pullRequests.nodes[]',
+    ],
+    repo,
+  );
   if (r.status !== 0) {
-    log(`conflict check skipped: gh pr list failed: ${`${r.stdout}${r.stderr}`.trim().slice(0, 300)}`);
+    log(`conflict check skipped: gh api graphql failed: ${`${r.stdout}${r.stderr}`.trim().slice(0, 300)}`);
     return;
   }
-  for (const pr of JSON.parse(r.stdout)) {
+  // `--jq` prints one PR per line, across every page.
+  const prs = r.stdout
+    .split('\n')
+    .filter((l) => l.trim())
+    .map((l) => JSON.parse(l));
+  for (const pr of prs) {
     const id = /^keel\/([A-Z]+-\d+)$/.exec(pr.headRefName)?.[1];
-    if (!id || pr.mergeable !== 'CONFLICTING') continue;
+    if (!id) continue;
+    // A strict branch rule needs an up-to-date branch; with auto-merge armed, a behind PR would never merge (REQ-LINEAR-41).
+    const behind = pr.mergeable !== 'CONFLICTING' && pr.mergeStateStatus === 'BEHIND' && Boolean(pr.autoMergeRequest);
+    if (pr.mergeable !== 'CONFLICTING' && !behind) continue;
+    const why = behind ? 'is behind' : 'conflicts with';
     const wt = worktreeOf(repo, pr.headRefName);
     if (wt && isDirty(wt)) {
-      log(`${id}: PR #${pr.number} conflicts, but ${wt} has uncommitted changes; left as is`);
+      log(`${id}: PR #${pr.number} ${behind ? 'is behind its base' : 'conflicts'}, but ${wt} has uncommitted changes; left as is`);
       continue;
     }
     // Local cleanup first: gh cannot delete a branch a worktree has checked out.
@@ -461,7 +497,7 @@ async function rebuildConflicts({ repo, client, log }) {
         String(pr.number),
         '--delete-branch',
         '--comment',
-        'keel: this PR conflicts with the base branch after later merges; building the issue again on the current base.',
+        `keel: this PR ${why} the base branch after later merges; building the issue again on the current base.`,
       ],
       repo,
     );
@@ -470,9 +506,14 @@ async function rebuildConflicts({ repo, client, log }) {
       continue;
     }
     // Deferred before the comment, so a Linear error cannot leave the issue attempted with its PR gone.
-    recordPollAttempt(repo, { issue: id, outcome: 'deferred', detail: `PR #${pr.number} conflicted` });
-    await client.comment(id, `keel: PR #${pr.number} conflicted with the base branch; building again on the current base.`);
-    log(`${id}: PR #${pr.number} conflicted; building again`);
+    const past = behind ? 'was behind' : 'conflicted with';
+    recordPollAttempt(repo, {
+      issue: id,
+      outcome: 'deferred',
+      detail: `PR #${pr.number} ${behind ? 'was behind its base' : 'conflicted'}`,
+    });
+    await client.comment(id, `keel: PR #${pr.number} ${past} the base branch; building again on the current base.`);
+    log(`${id}: PR #${pr.number} ${behind ? 'was behind its base' : 'conflicted'}; building again`);
   }
 }
 
