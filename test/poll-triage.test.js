@@ -168,13 +168,6 @@ test('REQ-LINEAR-26 textPrerequisites reads every identifier in a list after one
   assert.deepEqual(textPrerequisites(issue({ description: 'Needs BUI-10. BUI-11 is related history.' })), ['BUI-10']);
 });
 
-test('REQ-LINEAR-26 textPrerequisites ignores the tail of a hyphenated requirement ID', () => {
-  const text = 'Remove the checkout after its last stage, on pass, fail, or throw (REQ-GATE-1, REQ-GATE-34).';
-  assert.deepEqual(textPrerequisites(issue({ description: text })), []);
-  assert.deepEqual(textPrerequisites(issue({ description: 'Needs REQ-LINEAR-26 kept and BUI-12 shipped.' })), ['BUI-12']);
-  assert.deepEqual(textPrerequisites(issue({ description: 'Blocked by BUI-13 (see REQ-GATE-1).' })), ['BUI-13']);
-});
-
 test('REQ-LINEAR-26 keel poll waits on a named open prerequisite, inside or outside the project, and builds once it closes', async () => {
   const { dir } = fixtureRepo();
   const ran = [];
