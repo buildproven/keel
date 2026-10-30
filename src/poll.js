@@ -429,6 +429,9 @@ const FILE_TRIES = 3; // a follow-up Linear rejects this often leaves the queue 
 /** The poll result for a filing error, so the poll exits 1 without stopping (REQ-LINEAR-22). */
 const filingFailed = (r) => (r.error ? [{ outcome: 'followUpsFailed', detail: r.error }] : []);
 
+/** gh pages through open PRs up to this many, so a repo's older PRs are checked too (REQ-LINEAR-41). */
+const OPEN_PR_LIMIT = 5000;
+
 /**
  * Keel's own open PRs (`keel/<ID>` branches) that GitHub reports as conflicting with their base (REQ-LINEAR-23), or as
  * behind it with auto-merge armed (REQ-LINEAR-41): auto-merge would wait forever, and Keel never moves a certified head.
@@ -439,7 +442,16 @@ async function rebuildConflicts({ repo, client, log }) {
   if (exec('git', ['remote', 'get-url', 'origin'], repo).status !== 0) return;
   const r = exec(
     'gh',
-    ['pr', 'list', '--state', 'open', '--limit', '100', '--json', 'number,headRefName,mergeable,mergeStateStatus,autoMergeRequest'],
+    [
+      'pr',
+      'list',
+      '--state',
+      'open',
+      '--limit',
+      String(OPEN_PR_LIMIT),
+      '--json',
+      'number,headRefName,mergeable,mergeStateStatus,autoMergeRequest',
+    ],
     repo,
   );
   if (r.status !== 0) {

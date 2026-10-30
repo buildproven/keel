@@ -147,6 +147,7 @@ test('REQ-LINEAR-41 a poll rebuilds its own PR that is behind its base with auto
   const list = gh.calls().find((a) => a[0] === 'pr' && a[1] === 'list');
   assert.match(list[list.indexOf('--json') + 1], /mergeStateStatus/);
   assert.match(list[list.indexOf('--json') + 1], /autoMergeRequest/);
+  assert.ok(Number(list[list.indexOf('--limit') + 1]) >= 1000, 'older PRs past the first 100 are checked too');
   const closes = gh.calls().filter((a) => a[0] === 'pr' && a[1] === 'close');
   assert.deepEqual(
     closes.map((c) => c[2]),
