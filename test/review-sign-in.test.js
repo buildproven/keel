@@ -59,7 +59,9 @@ test('REQ-GATE-53 the fix names the CLI of the reviewer family, and a quota outa
 
 test('REQ-GATE-53 with waitReview, the sign-in fix is printed before the gate waits for a reset', () => {
   const logged = [];
-  run([signedOut, quota], quota, { waitReviewHours: 24, sleep: () => {}, log: (l) => logged.push(l) });
+  // The clock is set, so "Try again at 10:09 AM" is 69 minutes away on any day, in any zone, through any DST change.
+  const now = () => new Date(2026, 5, 15, 9, 0, 0);
+  run([signedOut, quota], quota, { waitReviewHours: 24, sleep: () => {}, now, log: (l) => logged.push(l) });
   const wait = logged.findIndex((l) => /waiting/.test(l));
   const fix = logged.findIndex((l) => /cannot sign in/.test(l));
   assert.ok(wait >= 0, JSON.stringify(logged));
