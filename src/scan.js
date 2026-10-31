@@ -184,6 +184,49 @@ export function scriptsChanged(before, after) {
   return scripts(before) !== scripts(after);
 }
 
+const NON_REGISTRY_SOURCE = /^(?:file:|link:|git(?:\+[^:]+)?:|github:|gitlab:|bitbucket:|ssh:|git@)/i;
+const hasValue = (entry, field) => typeof entry?.[field] === 'string' && entry[field].length > 0;
+const nonRegistrySource = (value) =>
+  typeof value === 'string' && (NON_REGISTRY_SOURCE.test(value) || /^https?:\/\/.*\.git(?:[#?]|$)/i.test(value));
+
+/**
+ * Problems in a candidate package-lock whose registry entries lose verification fields they had at the merge base
+ * (REQ-GATE-54). Bundled, linked, file, and git sources do not use registry tarball verification fields.
+ */
+export function lockfileIntegrityProblems(beforeText, afterText) {
+  if (afterText === null) return [];
+  let after;
+  try {
+    after = JSON.parse(afterText)?.packages;
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    return [{ rule: 'lockfile-integrity', path: 'package-lock.json', detail: 'candidate package-lock.json is not valid JSON' }];
+  }
+  if (beforeText === null) return [];
+  let before;
+  try {
+    before = JSON.parse(beforeText)?.packages;
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    return []; // REQ-GATE-54 needs a valid merge-base entry to prove that verification fields were dropped.
+  }
+  if (!before || typeof before !== 'object' || !after || typeof after !== 'object') return [];
+  const problems = [];
+  for (const [path, entry] of Object.entries(after)) {
+    const previous = before[path];
+    if (!entry || typeof entry !== 'object' || !previous || typeof previous !== 'object' || !hasValue(entry, 'version')) continue;
+    if (entry.inBundle === true || previous.inBundle === true || entry.link === true || previous.link === true) continue;
+    if ([entry.version, entry.resolved, previous.version, previous.resolved].some(nonRegistrySource)) continue;
+    if (
+      hasValue(previous, 'integrity') &&
+      hasValue(previous, 'resolved') &&
+      (!hasValue(entry, 'integrity') || !hasValue(entry, 'resolved'))
+    )
+      problems.push({ rule: 'lockfile-integrity', path });
+  }
+  return problems;
+}
+
 // Tools whose pyproject.toml tables configure tests, lint, or types; a change here redefines "passing" (REQ-PROJ-4).
 // Other tables (dependencies, build-system, project metadata, other tools) stay free to change.
 const LOCKED_TOOLS = new Set(['pytest', 'ruff', 'mypy', 'pyright', 'coverage']);

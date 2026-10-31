@@ -40,6 +40,7 @@ import {
   findSkipMarkers,
   fold,
   locksAny,
+  lockfileIntegrityProblems,
   matchesAny,
   outOfScope,
   PROSE,
@@ -167,6 +168,8 @@ function staticChecks(ctx) {
     [...new Set([from, base])].flatMap((ref) => scriptPaths(showFile(ref, 'package.json', repo), commands)).map(fold),
   );
   const lines = addedLines(from, head, repo);
+  const lockfileBefore = showFile(from, 'package-lock.json', repo);
+  const lockfileAfter = showFile(head, 'package-lock.json', repo);
   const locked = [];
   const relaxed = []; // locked files whose edit is proved non-weakening (REQ-GATE-42..44)
   const testEdits = [];
@@ -233,6 +236,14 @@ function staticChecks(ctx) {
   ctx.testEdits = testEdits;
   return [
     { name: 'locked', problems: locked, ...(relaxed.length ? { relaxed } : {}) },
+    ...(lockfileAfter === null
+      ? []
+      : [
+          {
+            name: 'lockfile-integrity',
+            problems: lockfileIntegrityProblems(lockfileBefore, lockfileAfter),
+          },
+        ]),
     { name: 'skip-markers', problems: findSkipMarkers(lines.filter((l) => isTest(l.path))) },
     { name: 'bypass', problems: findBypassMarkers(code) },
     { name: 'scope', problems: scope.map((path) => ({ rule: 'out-of-scope', path })) },
@@ -812,6 +823,8 @@ const REPAIR = {
   'runner-script-changed': restore,
   'package-scripts-changed': restore,
   'package-tool-config-changed': restore,
+  'lockfile-integrity': (_p, base) =>
+    `Fix: restore package-lock.json with \`git checkout ${base} -- package-lock.json\`, then run \`npm install --package-lock-only\`; do not delete and regenerate the lockfile.`,
   'bypass-marker': (p) =>
     `Fix: remove the marker at ${p.path}:${p.line} and fix what it hides; follow how existing files in this repo avoid it.`,
   'skip-marker': (p) => `Fix: remove the skip or focus marker at ${p.path}:${p.line}; every test must run.`,
