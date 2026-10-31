@@ -8,7 +8,8 @@ import { spendFile } from './window.js';
 
 const auditFile = () => join(stateDir(), 'audit.jsonl');
 const label = (t) => `${t.provider}/${t.model}/${t.effort}`;
-const FALLBACK = /\(fallback: (\S+) /;
+// A routine-diff review (REQ-GATE-45) is a choice, not an outage: the audit leaves it alone.
+export const FALLBACK = /\(fallback: (\S+) (?!routine diff)/;
 
 function gh(args, repo) {
   const r = exec('gh', args, repo);

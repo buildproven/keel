@@ -763,10 +763,10 @@ function planCheck({ config, log, planFn }) {
   const plan = planFn(config);
   savePlan(plan, stateDir()); // every gate of this poll's runs reads it for the review window (REQ-PLAN-5)
   log(`plan: ${planLine(plan)}`);
-  const reserved = reservedProviders(plan, config.planLimits);
+  const reserved = reservedProviders(plan, config.planLimits, config.lastResort, config.lastResortLimits);
   const providers = new Set(config.tiers.map((t) => t.provider));
   if (!reserved.size || ![...providers].every((p) => reserved.has(p))) return { reserved };
-  const reset = nextReset(plan, config.planLimits);
+  const reset = nextReset(plan, config.planLimits, config.lastResort, config.lastResortLimits);
   log(`plan limit reached: ${[...reserved].map(([p, w]) => `${p} ${w}`).join('; ')}${reset ? `; next reset ${reset}` : ''}`);
   return { stop: { outcome: 'plan', reserved: Object.fromEntries(reserved) } };
 }
