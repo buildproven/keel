@@ -27,6 +27,7 @@ const passed = (id) => ({
   attempt: 1,
   branch: `keel/${id}`,
   worktree: '/nonexistent/wt',
+  pr: { ok: true, out: `https://github.com/buildproven/keel/pull/${id.split('-').at(-1)}` },
   followUps: [],
   receipt: { head: 'abc123' },
 });
@@ -67,6 +68,7 @@ test('REQ-LINEAR-6 a report that failed with fetch failed is recorded with its r
   const [row] = readJsonl(pollLedgerFile()).filter((r) => r.outcome === 'reportFailed');
   assert.equal(row.result.branch, 'keel/BUI-1');
   assert.equal(row.result.pass, true);
+  assert.equal(row.result.pr.out, 'https://github.com/buildproven/keel/pull/1');
   assert.equal(row.result.receipt.head, 'abc123');
   assert.equal(attemptedIssueIds(dir).has('BUI-1'), true, 'still not built again');
 
@@ -88,6 +90,41 @@ test('REQ-LINEAR-6 a report that failed with fetch failed is recorded with its r
 
   await poll({ repo: dir, project: 'x', client, config: {}, runFn });
   assert.equal(client.calls.length, 2, 'a reported run is not reported again');
+});
+
+test('REQ-LINEAR-6 a failed finished run keeps its stop reason and reports that failure without another build', async () => {
+  const { dir } = fixtureRepo();
+  const client = fakeClient([mk('BUI-1')], { failWith: new TypeError('fetch failed') });
+  let builds = 0;
+  const runFn = () => {
+    builds += 1;
+    return {
+      pass: false,
+      stopped: 'max-attempts',
+      branch: 'keel/BUI-1',
+      worktree: '/nonexistent/wt',
+      failure: 'the affected test still fails',
+      followUps: [],
+    };
+  };
+  await assert.rejects(poll({ repo: dir, project: 'x', client, config: {}, runFn }), /fetch failed/);
+  const failedReport = readJsonl(pollLedgerFile()).find((r) => r.outcome === 'reportFailed');
+  assert.equal(failedReport.result.stopped, 'max-attempts');
+  assert.equal(failedReport.result.failure, 'the affected test still fails');
+
+  client.setFail(null);
+  const results = await poll({ repo: dir, project: 'x', client, config: {}, runFn });
+  assert.equal(builds, 1);
+  assert.deepEqual(
+    results.map((r) => r.outcome),
+    ['failed', 'none'],
+  );
+  assert.deepEqual(
+    client.calls.map((c) => c.name),
+    ['comment'],
+  );
+  assert.match(client.calls[0].rest[0], /max-attempts/);
+  assert.match(client.calls[0].rest[0], /the affected test still fails/);
 });
 
 test('REQ-LINEAR-6 a retried report that fails again stays reportFailed, is logged by issue and branch, and the poll builds the next issue', async () => {
@@ -131,23 +168,25 @@ test('REQ-LINEAR-6 a retried report that fails again stays reportFailed, is logg
   assert.equal(latest.result.branch, 'keel/BUI-1', 'the result is kept for the next retry');
 });
 
-test('REQ-LINEAR-6 a retried report on an issue closed meanwhile does not reopen it and is recorded as done', async () => {
-  const { dir } = fixtureRepo();
-  const client = fakeClient([mk('BUI-1')], { failWith: new TypeError('fetch failed') });
-  const runFn = () => passed('BUI-1');
-  await assert.rejects(poll({ repo: dir, project: 'x', client, config: {}, runFn }), /fetch failed/);
+for (const state of ['completed', 'canceled']) {
+  test(`REQ-LINEAR-6 a retried report on an issue ${state} meanwhile does not reopen it and is recorded as done`, async () => {
+    const { dir } = fixtureRepo();
+    const client = fakeClient([mk('BUI-1')], { failWith: new TypeError('fetch failed') });
+    const runFn = () => passed('BUI-1');
+    await assert.rejects(poll({ repo: dir, project: 'x', client, config: {}, runFn }), /fetch failed/);
 
-  const closed = fakeClient([], { state: 'completed' });
-  await poll({ repo: dir, project: 'x', client: closed, config: {}, runFn });
-  assert.deepEqual(closed.calls, [], 'no state move, and no comment that calls the branch unneeded');
-  const latest = readJsonl(pollLedgerFile())
-    .filter((r) => r.issue === 'BUI-1')
-    .at(-1);
-  assert.equal(latest.outcome, 'closedMeanwhile');
-  await poll({ repo: dir, project: 'x', client: closed, config: {}, runFn });
-  assert.deepEqual(closed.calls, [], 'not retried again');
-  assert.equal(readJsonl(pollLedgerFile()).filter((r) => r.issue === 'BUI-1').length, 2, 'one reportFailed row, one closedMeanwhile');
-});
+    const closed = fakeClient([], { state });
+    await poll({ repo: dir, project: 'x', client: closed, config: {}, runFn });
+    assert.deepEqual(closed.calls, [], 'no state move, and no comment that calls the branch unneeded');
+    const latest = readJsonl(pollLedgerFile())
+      .filter((r) => r.issue === 'BUI-1')
+      .at(-1);
+    assert.equal(latest.outcome, 'closedMeanwhile');
+    await poll({ repo: dir, project: 'x', client: closed, config: {}, runFn });
+    assert.deepEqual(closed.calls, [], 'not retried again');
+    assert.equal(readJsonl(pollLedgerFile()).filter((r) => r.issue === 'BUI-1').length, 2, 'one reportFailed row, one closedMeanwhile');
+  });
+}
 
 test('REQ-LINEAR-6 a reportFailed row from before results were kept is left alone', async () => {
   const { dir } = fixtureRepo();
@@ -156,4 +195,33 @@ test('REQ-LINEAR-6 a reportFailed row from before results were kept is left alon
   const results = await poll({ repo: dir, project: 'x', client, config: {}, runFn: () => assert.fail('no build') });
   assert.deepEqual(results, [{ outcome: 'none' }]);
   assert.deepEqual(client.calls, []);
+});
+
+test('REQ-LINEAR-6 an explicit poll of an issue with a saved reportFailed run reports it without rebuilding', async () => {
+  const { dir } = fixtureRepo();
+  const client = fakeClient([mk('BUI-1')]);
+  recordPollAttempt(dir, {
+    issue: 'BUI-1',
+    outcome: 'reportFailed',
+    detail: 'fetch failed',
+    result: passed('BUI-1'),
+  });
+
+  const results = await poll({
+    repo: dir,
+    project: 'x',
+    client,
+    config: {},
+    issue: 'BUI-1',
+    runFn: () => assert.fail('the finished run must not be built again'),
+  });
+
+  assert.deepEqual(
+    results.map((r) => r.outcome),
+    ['inReview'],
+  );
+  assert.deepEqual(
+    client.calls.map((c) => c.name),
+    ['comment', 'review'],
+  );
 });

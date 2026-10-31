@@ -679,12 +679,14 @@ async function runOne({ repo, base, pr, merge, log, config, client, issue: picke
 /**
  * Report again the finished runs whose report to Linear failed at an earlier poll (REQ-LINEAR-6), before any new issue is
  * picked and without building them again. A report that fails again keeps `reportFailed`, is logged by issue and branch,
- * and does not stop the poll. `skip` is an issue a human is rebuilding by hand.
+ * and does not stop the poll. The returned issue ids let an explicit `--issue` poll stop after reporting its saved run,
+ * rather than pay to build that same issue again.
  */
-async function retryReports({ repo, base, config, client, log, skip = null }) {
+async function retryReports({ repo, base, config, client, log }) {
   const outcomes = [];
+  const issues = new Set();
   for (const [id, result] of unreportedRuns(repo)) {
-    if (id === skip) continue;
+    issues.add(id);
     try {
       const state = await client.stateType(id);
       // Closed since, often by the merged PR's `Closes` line: never reopen it (REQ-LINEAR-16), and post nothing that
@@ -698,9 +700,10 @@ async function retryReports({ repo, base, config, client, log, skip = null }) {
       // Kept visible and not fatal: the other issues still run, and the next poll tries again (REQ-LINEAR-6).
       recordPollAttempt(repo, { issue: id, outcome: 'reportFailed', detail: e.message, result });
       log(`${id} built (branch ${result.branch}) but not reported to Linear again: ${e.message}; stays reportFailed`);
+      outcomes.push({ outcome: 'reportFailed', issue: id, result, detail: e.message });
     }
   }
-  return outcomes;
+  return { outcomes, issues };
 }
 
 /** Report one run's result to Linear (REQ-LINEAR-5, -13, -16, -18, -19); returns the poll outcome. */
@@ -925,7 +928,11 @@ export async function poll({
   if (merge) results.push(...(await finishSelfMerges({ repo, config, client, log })));
   results.push(...filingFailed(await fileFollowUps({ repo, project, config, client, log, base, capacityFn }))); // what an earlier poll could not file
   await rebuildConflicts({ repo, client, log });
-  results.push(...(await retryReports({ repo, base, config, client, log, skip: only })));
+  const retried = await retryReports({ repo, base, config, client, log });
+  results.push(...retried.outcomes);
+  // `--issue` ordinarily forces a rebuild (REQ-LINEAR-14), but a saved finished run only needs its report retried
+  // (REQ-LINEAR-6). Whether that report passed or failed again, do not replace its branch with a second build.
+  if (only && retried.issues.has(only)) return results;
   if (only) {
     const budget = overBudget({ repo, config, log });
     const plan = budget ? {} : planCheck({ config, log, planFn });
