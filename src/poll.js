@@ -315,7 +315,7 @@ async function fileFollowUps({ repo, project, config, client, log, base = 'HEAD'
   };
   let current = null;
   let unarchived = null; // the workspace's unarchived issues, once read (REQ-LINEAR-37)
-  let unbuilt = null; // the project's open Keel-filed follow-ups, once read (REQ-LINEAR-41)
+  let unbuilt = null; // the project's open Keel-filed follow-ups, once read (REQ-LINEAR-42)
   // Every Linear error is caught here (REQ-LINEAR-22), recorded against the item, and returned, so one bad item cannot
   // stop every later poll.
   try {
@@ -374,7 +374,7 @@ async function fileFollowUps({ repo, project, config, client, log, base = 'HEAD'
         log(`follow-up cap reached (${config.followUpsPerDay} per day); ${pending.length - pending.indexOf(f)} wait in the queue`);
         break;
       }
-      // The project's unbuilt follow-ups are counted once; at followUpOpenMax the rest waits until the loop builds some (REQ-LINEAR-41).
+      // The project's unbuilt follow-ups are counted once; at followUpOpenMax the rest waits until the loop builds some (REQ-LINEAR-42).
       if (config.followUpOpenMax > 0) {
         unbuilt ??= (await client.listIssues(project, { stateTypes: APPEND_STATES })).filter((i) =>
           /^Found by keel/m.test(i.description ?? ''),
@@ -467,7 +467,7 @@ const OPEN_PRS_QUERY = `query($owner: String!, $name: String!, $endCursor: Strin
  */
 async function rebuildConflicts({ repo, client, log }) {
   if (exec('git', ['remote', 'get-url', 'origin'], repo).status !== 0) return;
-  // GraphQL pages through every open PR; `gh pr list` stops at its --limit (REQ-LINEAR-41).
+  // GraphQL pages through every open PR; `gh pr list` stops at its --limit (REQ-LINEAR-42).
   const r = exec(
     'gh',
     [
@@ -497,7 +497,7 @@ async function rebuildConflicts({ repo, client, log }) {
   for (const pr of prs) {
     const id = /^keel\/([A-Z]+-\d+)$/.exec(pr.headRefName)?.[1];
     if (!id) continue;
-    // A strict branch rule needs an up-to-date branch; with auto-merge armed, a behind PR would never merge (REQ-LINEAR-41).
+    // A strict branch rule needs an up-to-date branch; with auto-merge armed, a behind PR would never merge (REQ-LINEAR-42).
     const behind = pr.mergeable !== 'CONFLICTING' && pr.mergeStateStatus === 'BEHIND' && Boolean(pr.autoMergeRequest);
     if (pr.mergeable !== 'CONFLICTING' && !behind) continue;
     const why = behind ? 'is behind' : 'conflicts with';

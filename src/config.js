@@ -116,7 +116,7 @@ export const DEFAULTS = {
   planLimits: { fiveHour: 90, week: 80 },
   // Found-work issues `keel poll` may file per repo per UTC day (REQ-LINEAR-22); 0 turns filing off.
   followUpsPerDay: 20,
-  // Most Keel-filed follow-ups a project may hold unbuilt (Backlog or Todo) before filing waits (REQ-LINEAR-41); 0 = no limit.
+  // Most Keel-filed follow-ups a project may hold unbuilt (Backlog or Todo) before filing waits (REQ-LINEAR-42); 0 = no limit.
   followUpOpenMax: 8,
   // Unarchived Linear issues in the workspace at which `keel poll` stops filing found work (REQ-LINEAR-37); 0 = off.
   followUpHoldAt: 200,

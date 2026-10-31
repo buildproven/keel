@@ -147,7 +147,7 @@ test('REQ-LINEAR-37 a held row is not a run: no issue is attempted or counted by
 
 const unbuiltIssue = (n) => ({ id: `u${n}`, title: `old ${n}`, description: 'Found by keel while building BUI-1.' });
 
-test('REQ-LINEAR-41 follow-ups wait while the project holds followUpOpenMax unbuilt follow-ups', async () => {
+test('REQ-LINEAR-42 follow-ups wait while the project holds followUpOpenMax unbuilt follow-ups', async () => {
   const { dir } = fixtureRepo();
   queue(dir, ['finding one', 'finding two']);
   const client = { ...fakeClient(10), listIssues: async (_p, o) => (o?.stateTypes ? [1, 2, 3].map(unbuiltIssue) : []) };
@@ -163,7 +163,7 @@ test('REQ-LINEAR-41 follow-ups wait while the project holds followUpOpenMax unbu
   assert.equal(pendingFollowUps(dir, 3).length, 2, 'the queue keeps both');
 });
 
-test('REQ-LINEAR-41 filing stops at followUpOpenMax within one pass, and cards not filed by Keel do not count', async () => {
+test('REQ-LINEAR-42 filing stops at followUpOpenMax within one pass, and cards not filed by Keel do not count', async () => {
   const { dir } = fixtureRepo();
   queue(dir, ['finding one', 'finding two', 'finding three']);
   const hand = { id: 'h', title: 'by hand', description: 'My own backlog card.' };
@@ -173,7 +173,7 @@ test('REQ-LINEAR-41 filing stops at followUpOpenMax within one pass, and cards n
   assert.ok(logs.some((l) => /followUpOpenMax/.test(l)));
 });
 
-test('REQ-LINEAR-41 followUpOpenMax 0 means no limit', async () => {
+test('REQ-LINEAR-42 followUpOpenMax 0 means no limit', async () => {
   const { dir } = fixtureRepo();
   queue(dir, ['finding one', 'finding two']);
   const client = {
@@ -184,7 +184,7 @@ test('REQ-LINEAR-41 followUpOpenMax 0 means no limit', async () => {
   assert.equal(client.created.length, 2);
 });
 
-test('REQ-LINEAR-41 the defaults are 20 a day and 8 unbuilt, and followUpOpenMax is validated', () => {
+test('REQ-LINEAR-42 the defaults are 20 a day and 8 unbuilt, and followUpOpenMax is validated', () => {
   assert.equal(DEFAULTS.followUpsPerDay, 20);
   assert.equal(DEFAULTS.followUpOpenMax, 8);
   const { dir } = fixtureRepo();
