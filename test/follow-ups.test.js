@@ -225,8 +225,8 @@ test('REQ-LINEAR-22 when listing issues fails, the queued follow-ups stay queued
   assert.equal(client.created.length, 2);
 });
 
-test('REQ-LINEAR-22 followUpsPerDay defaults to 5', () => {
-  assert.equal(DEFAULTS.followUpsPerDay, 5);
+test('REQ-LINEAR-22 followUpsPerDay defaults to 20, a fuse (REQ-LINEAR-41)', () => {
+  assert.equal(DEFAULTS.followUpsPerDay, 20);
 });
 
 let calls;
