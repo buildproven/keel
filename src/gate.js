@@ -697,6 +697,7 @@ export function gate({
   spendFile = null,
   waitReviewHours = 0,
   sleep = sleepMs,
+  now = () => new Date(), // the clock a reviewer's reset time is read against (REQ-GATE-28); a test sets its own
   log = () => {},
   slotDir = null,
   flaky = [],
@@ -750,7 +751,7 @@ export function gate({
   // Same process, same head: only the review runs again, so no stored receipt is trusted (REQ-GATE-28).
   const last = results.at(-1);
   if (waitReviewHours > 0 && last?.name === 'review' && last.problems.some((p) => p.rule === 'review-unavailable')) {
-    const ms = resetWaitMs(last.unavailable ?? []);
+    const ms = resetWaitMs(last.unavailable ?? [], now());
     if (ms !== null && ms <= waitReviewHours * 3600 * 1000) {
       for (const line of signInFixes(last.unavailable)) log(line); // fixing a sign-in beats the wait (REQ-GATE-53)
       log(`every reviewer is out; waiting ${Math.ceil(ms / 60000)} min for the reset, then the review runs again`);
