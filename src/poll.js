@@ -315,6 +315,7 @@ async function fileFollowUps({ repo, project, config, client, log, base = 'HEAD'
   };
   let current = null;
   let unarchived = null; // the workspace's unarchived issues, once read (REQ-LINEAR-37)
+  let unbuilt = null; // the project's open Keel-filed follow-ups, once read (REQ-LINEAR-42)
   // Every Linear error is caught here (REQ-LINEAR-22), recorded against the item, and returned, so one bad item cannot
   // stop every later poll.
   try {
@@ -373,6 +374,24 @@ async function fileFollowUps({ repo, project, config, client, log, base = 'HEAD'
         log(`follow-up cap reached (${config.followUpsPerDay} per day); ${pending.length - pending.indexOf(f)} wait in the queue`);
         break;
       }
+      // The project's unbuilt follow-ups are counted once; at followUpOpenMax the rest waits until the loop builds some (REQ-LINEAR-42).
+      if (config.followUpOpenMax > 0) {
+        unbuilt ??= (await client.listIssues(project, { stateTypes: APPEND_STATES })).filter((i) =>
+          /^Found by keel/.test(i.description ?? ''),
+        ).length;
+        if (unbuilt >= config.followUpOpenMax) {
+          const waiting = pending.length - pending.indexOf(f);
+          recordPollAttempt(repo, {
+            issue: null,
+            outcome: 'held',
+            detail: { reason: 'unbuilt', unbuilt, max: config.followUpOpenMax, waiting },
+          });
+          log(
+            `follow-ups held: ${unbuilt} unbuilt follow-ups >= ${config.followUpOpenMax} (followUpOpenMax); ${waiting} wait in the queue`,
+          );
+          break;
+        }
+      }
       // The workspace's room is read once, just before the first issue this pass would file (REQ-LINEAR-37).
       if (config.followUpHoldAt > 0 && capacityFn) {
         unarchived ??= (await capacityFn()).open;
@@ -394,6 +413,7 @@ async function fileFollowUps({ repo, project, config, client, log, base = 'HEAD'
       );
       current = null;
       if (unarchived !== null) unarchived++;
+      if (unbuilt !== null) unbuilt++;
       recordPollAttempt(repo, { issue: id, outcome: 'filed', detail: { source: f.source, title: f.title } });
       known.add(titleKey(f.title));
       filed.set(f.source, [...(filed.get(f.source) ?? []), id]);

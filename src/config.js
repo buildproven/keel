@@ -125,7 +125,9 @@ export const DEFAULTS = {
     riskPaths: ['auth', 'payment', 'billing', 'stripe', 'secret', 'migration', '.github/', 'keel.json', 'security'],
   },
   // Found-work issues `keel poll` may file per repo per UTC day (REQ-LINEAR-22); 0 turns filing off.
-  followUpsPerDay: 5,
+  followUpsPerDay: 20,
+  // Most Keel-filed follow-ups a project may hold unbuilt (Backlog or Todo) before filing waits (REQ-LINEAR-42); 0 = no limit.
+  followUpOpenMax: 8,
   // Unarchived Linear issues in the workspace at which `keel poll` stops filing found work (REQ-LINEAR-37); 0 = off.
   followUpHoldAt: 200,
   // One read-only refine turn before `keel poll` builds an unclear or too-big issue (REQ-LINEAR-32).
@@ -245,6 +247,7 @@ function validate(c) {
   )
     bad('"routineReview" must be null or { maxLines, riskPaths }');
   if (!Number.isInteger(c.followUpsPerDay) || c.followUpsPerDay < 0) bad('"followUpsPerDay" must be an integer ≥ 0');
+  if (!Number.isInteger(c.followUpOpenMax) || c.followUpOpenMax < 0) bad('"followUpOpenMax" must be an integer ≥ 0');
   if (!Number.isInteger(c.followUpHoldAt) || c.followUpHoldAt < 0) bad('"followUpHoldAt" must be an integer ≥ 0');
   if (!Number.isInteger(c.worktreeKeepDays) || c.worktreeKeepDays < 0) bad('"worktreeKeepDays" must be an integer ≥ 0');
   if (!positive(c.selfMergeTimeoutMinutes)) bad('"selfMergeTimeoutMinutes" must be a positive number');
