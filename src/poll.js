@@ -467,7 +467,7 @@ const OPEN_PRS_QUERY = `query($owner: String!, $name: String!, $endCursor: Strin
  */
 async function rebuildConflicts({ repo, client, log }) {
   if (exec('git', ['remote', 'get-url', 'origin'], repo).status !== 0) return;
-  // GraphQL pages through every open PR; `gh pr list` stops at its --limit (REQ-LINEAR-42).
+  // GraphQL pages through every open PR; `gh pr list` stops at its --limit (REQ-LINEAR-41).
   const r = exec(
     'gh',
     [
@@ -497,7 +497,7 @@ async function rebuildConflicts({ repo, client, log }) {
   for (const pr of prs) {
     const id = /^keel\/([A-Z]+-\d+)$/.exec(pr.headRefName)?.[1];
     if (!id) continue;
-    // A strict branch rule needs an up-to-date branch; with auto-merge armed, a behind PR would never merge (REQ-LINEAR-42).
+    // A strict branch rule needs an up-to-date branch; with auto-merge armed, a behind PR would never merge (REQ-LINEAR-41).
     const behind = pr.mergeable !== 'CONFLICTING' && pr.mergeStateStatus === 'BEHIND' && Boolean(pr.autoMergeRequest);
     if (pr.mergeable !== 'CONFLICTING' && !behind) continue;
     const why = behind ? 'is behind' : 'conflicts with';
