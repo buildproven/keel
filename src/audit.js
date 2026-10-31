@@ -8,7 +8,7 @@ import { spendFile } from './window.js';
 
 const auditFile = () => join(stateDir(), 'audit.jsonl');
 const label = (t) => `${t.provider}/${t.model}/${t.effort}`;
-// A routine-diff review (REQ-GATE-54) is a choice, not an outage: the audit leaves it alone.
+// A routine-diff review (REQ-GATE-55) is a choice, not an outage: the audit leaves it alone.
 export const FALLBACK = /\(fallback: (\S+) (?!routine diff)/;
 
 function gh(args, repo) {
