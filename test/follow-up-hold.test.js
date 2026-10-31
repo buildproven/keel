@@ -144,3 +144,52 @@ test('REQ-LINEAR-37 a held row is not a run: no issue is attempted or counted by
   assert.deepEqual([...attemptedIssueIds(dir)], []);
   assert.equal(humanTouch({ pollRows: rows, ledgerRows: [], prsFor: () => [] }).issues, 0);
 });
+
+const unbuiltIssue = (n) => ({ id: `u${n}`, title: `old ${n}`, description: 'Found by keel while building BUI-1.' });
+
+test('REQ-LINEAR-41 follow-ups wait while the project holds followUpOpenMax unbuilt follow-ups', async () => {
+  const { dir } = fixtureRepo();
+  queue(dir, ['finding one', 'finding two']);
+  const client = { ...fakeClient(10), listIssues: async (_p, o) => (o?.stateTypes ? [1, 2, 3].map(unbuiltIssue) : []) };
+  const { results, logs } = await fileOnly(dir, client, { followUpOpenMax: 3 });
+  assert.deepEqual(client.created, []);
+  assert.equal(pollExitCode(results), 0, 'a wait is not an error');
+  assert.ok(
+    logs.some((l) => /3 unbuilt follow-ups >= 3 \(followUpOpenMax\)/.test(l)),
+    logs.join('\n'),
+  );
+  const held = readJsonl(pollLedgerFile()).find((r) => r.outcome === 'held');
+  assert.equal(held.detail.reason, 'unbuilt');
+  assert.equal(pendingFollowUps(dir, 3).length, 2, 'the queue keeps both');
+});
+
+test('REQ-LINEAR-41 filing stops at followUpOpenMax within one pass, and cards not filed by Keel do not count', async () => {
+  const { dir } = fixtureRepo();
+  queue(dir, ['finding one', 'finding two', 'finding three']);
+  const hand = { id: 'h', title: 'by hand', description: 'My own backlog card.' };
+  const client = { ...fakeClient(10), listIssues: async (_p, o) => (o?.stateTypes ? [unbuiltIssue(1), hand] : []) };
+  const { logs } = await fileOnly(dir, client, { followUpOpenMax: 2 });
+  assert.equal(client.created.length, 1, 'one slot was free: 1 unbuilt + the new one = 2');
+  assert.ok(logs.some((l) => /followUpOpenMax/.test(l)));
+});
+
+test('REQ-LINEAR-41 followUpOpenMax 0 means no limit', async () => {
+  const { dir } = fixtureRepo();
+  queue(dir, ['finding one', 'finding two']);
+  const client = {
+    ...fakeClient(10),
+    listIssues: async (_p, o) => (o?.stateTypes ? Array.from({ length: 50 }, (_, i) => unbuiltIssue(i)) : []),
+  };
+  await fileOnly(dir, client, { followUpOpenMax: 0 });
+  assert.equal(client.created.length, 2);
+});
+
+test('REQ-LINEAR-41 the defaults are 20 a day and 8 unbuilt, and followUpOpenMax is validated', () => {
+  assert.equal(DEFAULTS.followUpsPerDay, 20);
+  assert.equal(DEFAULTS.followUpOpenMax, 8);
+  const { dir } = fixtureRepo();
+  const ref = commit(dir, {
+    'keel.json': JSON.stringify({ checks: { test: FIXTURE_TEST }, testCommand: FIXTURE_TEST, followUpOpenMax: -1 }),
+  });
+  assert.throws(() => loadConfig(dir, ref), /followUpOpenMax/);
+});

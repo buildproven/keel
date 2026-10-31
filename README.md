@@ -78,7 +78,7 @@ review, and with `--merge` enables GitHub auto-merge of exactly the certified co
 that commit; make `keel/gate` a required check, and a later push cannot merge until the gate passes on it.
 Work the agents find on the way is not lost: the builder lists out-of-scope work in `KEEL_FOLLOWUP`, and
 non-blocking review notes count too. `keel poll` files them as Low issues in the same project (at most
-`followUpsPerDay`, default 5), and the loop builds them like any other issue. Before filing, it drops a finding whose
+`followUpsPerDay`, default 20, and `followUpOpenMax`, default 8 unbuilt follow-ups per project), and the loop builds them like any other issue. Before filing, it drops a finding whose
 cited line the base has since changed; a follow-up of a still-open issue waits for it, and one on a locked file names
 that file in `allowEdits`. At `followUpHoldAt` (default 200) unarchived issues in the Linear workspace, filing stops and
 the rest wait in the queue, so found work never fills the workspace to Linear's 250-issue limit.
