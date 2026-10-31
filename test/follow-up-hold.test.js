@@ -173,6 +173,15 @@ test('REQ-LINEAR-42 filing stops at followUpOpenMax within one pass, and cards n
   assert.ok(logs.some((l) => /followUpOpenMax/.test(l)));
 });
 
+test('REQ-LINEAR-42 only a description that starts with "Found by keel" counts, not one that quotes it on a later line', async () => {
+  const { dir } = fixtureRepo();
+  queue(dir, ['finding one']);
+  const quoting = { id: 'q', title: 'quotes', description: 'My note.\nFound by keel while building BUI-1.' };
+  const client = { ...fakeClient(10), listIssues: async (_p, o) => (o?.stateTypes ? [quoting, quoting, quoting] : []) };
+  await fileOnly(dir, client, { followUpOpenMax: 3 });
+  assert.equal(client.created.length, 1);
+});
+
 test('REQ-LINEAR-42 followUpOpenMax 0 means no limit', async () => {
   const { dir } = fixtureRepo();
   queue(dir, ['finding one', 'finding two']);

@@ -377,7 +377,7 @@ async function fileFollowUps({ repo, project, config, client, log, base = 'HEAD'
       // The project's unbuilt follow-ups are counted once; at followUpOpenMax the rest waits until the loop builds some (REQ-LINEAR-42).
       if (config.followUpOpenMax > 0) {
         unbuilt ??= (await client.listIssues(project, { stateTypes: APPEND_STATES })).filter((i) =>
-          /^Found by keel/m.test(i.description ?? ''),
+          /^Found by keel/.test(i.description ?? ''),
         ).length;
         if (unbuilt >= config.followUpOpenMax) {
           const waiting = pending.length - pending.indexOf(f);
