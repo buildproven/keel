@@ -22,7 +22,9 @@ const tier = (family, model, script) => ({
 // What the Claude CLI prints when it cannot read its login (2026-10-21, over SSH on the MacBook Pro).
 const signedOut = tier('claude', 'claude-out', "console.log('Not logged in · Please run /login'); process.exit(1);");
 const codexOut = tier('codex', 'codex-out', "console.error('unexpected status 401 Unauthorized'); process.exit(1);");
-const quota = tier('codex', 'codex-top', "console.error('You have hit your usage limit. Try again at 10:09 AM.'); process.exit(1);");
+// One hour ahead, as the provider writes it: a fixed clock time can be more than a day away on the eve of a DST change.
+const resetAt = new Date(Date.now() + 3600 * 1000).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+const quota = tier('codex', 'codex-top', `console.error('You have hit your usage limit. Try again at ${resetAt}.'); process.exit(1);`);
 const passes = tier('claude', 'claude-ok', "console.log('VERDICT: pass');");
 
 function run(tiers, reviewer, extra = {}) {
