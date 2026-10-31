@@ -769,7 +769,22 @@ export const describeStop = ({ stopped, failure, worktree }) => {
       : stopped === 'config' || stopped === 'auth' // REQ-RUN-49, REQ-RUN-50: the failure names the fix
         ? `:\n${failure}\n`
         : ' —';
-  return `STOPPED (${stopped})${detail} ${worktree ? `worktree kept at ${worktree}` : `no worktree kept: ${failure}`}`;
+  // The failure is already in the detail of these stops: not a second time after "no worktree kept" (REQ-RUN-51).
+  const shown = detail.startsWith(':');
+  return `STOPPED (${stopped})${detail} ${worktree ? `worktree kept at ${worktree}` : `no worktree kept${shown ? '' : `: ${failure}`}`}`;
+};
+
+/**
+ * The reason a `keel run <ISSUE>` or `keel poll` pass prints after the outcome (REQ-RUN-51): the stop class and the first
+ * line of the failure, or '' when the run passed or the pass built nothing.
+ */
+export const issueStopNote = (result) => {
+  if (!result || result.pass || !result.stopped) return '';
+  const first = String(result.failure ?? '')
+    .split('\n')
+    .map((l) => l.trim())
+    .find(Boolean);
+  return first ? ` (${result.stopped}: ${first.length > 200 ? `${first.slice(0, 199)}…` : first})` : ` (${result.stopped})`;
 };
 
 /** Attempt loop: cheapest tier first, escalate on failure, stop on auth, exhausted quota, or a blocked card. */
@@ -785,7 +800,15 @@ export function run({ repo, card, config, base = 'HEAD', pr = false, merge = fal
   if (existsSync(wt) && runLockHeld(lock)) throw new Error(`worktree exists: ${wt} — a keel run in progress holds it (${lock})`);
   const releaseLock = acquireRunLock(lock);
   try {
-    return runLocked({ repo, card, config, base, baseSha, baseBranch, branch, wt, pr: pr || merge, merge, reserved, log });
+    const result = runLocked({ repo, card, config, base, baseSha, baseBranch, branch, wt, pr: pr || merge, merge, reserved, log });
+    // A sign-in or quota stop leaves no worker output to inspect, only a worktree that would block the next run (REQ-RUN-51).
+    // Every other stop keeps its worktree for inspection (REQ-RUN-5, -13, -24, -45); the next run frees a clean one.
+    if (FREED_STOPS.has(result.stopped) && !result.pendingReview && result.worktree && holdsNoWork({ repo, wt, branch, baseSha })) {
+      removeParkedWorktree({ repo, path: wt, branch });
+      log(`removed empty worktree ${wt}: the run stopped before any change`);
+      return { ...result, worktree: null };
+    }
+    return result;
   } finally {
     releaseLock();
   }
@@ -847,6 +870,19 @@ function replaceableKept({ repo, card, branch, wt }) {
     .every((subject) => leftovers.test(subject));
 }
 
+/** Stops that happen before the worker produced anything (REQ-RUN-51). */
+const FREED_STOPS = new Set(['auth', 'quota']);
+
+/**
+ * Whether the card's worktree holds no work (REQ-RUN-51): its HEAD is its own `keel/<card id>` branch, it has no
+ * uncommitted change and no untracked file, and the branch has no commit that `baseSha` lacks.
+ */
+function holdsNoWork({ repo, wt, branch, baseSha }) {
+  if (!existsSync(wt) || !onBranch(wt, branch) || isDirty(wt)) return false;
+  const tip = exec('git', ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], repo).stdout.trim();
+  return tip !== '' && exec('git', ['merge-base', '--is-ancestor', tip, baseSha], repo).status === 0;
+}
+
 function runLocked({ repo, card, config, baseSha, baseBranch, branch, wt, pr, merge, reserved, log }) {
   const hash = cardHash(card);
   let kept = keptHead({ repo, card, config, baseSha, branch, wt });
@@ -876,6 +912,11 @@ function runLocked({ repo, card, config, baseSha, baseBranch, branch, wt, pr, me
     if (existsSync(wt) && replaceableKept({ repo, card, branch, wt })) {
       removeParkedWorktree({ repo, path: wt, branch });
       log(`removed kept worktree ${wt} of an earlier blocked run`);
+    }
+    // A clean worktree with no commit of its own, left by a run that stopped before any change, holds nothing (REQ-RUN-51).
+    if (existsSync(wt) && holdsNoWork({ repo, wt, branch, baseSha })) {
+      removeParkedWorktree({ repo, path: wt, branch });
+      log(`removed empty worktree ${wt} of an earlier stopped run`);
     }
     if (existsSync(wt)) throw new Error(`worktree exists: ${wt} — inspect it, then: git worktree remove --force ${wt}`);
     git(['worktree', 'add', '--quiet', '-b', branch, wt, baseSha], repo);
