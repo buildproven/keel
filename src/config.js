@@ -290,6 +290,24 @@ const list = (v) =>
         .filter(Boolean)
     : [];
 
+// A `paths`/`allowEdits` value is a comma list or a JSON array of strings; a stray bracket or quote would be a glob that matches nothing (REQ-CARD-5).
+const pathList = (field, v) => {
+  let items;
+  try {
+    const parsed = JSON.parse(v);
+    if (Array.isArray(parsed) && parsed.every((x) => typeof x === 'string')) items = parsed.map((p) => p.trim()).filter(Boolean);
+  } catch {
+    // Not JSON (REQ-CARD-5 allows this): read it as a comma list.
+  }
+  items ??= list(v);
+  for (const item of items)
+    if (/[[\]"]/.test(item))
+      throw new Error(
+        `card: ${field} item ${JSON.stringify(item)} holds a bracket or quote; write a comma list or a JSON array of strings`,
+      );
+  return items;
+};
+
 /** Parse a card: `key: value` header lines before the first `## ` heading; the whole file is the task text. */
 export function parseCard(text, file = 'card.md') {
   const fields = {};
@@ -312,8 +330,8 @@ export function parseCard(text, file = 'card.md') {
     title,
     kind: fields.kind,
     size: fields.size,
-    paths: list(fields.paths),
-    allowEdits: list(fields.allowEdits),
+    paths: pathList('paths', fields.paths),
+    allowEdits: pathList('allowEdits', fields.allowEdits),
     acceptance,
     heldOut: fields.heldOut || null,
     text,
