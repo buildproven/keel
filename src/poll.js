@@ -12,6 +12,7 @@ import {
   recordPollAttempt,
   textPrerequisites,
   titleKey,
+  unreportedRuns,
 } from './linear.js';
 import { resolve } from 'node:path';
 import { cardLease, describeConflicts } from './lease.js';
@@ -654,8 +655,14 @@ async function runOne({ repo, base, pr, merge, log, config, client, issue: picke
   } catch (e) {
     // The build ran and was paid for: record it, then fail visibly, so the next poll does not build it again
     // (REQ-LINEAR-6). A transient stop stays retryable (REQ-LINEAR-19).
+    // A reportFailed row keeps the result the report needs, so a later poll reports it (REQ-LINEAR-6).
     const outcome = TRANSIENT_STOPS.has(result.stopped) ? 'deferred' : 'reportFailed';
-    recordPollAttempt(repo, { issue: issue.id, outcome, detail: e.message });
+    recordPollAttempt(repo, {
+      issue: issue.id,
+      outcome,
+      detail: e.message,
+      result: outcome === 'reportFailed' ? reportableResult(result) : undefined,
+    });
     const down = networkFailure(e);
     // Linear never heard of this build, and the issue state is unchanged: say which issue, so a human reports it (REQ-LINEAR-40).
     if (down)
@@ -664,6 +671,37 @@ async function runOne({ repo, base, pr, merge, log, config, client, issue: picke
       );
     throw e;
   }
+}
+
+/** The parts of a run result that reporting reads (REQ-LINEAR-6), small enough for a ledger row. */
+function reportableResult(result) {
+  const { pass, stopped, tier, attempt, branch, worktree, failure, pr, merge, needsReview, pendingReview, followUps } = result;
+  const kept = { pass, stopped, tier, attempt, branch, worktree, failure, pr, merge, needsReview, pendingReview, followUps };
+  return {
+    ...Object.fromEntries(Object.entries(kept).filter(([, v]) => v !== undefined)),
+    ...(result.receipt?.head ? { receipt: { head: result.receipt.head } } : {}),
+  };
+}
+
+/**
+ * Report again the finished runs whose report to Linear failed at an earlier poll (REQ-LINEAR-6), before any new issue is
+ * picked and without building them again. A report that fails again keeps `reportFailed`, is logged by issue and branch,
+ * and does not stop the poll. `skip` is an issue a human is rebuilding by hand.
+ */
+async function retryReports({ repo, base, config, client, log, skip = null }) {
+  const outcomes = [];
+  for (const [id, result] of unreportedRuns(repo)) {
+    if (id === skip) continue;
+    try {
+      const outcome = await reportRun({ repo, base, config, client, issue: { id }, result });
+      recordPollAttempt(repo, { issue: id, outcome: outcome.outcome, detail: outcome.detail });
+      outcomes.push(outcome);
+    } catch (e) {
+      // Kept visible and not fatal: the other issues still run (REQ-LINEAR-6).
+      log(`${id} built (branch ${result.branch}) but the retried report to Linear failed: ${e.message}; stays reportFailed`);
+    }
+  }
+  return outcomes;
 }
 
 /** Report one run's result to Linear (REQ-LINEAR-5, -13, -16, -18, -19); returns the poll outcome. */
@@ -890,6 +928,7 @@ export async function poll({
   if (merge) results.push(...(await finishSelfMerges({ repo, config, client, log })));
   results.push(...filingFailed(await fileFollowUps({ repo, project, config, client, log, base, capacityFn }))); // what an earlier poll could not file
   await rebuildConflicts({ repo, client, log });
+  results.push(...(await retryReports({ repo, base, config, client, log, skip: only })));
   if (only) {
     const budget = overBudget({ repo, config, log });
     const plan = budget ? {} : planCheck({ config, log, planFn });

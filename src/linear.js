@@ -19,6 +19,18 @@ export function attemptedIssueIds(repo) {
   return new Set([...latestOutcomes(repo)].filter(([, outcome]) => outcome !== 'deferred').map(([id]) => id));
 }
 
+/**
+ * Finished runs whose report to Linear failed and is still unreported (REQ-LINEAR-6): the issues whose latest outcome for
+ * this repo is `reportFailed`, by issue id, each with the run result the row kept. A row from before results were kept has
+ * none and is left out: there is nothing to report.
+ */
+export function unreportedRuns(repo) {
+  const last = new Map();
+  for (const r of readJsonl(pollLedgerFile()))
+    if (r.repo === repo && ![...SKIP_ROWS, ...SELF_MERGE_ROWS].includes(r.outcome)) last.set(r.issue, r);
+  return new Map([...last].filter(([, r]) => r.outcome === 'reportFailed' && r.result).map(([id, r]) => [id, r.result]));
+}
+
 /** Each issue's latest attempt outcome for this repo, by issue id. */
 function latestOutcomes(repo) {
   const last = new Map();
@@ -65,8 +77,8 @@ export function pendingFollowUps(repo, maxTries = Infinity) {
 }
 
 /** Append one issue-attempt record, scoped to this repo (REQ-LINEAR-6). */
-export function recordPollAttempt(repo, { issue, outcome, detail, byHand = false }) {
-  const row = { repo, issue, outcome, detail: detail ?? null, at: new Date().toISOString() };
+export function recordPollAttempt(repo, { issue, outcome, detail, byHand = false, result }) {
+  const row = { repo, issue, outcome, detail: detail ?? null, ...(result ? { result } : {}), at: new Date().toISOString() };
   appendJsonl(pollLedgerFile(), byHand ? { ...row, byHand: true } : row); // an `--issue` run (REQ-LINEAR-14)
 }
 
