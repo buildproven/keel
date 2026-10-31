@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { basename, join, resolve } from 'node:path';
 import { beforeEach, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { parseCard } from '../src/config.js';
 import { formatReport, readLedger, report } from '../src/ledger.js';
-import { buildPrompt, describeStop, nextTier, run, startTier } from '../src/run.js';
-import { fixtureConfig, fixtureRepo, g, tmp } from './helpers.js';
+import { buildPrompt, describeStop, issueStopNote, nextTier, run, startTier } from '../src/run.js';
+import { commit, fixtureConfig, fixtureRepo, g, tmp } from './helpers.js';
 
 const FAKE = fileURLToPath(new URL('./fake-worker.js', import.meta.url));
 const tier = (mode, provider = 'exec') => ({
@@ -339,4 +341,207 @@ test('REQ-RUN-15 the prompt asks for targeted checks only and names the full che
 
 test('REQ-RUN-13 the prompt tells the worker to report an already-satisfied card through KEEL_BLOCKED', () => {
   assert.match(buildPrompt(card(), fixtureConfig(), null), /already satisfied/i);
+});
+
+const config51 = (mode) => fixtureConfig({ tiers: [tier(mode)], learnStart: false, maxAttempts: 1 });
+const card51 = () => card(undefined, 'T-51: fix add');
+const keelBranches = (dir) => g(dir, 'branch', '--list', 'keel/*');
+/** The worktree path run() picks for a card: the repo name, a hash of its path, and the card id. */
+const worktree51 = (dir) =>
+  join(
+    process.env.KEEL_STATE_DIR,
+    'worktrees',
+    `${basename(dir)}-${createHash('sha256').update(resolve(dir)).digest('hex').slice(0, 8)}-T-51`,
+  );
+/**
+ * A preload for `node --import` that answers Linear's GraphQL endpoint from memory, so `keel run BUI-N` runs offline.
+ * KEEL_FAKE_LINEAR is the issue as JSON; KEEL_FAKE_LINEAR_LOG gets each comment body.
+ */
+const FAKE_LINEAR = `// Preload for CLI tests (\`node --import\`): answers Linear's GraphQL endpoint from memory, so \`keel run BUI-N\` runs offline.
+// KEEL_FAKE_LINEAR is a JSON issue (id, title, description, labels, estimate); KEEL_FAKE_LINEAR_LOG gets each comment body.
+import { appendFileSync } from 'node:fs';
+
+const issue = JSON.parse(process.env.KEEL_FAKE_LINEAR);
+const ok = (data) => new Response(JSON.stringify({ data }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+globalThis.fetch = async (_url, init) => {
+  const { query, variables } = JSON.parse(init.body);
+  if (query.includes('commentCreate')) {
+    appendFileSync(process.env.KEEL_FAKE_LINEAR_LOG, \`\${JSON.stringify(variables.body)}\\n\`);
+    return ok({ commentCreate: { success: true } });
+  }
+  if (query.includes('state { type }') && query.includes('issue(id')) return ok({ issue: { state: { type: 'started' } } });
+  // Keel archives the project's closed issues at the start of a pass (REQ-LINEAR-39): none are closed here.
+  if (query.includes('nodes { id identifier }')) return ok({ issues: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] } });
+  if (query.includes('issues(filter')) {
+    return ok({
+      issues: {
+        pageInfo: { hasNextPage: false, endCursor: null },
+        nodes: [
+          {
+            identifier: issue.id,
+            title: issue.title,
+            description: issue.description,
+            priority: 2,
+            createdAt: '2026-10-01T00:00:00Z',
+            estimate: issue.estimate ?? null,
+            labels: { nodes: (issue.labels ?? []).map((name) => ({ name })) },
+            inverseRelations: { nodes: [] },
+          },
+        ],
+      },
+    });
+  }
+  throw new Error(\`fake Linear: unexpected query \${query.slice(0, 80)}\`);
+};
+`;
+const preloadFile = () => {
+  const file = join(tmp('keel-preload-'), 'fake-linear-fetch.mjs');
+  writeFileSync(file, FAKE_LINEAR);
+  return file;
+};
+
+test('REQ-RUN-51 a run that stops before any commit removes its clean worktree and branch', () => {
+  const { dir } = fixtureRepo();
+  const lines = [];
+  const r = run({ repo: dir, card: card51(), config: config51('auth'), log: (l) => lines.push(l) });
+  assert.equal(r.stopped, 'auth');
+  assert.equal(r.worktree, null);
+  assert.ok(!existsSync(worktree51(dir)), 'worktree removed');
+  assert.equal(keelBranches(dir), '', 'branch removed');
+  assert.ok(
+    lines.some((l) => /^removed empty worktree .*stopped before any change/.test(l)),
+    lines.join('\n'),
+  );
+  assert.equal(readLedger().at(-1).workerStatus, 'auth', 'the ledger row stays');
+  const stop = describeStop(r);
+  assert.match(stop, /^STOPPED \(auth\):\n[\s\S]* no worktree kept$/);
+  assert.equal(stop.split(r.failure.trim()).length, 2, 'the failure is printed once');
+  const next = run({ repo: dir, card: card51(), config: config51('good') });
+  assert.equal(next.pass, true, next.failure);
+});
+
+test('REQ-RUN-51 a quota stop with no change frees its worktree too', () => {
+  const { dir } = fixtureRepo();
+  const r = run({ repo: dir, card: card51(), config: config51('quota') });
+  assert.equal(r.stopped, 'quota');
+  assert.equal(r.worktree, null);
+  assert.equal(keelBranches(dir), '');
+});
+
+test('REQ-RUN-51 a run that stopped with a change keeps its worktree and branch', () => {
+  const { dir } = fixtureRepo();
+  const r = run({ repo: dir, card: card51(), config: fixtureConfig({ tiers: [tier('fix-only')], learnStart: false, maxAttempts: 1 }) });
+  assert.equal(r.stopped, 'max-attempts');
+  assert.ok(existsSync(r.worktree));
+  assert.match(keelBranches(dir), /keel\/T-51/);
+});
+
+test('REQ-RUN-51 a crashed worker that changed nothing keeps its worktree for inspection (REQ-RUN-5)', () => {
+  const { dir } = fixtureRepo();
+  const r = run({ repo: dir, card: card51(), config: config51('crash') });
+  assert.equal(r.stopped, 'max-attempts');
+  assert.ok(existsSync(r.worktree));
+});
+
+test('REQ-RUN-51 a blocked run keeps its worktree for inspection (REQ-RUN-13)', () => {
+  const { dir } = fixtureRepo();
+  const r = run({ repo: dir, card: card51(), config: config51('blocked') });
+  assert.equal(r.stopped, 'blocked');
+  assert.ok(existsSync(r.worktree));
+});
+
+const leave51 = (dir, base) => {
+  mkdirSync(join(process.env.KEEL_STATE_DIR, 'worktrees'), { recursive: true });
+  const wt = worktree51(dir);
+  g(dir, 'worktree', 'add', '--quiet', '-b', 'keel/T-51', wt, base);
+  return wt;
+};
+
+test('REQ-RUN-51 a clean worktree at the base does not block the next run', () => {
+  const { dir, base } = fixtureRepo();
+  leave51(dir, base);
+  const lines = [];
+  const r = run({ repo: dir, card: card51(), config: config51('good'), log: (l) => lines.push(l) });
+  assert.equal(r.pass, true, r.failure);
+  assert.ok(
+    lines.some((l) => l.startsWith('removed empty worktree ')),
+    lines.join('\n'),
+  );
+});
+
+test('REQ-RUN-51 a clean worktree behind a base that has moved on does not block the next run', () => {
+  const { dir, base } = fixtureRepo();
+  leave51(dir, base);
+  commit(dir, { 'docs/note.md': 'moved on\n' }, 'docs: move the base');
+  const r = run({ repo: dir, card: card51(), config: config51('good') });
+  assert.equal(r.pass, true, r.failure);
+});
+
+test('REQ-RUN-51 a worktree with a commit, an untracked file, or a tracked change still stops the run', () => {
+  for (const [name, touch] of [
+    ['a commit', (wt) => commit(wt, { 'work.txt': 'kept\n' }, 'wip: human work')],
+    ['an untracked file', (wt) => writeFileSync(join(wt, 'scratch.txt'), 'x\n')],
+    ['a tracked change', (wt) => writeFileSync(join(wt, 'src/add.js'), 'export const add = 1;\n')],
+  ]) {
+    const { dir, base } = fixtureRepo();
+    const wt = leave51(dir, base);
+    touch(wt);
+    assert.throws(() => run({ repo: dir, card: card51(), config: config51('good') }), /worktree exists/, name);
+    assert.ok(existsSync(wt), `${name} kept`);
+    assert.match(keelBranches(dir), /keel\/T-51/, `${name} branch kept`);
+  }
+});
+
+test('REQ-RUN-51 a worktree on a branch other than the card branch is not removed', () => {
+  const { dir, base } = fixtureRepo();
+  const wt = leave51(dir, base);
+  g(wt, 'checkout', '-q', '--detach');
+  assert.throws(() => run({ repo: dir, card: card51(), config: config51('good') }), /worktree exists/);
+  assert.ok(existsSync(wt));
+});
+
+test('REQ-RUN-51 issueStopNote names the stop class and the first line of the failure', () => {
+  assert.equal(issueStopNote({ pass: true }), '');
+  assert.equal(issueStopNote(undefined), '');
+  assert.equal(issueStopNote({ pass: false, stopped: 'auth', failure: '\n  Not logged in.\nsecond line' }), ' (auth: Not logged in.)');
+  assert.equal(issueStopNote({ pass: false, stopped: 'quota', failure: '' }), ' (quota)');
+  assert.equal(issueStopNote({ pass: false, stopped: 'quota' }), ' (quota)');
+  const long = issueStopNote({ pass: false, stopped: 'max-attempts', failure: 'x'.repeat(500) });
+  assert.ok(long.length < 230, long);
+});
+
+test('REQ-RUN-51 keel run of a Linear issue prints the stop class and failure on a failed run, and the next run proceeds', () => {
+  const { dir: origin } = fixtureRepo();
+  const json = { checks: { test: 'true' }, testCommand: 'true', linearProject: 'demo', review: false, learnStart: false, maxAttempts: 1 };
+  const keelJson = (mode) => JSON.stringify({ ...json, tiers: [tier(mode)] });
+  commit(origin, { 'keel.json': keelJson('auth') }, 'chore: keel config');
+  const dir = realpathSync(tmp('keel-clone-'));
+  g(dir, 'clone', '-q', origin, '.');
+  const logFile = join(tmp('keel-linear-'), 'comments.jsonl');
+  const env = {
+    ...process.env,
+    KEEL_STATE_DIR: process.env.KEEL_STATE_DIR,
+    TMPDIR: tmp('keel-tmpdir-'),
+    LINEAR_API_KEY: 'lin_api_test',
+    NODE_OPTIONS: `--import=${preloadFile()}`,
+    KEEL_FAKE_LINEAR: JSON.stringify({
+      id: 'BUI-51',
+      title: 'fix add',
+      description: '- REQ-ADD-1: add shall sum.',
+      labels: ['Bug'],
+      estimate: 2,
+    }),
+    KEEL_FAKE_LINEAR_LOG: logFile,
+  };
+  const keel = () => spawnSync(process.execPath, [resolve('bin/keel.js'), 'run', 'BUI-51'], { cwd: dir, encoding: 'utf8', env });
+  const first = keel();
+  assert.equal(first.status, 1, first.stderr);
+  assert.match(first.stderr, /^keel: BUI-51: failed \(auth: .+\)$/m);
+  assert.doesNotMatch(first.stderr, /worktree exists/);
+  assert.equal(g(dir, 'branch', '--list', 'keel/*'), '', 'no branch left');
+  assert.match(readFileSync(logFile, 'utf8'), /auth/);
+  const second = keel();
+  assert.doesNotMatch(second.stderr, /worktree exists/, second.stderr);
+  assert.match(second.stderr, /^keel: BUI-51: failed \(auth: /m, 'the second run reached the worker again');
 });

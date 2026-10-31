@@ -25,7 +25,7 @@ import { cardLease, describeConflicts, overlapWarnings } from '../src/lease.js';
 import { linearHttpClient } from '../src/linear-http.js';
 import { networkFailure } from '../src/network.js';
 import { poll, pollExitCode, resolveProject } from '../src/poll.js';
-import { describeStop, run } from '../src/run.js';
+import { describeStop, issueStopNote, run } from '../src/run.js';
 import { sizeWarning, stackWarnings } from '../src/stack.js';
 import { UsageError } from '../src/usage.js';
 import { RECUR_DAYS, formatRecurring, readReceipts, recurring } from '../src/recur.js';
@@ -264,7 +264,7 @@ if (values.version && command) {
         issue: values.issue ?? null,
         fileOnly: Boolean(values['file-only']),
       });
-      for (const r of results) log(`${r.issue ?? '(none)'}: ${r.outcome}`);
+      for (const r of results) log(`${r.issue ?? '(none)'}: ${r.outcome}${issueStopNote(r.result)}`);
       process.exitCode = pollExitCode(results);
     } else if (command === 'doctor') {
       const base = values.base ?? 'HEAD';
