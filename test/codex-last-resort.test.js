@@ -82,6 +82,20 @@ test('REQ-GATE-54 a diff under a risk path, or over maxLines, is reviewed by the
   }
 });
 
+test('REQ-GATE-54 a binary change is never routine, since its size is unknown', () => {
+  const { dir, base } = fixtureRepo();
+  commit(dir, { ...REGRESSION_TEST, ...FIXED_SRC, 'assets/logo.bin': 'GIF89a\0\0\0\0' });
+  const r = gate({
+    repo: dir,
+    base,
+    card: card(),
+    config: fixtureConfig({ review: true, lastResort: ['codex'], tiers: [claude, codex] }),
+    reviewer: codex,
+  });
+  assert.equal(review(r).reviewer, 'exec/exec-codex/high', JSON.stringify(review(r)));
+  assert.equal(review(r).fallback, undefined);
+});
+
 test('REQ-GATE-54 a routine review is off when routineReview is null or reviewFallback is off', () => {
   for (const over of [{ routineReview: null }, { reviewFallback: false }]) {
     const { dir, base } = fixtureRepo();

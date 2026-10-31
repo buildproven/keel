@@ -56,7 +56,9 @@ export function routineDiff(config, reviewer, repo, base, head) {
     .split('\n')
     .filter(Boolean)
     .map((l) => l.split('\t'));
-  const lines = rows.reduce((n, [added, deleted]) => n + (Number(added) || 0) + (Number(deleted) || 0), 0);
+  // numstat prints `-` for a binary file: its size is unknown, so it is never routine.
+  if (rows.some(([added, deleted]) => added === '-' || deleted === '-')) return false;
+  const lines = rows.reduce((n, [added, deleted]) => n + Number(added) + Number(deleted), 0);
   const risky = rows.some(([, , path]) => rr.riskPaths.some((p) => path.toLowerCase().includes(p.toLowerCase())));
   return !risky && lines <= rr.maxLines;
 }
