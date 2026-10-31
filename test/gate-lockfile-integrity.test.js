@@ -180,19 +180,33 @@ test('REQ-GATE-54 a v1 lockfile without a packages map is valid', () => {
   assert.deepEqual(integrityProblems(gate({ repo: dir, base, card, config: fixtureConfig() })), []);
 });
 
-test('REQ-GATE-54 an entry with a malformed version or field types cannot skip the integrity check', () => {
+test('REQ-GATE-54 an entry with non-string fields is malformed; an emptied entry is an integrity drop', () => {
   const path = 'node_modules/pkg';
   const complete = lockfile({ '': { name: 'fixture' }, [path]: registryEntry() });
-  const cases = {
-    numericVersion: { version: 1 },
-    empty: {},
-    nonStringIntegrity: { version: '1.2.3', resolved: registryEntry().resolved, integrity: 5 },
-  };
-  for (const [label, entry] of Object.entries(cases)) {
+  const lockPath = 'package-lock.json';
+  const cases = [
+    [
+      'numeric version, intact fields',
+      registryEntry({ version: 1 }),
+      { rule: 'lockfile-integrity', path: lockPath, detail: `candidate package-lock.json entry "${path}" has a non-string version` },
+    ],
+    [
+      'numeric version only',
+      { version: 1 },
+      { rule: 'lockfile-integrity', path: lockPath, detail: `candidate package-lock.json entry "${path}" has a non-string version` },
+    ],
+    [
+      'non-string integrity',
+      registryEntry({ integrity: 5 }),
+      { rule: 'lockfile-integrity', path: lockPath, detail: `candidate package-lock.json entry "${path}" has a non-string integrity` },
+    ],
+    ['emptied entry', {}, { rule: 'lockfile-integrity', path }],
+  ];
+  for (const [label, entry, problem] of cases) {
     const { dir, base } = fixtureRepo({ ...BUGGY, 'package-lock.json': complete });
     commit(dir, { 'notes.txt': `${label}\n`, 'package-lock.json': lockfile({ '': { name: 'fixture' }, [path]: entry }) });
     const failed = gate({ repo: dir, base, card, config: fixtureConfig() });
     assert.equal(failed.pass, false, label);
-    assert.deepEqual(integrityProblems(failed), [{ rule: 'lockfile-integrity', path }], label);
+    assert.deepEqual(integrityProblems(failed), [problem], label);
   }
 });

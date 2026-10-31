@@ -186,14 +186,19 @@ export function scriptsChanged(before, after) {
 
 const NON_REGISTRY_SOURCE = /^(?:file:|link:|git(?:\+[^:]+)?:|github:|gitlab:|bitbucket:|ssh:|git@)/i;
 const isPlainObject = (value) => typeof value === 'object' && value !== null && !Array.isArray(value);
+const LOCK_STRING_FIELDS = ['version', 'resolved', 'integrity'];
 /** Why a parsed candidate package-lock cannot be verified, or null when its shape is valid (REQ-GATE-54). */
 function lockfileShapeProblem(lock) {
   if (!isPlainObject(lock)) return 'candidate package-lock.json is not an object';
   if (![1, 2, 3].includes(lock.lockfileVersion)) return 'candidate package-lock.json has no valid lockfileVersion (1, 2, or 3)';
   if (lock.lockfileVersion === 1) return null; // v1 keeps entries under `dependencies` and has no `packages` map.
   if (!isPlainObject(lock.packages)) return 'candidate package-lock.json has no packages map';
-  const bad = Object.keys(lock.packages).find((path) => !isPlainObject(lock.packages[path]));
-  return bad === undefined ? null : `candidate package-lock.json entry ${JSON.stringify(bad)} is not an object`;
+  for (const [path, entry] of Object.entries(lock.packages)) {
+    if (!isPlainObject(entry)) return `candidate package-lock.json entry ${JSON.stringify(path)} is not an object`;
+    const field = LOCK_STRING_FIELDS.find((name) => name in entry && typeof entry[name] !== 'string');
+    if (field) return `candidate package-lock.json entry ${JSON.stringify(path)} has a non-string ${field}`;
+  }
+  return null;
 }
 
 const hasValue = (entry, field) => typeof entry?.[field] === 'string' && entry[field].length > 0;
