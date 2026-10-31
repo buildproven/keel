@@ -118,7 +118,7 @@ export const DEFAULTS = {
   // lastResortLimits (REQ-PLAN-7). Only an escalation after the other tiers failed, or a risky review, reaches it.
   lastResort: ['codex'],
   lastResortLimits: { fiveHour: 50, week: 50 },
-  // A diff the last-resort family reviews: any file under riskPaths (substring, case-insensitive) or more than maxLines
+  // The last-resort family reviews a diff with a file under riskPaths (substring, case-insensitive) or more than maxLines
   // added plus deleted lines. Every other diff is reviewed by a fresh session of the strongest other tier (REQ-GATE-45).
   routineReview: {
     maxLines: 150,
