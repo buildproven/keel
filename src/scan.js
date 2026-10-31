@@ -184,7 +184,8 @@ export function scriptsChanged(before, after) {
   return scripts(before) !== scripts(after);
 }
 
-const NON_REGISTRY_SOURCE = /^(?:file:|link:|git(?:\+[^:]+)?:|github:|gitlab:|bitbucket:|ssh:|git@)/i;
+// The non-registry sources REQ-GATE-54 names, and no others: a candidate cannot invent a prefix to skip the check.
+const NON_REGISTRY_SOURCE = /^(?:file:|git:|git\+(?:https?|ssh|file):|github:|gitlab:|bitbucket:|ssh:|git@)/i;
 const isPlainObject = (value) => typeof value === 'object' && value !== null && !Array.isArray(value);
 const LOCK_STRING_FIELDS = ['version', 'resolved', 'integrity'];
 /** Why a parsed candidate package-lock cannot be verified, or null when its shape is valid (REQ-GATE-54). */

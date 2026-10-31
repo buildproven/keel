@@ -210,3 +210,26 @@ test('REQ-GATE-54 an entry with non-string fields is malformed; an emptied entry
     assert.deepEqual(integrityProblems(failed), [problem], label);
   }
 });
+
+test('REQ-GATE-54 only the named non-registry sources skip the check; invented prefixes do not', () => {
+  const path = 'node_modules/pkg';
+  const complete = lockfile({ '': { name: 'fixture' }, [path]: registryEntry() });
+  for (const resolved of ['link:../pkg', 'git+evil:example/pkg', 'git+anything://host/pkg']) {
+    const { dir, base } = fixtureRepo({ ...BUGGY, 'package-lock.json': complete });
+    commit(dir, {
+      'notes.txt': `${resolved}\n`,
+      'package-lock.json': lockfile({ '': { name: 'fixture' }, [path]: { version: '1.2.3', resolved } }),
+    });
+    const failed = gate({ repo: dir, base, card, config: fixtureConfig() });
+    assert.equal(failed.pass, false, resolved);
+    assert.deepEqual(integrityProblems(failed), [{ rule: 'lockfile-integrity', path }], resolved);
+  }
+  for (const resolved of ['git+https://github.com/example/pkg.git#abc', 'git+ssh://git@github.com/example/pkg.git', 'github:example/pkg']) {
+    const { dir, base } = fixtureRepo({ ...BUGGY, 'package-lock.json': complete });
+    commit(dir, {
+      'notes.txt': `${resolved}\n`,
+      'package-lock.json': lockfile({ '': { name: 'fixture' }, [path]: { version: '1.2.3', resolved } }),
+    });
+    assert.deepEqual(integrityProblems(gate({ repo: dir, base, card, config: fixtureConfig() })), [], resolved);
+  }
+});
