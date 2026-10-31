@@ -138,3 +138,25 @@ test('REQ-GATE-54 malformed candidate lockfile fails visibly', () => {
   const repaired = gate({ repo: repairDir, base: repairBase, card, config: fixtureConfig() });
   assert.equal(repaired.pass, true, JSON.stringify(repaired.results, null, 2));
 });
+
+test('REQ-GATE-54 a v2+ lockfile without a packages map fails lockfile-integrity', () => {
+  const complete = lockfile({ '': { name: 'fixture' }, 'node_modules/pkg': registryEntry() });
+  const malformed = {
+    missing: { name: 'fixture', lockfileVersion: 3 },
+    scalar: { name: 'fixture', lockfileVersion: 3, packages: 'oops' },
+    array: { name: 'fixture', lockfileVersion: 3, packages: [] },
+    nullPackages: { name: 'fixture', lockfileVersion: 2, packages: null },
+    notAnObject: [],
+  };
+  for (const [label, body] of Object.entries(malformed)) {
+    const { dir, base } = fixtureRepo({ ...BUGGY, 'package-lock.json': complete });
+    commit(dir, { 'notes.txt': `${label}\n`, 'package-lock.json': `${JSON.stringify(body)}\n` });
+    const failed = gate({ repo: dir, base, card, config: fixtureConfig() });
+    assert.equal(failed.pass, false, label);
+    assert.deepEqual(
+      integrityProblems(failed),
+      [{ rule: 'lockfile-integrity', path: 'package-lock.json', detail: 'candidate package-lock.json has no packages map' }],
+      label,
+    );
+  }
+});

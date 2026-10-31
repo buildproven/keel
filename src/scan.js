@@ -185,6 +185,7 @@ export function scriptsChanged(before, after) {
 }
 
 const NON_REGISTRY_SOURCE = /^(?:file:|link:|git(?:\+[^:]+)?:|github:|gitlab:|bitbucket:|ssh:|git@)/i;
+const isPlainObject = (value) => typeof value === 'object' && value !== null && !Array.isArray(value);
 const hasValue = (entry, field) => typeof entry?.[field] === 'string' && entry[field].length > 0;
 const nonRegistrySource = (value) =>
   typeof value === 'string' && (NON_REGISTRY_SOURCE.test(value) || /^https?:\/\/.*\.git(?:[#?]|$)/i.test(value));
@@ -195,13 +196,17 @@ const nonRegistrySource = (value) =>
  */
 export function lockfileIntegrityProblems(beforeText, afterText) {
   if (afterText === null) return [];
-  let after;
+  let afterLock;
   try {
-    after = JSON.parse(afterText)?.packages;
+    afterLock = JSON.parse(afterText);
   } catch (error) {
     if (!(error instanceof SyntaxError)) throw error;
     return [{ rule: 'lockfile-integrity', path: 'package-lock.json', detail: 'candidate package-lock.json is not valid JSON' }];
   }
+  // lockfileVersion 2+ records every entry under `packages`; without that map nothing can be verified.
+  if (!isPlainObject(afterLock) || (afterLock.lockfileVersion >= 2 && !isPlainObject(afterLock.packages)))
+    return [{ rule: 'lockfile-integrity', path: 'package-lock.json', detail: 'candidate package-lock.json has no packages map' }];
+  const after = afterLock.packages;
   if (beforeText === null) return [];
   let before;
   try {
@@ -210,7 +215,7 @@ export function lockfileIntegrityProblems(beforeText, afterText) {
     if (!(error instanceof SyntaxError)) throw error;
     return []; // REQ-GATE-54 needs a valid merge-base entry to prove that verification fields were dropped.
   }
-  if (!before || typeof before !== 'object' || !after || typeof after !== 'object') return [];
+  if (!isPlainObject(before) || !isPlainObject(after)) return [];
   const problems = [];
   for (const [path, entry] of Object.entries(after)) {
     const previous = before[path];
