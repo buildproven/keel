@@ -139,24 +139,43 @@ test('REQ-GATE-54 malformed candidate lockfile fails visibly', () => {
   assert.equal(repaired.pass, true, JSON.stringify(repaired.results, null, 2));
 });
 
-test('REQ-GATE-54 a v2+ lockfile without a packages map fails lockfile-integrity', () => {
+test('REQ-GATE-54 a structurally malformed candidate lockfile fails lockfile-integrity', () => {
   const complete = lockfile({ '': { name: 'fixture' }, 'node_modules/pkg': registryEntry() });
-  const malformed = {
-    missing: { name: 'fixture', lockfileVersion: 3 },
-    scalar: { name: 'fixture', lockfileVersion: 3, packages: 'oops' },
-    array: { name: 'fixture', lockfileVersion: 3, packages: [] },
-    nullPackages: { name: 'fixture', lockfileVersion: 2, packages: null },
-    notAnObject: [],
-  };
-  for (const [label, body] of Object.entries(malformed)) {
+  const noMap = 'candidate package-lock.json has no packages map';
+  const noVersion = 'candidate package-lock.json has no valid lockfileVersion (1, 2, or 3)';
+  const cases = [
+    ['packages missing', { name: 'fixture', lockfileVersion: 3 }, noMap],
+    ['packages scalar', { name: 'fixture', lockfileVersion: 3, packages: 'oops' }, noMap],
+    ['packages array', { name: 'fixture', lockfileVersion: 3, packages: [] }, noMap],
+    ['packages null', { name: 'fixture', lockfileVersion: 2, packages: null }, noMap],
+    ['version missing', { name: 'fixture', packages: {} }, noVersion],
+    ['version null', { name: 'fixture', lockfileVersion: null, packages: {} }, noVersion],
+    ['version string', { name: 'fixture', lockfileVersion: '3', packages: {} }, noVersion],
+    ['version unknown', { name: 'fixture', lockfileVersion: 9, packages: {} }, noVersion],
+    ['root array', [], 'candidate package-lock.json is not an object'],
+    [
+      'entry scalar',
+      { name: 'fixture', lockfileVersion: 3, packages: { '': { name: 'fixture' }, 'node_modules/pkg': 'x' } },
+      'candidate package-lock.json entry "node_modules/pkg" is not an object',
+    ],
+    [
+      'entry null',
+      { name: 'fixture', lockfileVersion: 3, packages: { '': { name: 'fixture' }, 'node_modules/pkg': null } },
+      'candidate package-lock.json entry "node_modules/pkg" is not an object',
+    ],
+  ];
+  for (const [label, body, detail] of cases) {
     const { dir, base } = fixtureRepo({ ...BUGGY, 'package-lock.json': complete });
     commit(dir, { 'notes.txt': `${label}\n`, 'package-lock.json': `${JSON.stringify(body)}\n` });
     const failed = gate({ repo: dir, base, card, config: fixtureConfig() });
     assert.equal(failed.pass, false, label);
-    assert.deepEqual(
-      integrityProblems(failed),
-      [{ rule: 'lockfile-integrity', path: 'package-lock.json', detail: 'candidate package-lock.json has no packages map' }],
-      label,
-    );
+    assert.deepEqual(integrityProblems(failed), [{ rule: 'lockfile-integrity', path: 'package-lock.json', detail }], label);
   }
+});
+
+test('REQ-GATE-54 a v1 lockfile without a packages map is valid', () => {
+  const v1 = `${JSON.stringify({ name: 'fixture', lockfileVersion: 1, dependencies: {} })}\n`;
+  const { dir, base } = fixtureRepo({ ...BUGGY, 'package-lock.json': v1 });
+  commit(dir, { 'notes.txt': 'v1\n', 'package-lock.json': v1.replace('{}', '{"a":{"version":"1.0.0"}}') });
+  assert.deepEqual(integrityProblems(gate({ repo: dir, base, card, config: fixtureConfig() })), []);
 });
