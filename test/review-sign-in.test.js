@@ -22,8 +22,7 @@ const tier = (family, model, script) => ({
 // What the Claude CLI prints when it cannot read its login (2026-10-21, over SSH on the MacBook Pro).
 const signedOut = tier('claude', 'claude-out', "console.log('Not logged in · Please run /login'); process.exit(1);");
 const codexOut = tier('codex', 'codex-out', "console.error('unexpected status 401 Unauthorized'); process.exit(1);");
-// Two hours ahead, as the provider writes it. A fixed clock time can be over a day away on the eve of a DST change, and
-// during the fall-back hour one hour ahead repeats the same clock time; two hours ahead is always a later clock time.
+// A reset two hours ahead, as the provider writes it (a fixed clock time can be more than a day away near a DST change).
 const resetAt = new Date(Date.now() + 2 * 3600 * 1000).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 const quota = tier('codex', 'codex-top', `console.error('You have hit your usage limit. Try again at ${resetAt}.'); process.exit(1);`);
 const passes = tier('claude', 'claude-ok', "console.log('VERDICT: pass');");
@@ -59,7 +58,8 @@ test('REQ-GATE-53 the fix names the CLI of the reviewer family, and a quota outa
 
 test('REQ-GATE-53 with waitReview, the sign-in fix is printed before the gate waits for a reset', () => {
   const logged = [];
-  run([signedOut, quota], quota, { waitReviewHours: 24, sleep: () => {}, log: (l) => logged.push(l) });
+  // The cap only has to cover the reset: 48 h holds it in any zone, whatever a DST change does to the clock.
+  run([signedOut, quota], quota, { waitReviewHours: 48, sleep: () => {}, log: (l) => logged.push(l) });
   const wait = logged.findIndex((l) => /waiting/.test(l));
   const fix = logged.findIndex((l) => /cannot sign in/.test(l));
   assert.ok(wait >= 0, JSON.stringify(logged));
