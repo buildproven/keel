@@ -179,3 +179,20 @@ test('REQ-GATE-54 a v1 lockfile without a packages map is valid', () => {
   commit(dir, { 'notes.txt': 'v1\n', 'package-lock.json': v1.replace('{}', '{"a":{"version":"1.0.0"}}') });
   assert.deepEqual(integrityProblems(gate({ repo: dir, base, card, config: fixtureConfig() })), []);
 });
+
+test('REQ-GATE-54 an entry with a malformed version or field types cannot skip the integrity check', () => {
+  const path = 'node_modules/pkg';
+  const complete = lockfile({ '': { name: 'fixture' }, [path]: registryEntry() });
+  const cases = {
+    numericVersion: { version: 1 },
+    empty: {},
+    nonStringIntegrity: { version: '1.2.3', resolved: registryEntry().resolved, integrity: 5 },
+  };
+  for (const [label, entry] of Object.entries(cases)) {
+    const { dir, base } = fixtureRepo({ ...BUGGY, 'package-lock.json': complete });
+    commit(dir, { 'notes.txt': `${label}\n`, 'package-lock.json': lockfile({ '': { name: 'fixture' }, [path]: entry }) });
+    const failed = gate({ repo: dir, base, card, config: fixtureConfig() });
+    assert.equal(failed.pass, false, label);
+    assert.deepEqual(integrityProblems(failed), [{ rule: 'lockfile-integrity', path }], label);
+  }
+});

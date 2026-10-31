@@ -228,7 +228,8 @@ export function lockfileIntegrityProblems(beforeText, afterText) {
   const problems = [];
   for (const [path, entry] of Object.entries(after)) {
     const previous = before[path];
-    if (!entry || typeof entry !== 'object' || !previous || typeof previous !== 'object' || !hasValue(entry, 'version')) continue;
+    // Every candidate entry is an object (lockfileShapeProblem); its version is not trusted to decide whether it is checked.
+    if (!isPlainObject(previous)) continue;
     if (entry.inBundle === true || previous.inBundle === true || entry.link === true || previous.link === true) continue;
     if ([entry.version, entry.resolved, previous.version, previous.resolved].some(nonRegistrySource)) continue;
     if (
