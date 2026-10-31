@@ -114,6 +114,16 @@ export const DEFAULTS = {
   dailyBudgetUsd: null,
   // Plan window percents at which `keel poll` stops using a subscription provider; null turns it off (REQ-PLAN-2).
   planLimits: { fiveHour: 90, week: 80 },
+  // Providers on a small plan (a $20 Codex plan): a tier on one is never a learned start, and it is reserved at the lower
+  // lastResortLimits (REQ-PLAN-7). Only an escalation after the other tiers failed, or a risky review, reaches it.
+  lastResort: ['codex'],
+  lastResortLimits: { fiveHour: 50, week: 50 },
+  // The last-resort family reviews a diff with a file under riskPaths (substring, case-insensitive) or more than maxLines
+  // added plus deleted lines. Every other diff is reviewed by a fresh session of the strongest other tier (REQ-GATE-54).
+  routineReview: {
+    maxLines: 150,
+    riskPaths: ['auth', 'payment', 'billing', 'stripe', 'secret', 'migration', '.github/', 'keel.json', 'security'],
+  },
   // Found-work issues `keel poll` may file per repo per UTC day (REQ-LINEAR-22); 0 turns filing off.
   followUpsPerDay: 5,
   // Unarchived Linear issues in the workspace at which `keel poll` stops filing found work (REQ-LINEAR-37); 0 = off.
@@ -224,6 +234,16 @@ function validate(c) {
   const pct = (n) => typeof n === 'number' && n > 0 && n <= 100;
   if (pl !== null && !(table(pl) && Object.keys(pl).sort().join() === 'fiveHour,week' && pct(pl.fiveHour) && pct(pl.week)))
     bad('"planLimits" must be null or { fiveHour, week }, each a percent above 0 and at most 100');
+  if (!Array.isArray(c.lastResort) || !c.lastResort.every((p) => PROVIDERS.includes(p))) bad('"lastResort" must be a list of providers');
+  const lrl = c.lastResortLimits;
+  if (!(table(lrl) && Object.keys(lrl).sort().join() === 'fiveHour,week' && pct(lrl.fiveHour) && pct(lrl.week)))
+    bad('"lastResortLimits" must be { fiveHour, week }, each a percent above 0 and at most 100');
+  const rr = c.routineReview;
+  if (
+    rr !== null &&
+    !(table(rr) && positive(rr.maxLines) && Array.isArray(rr.riskPaths) && rr.riskPaths.every((p) => typeof p === 'string'))
+  )
+    bad('"routineReview" must be null or { maxLines, riskPaths }');
   if (!Number.isInteger(c.followUpsPerDay) || c.followUpsPerDay < 0) bad('"followUpsPerDay" must be an integer ≥ 0');
   if (!Number.isInteger(c.followUpHoldAt) || c.followUpHoldAt < 0) bad('"followUpHoldAt" must be an integer ≥ 0');
   if (!Number.isInteger(c.worktreeKeepDays) || c.worktreeKeepDays < 0) bad('"worktreeKeepDays" must be an integer ≥ 0');

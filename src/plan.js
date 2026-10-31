@@ -119,12 +119,13 @@ export function readPlan(
 const NAMES = { fiveHour: '5h', week: 'week' };
 
 /** Providers with a window at or over its `planLimits` percent, each with why (REQ-PLAN-2); an unknown window never counts. */
-export function reservedProviders(plan, limits) {
+export function reservedProviders(plan, limits, lastResort = [], lastResortLimits = limits) {
   const out = new Map();
   for (const [provider, w] of Object.entries(plan)) {
+    const limits_ = lastResort.includes(provider) ? lastResortLimits : limits;
     const over = Object.keys(NAMES)
-      .filter((k) => typeof w?.[k]?.used === 'number' && w[k].used >= limits[k])
-      .map((k) => `${NAMES[k]} ${w[k].used}% ≥ ${limits[k]}%`);
+      .filter((k) => typeof w?.[k]?.used === 'number' && w[k].used >= limits_[k])
+      .map((k) => `${NAMES[k]} ${w[k].used}% ≥ ${limits_[k]}%`);
     if (over.length) out.set(provider, over.join(', '));
   }
   return out;
@@ -143,11 +144,11 @@ export function planLine(plan) {
 }
 
 /** The earliest reset among the windows that reserve a provider, as local time, or null. */
-export function nextReset(plan, limits) {
-  const at = Object.values(plan)
-    .flatMap((w) =>
+export function nextReset(plan, limits, lastResort = [], lastResortLimits = limits) {
+  const at = Object.entries(plan)
+    .flatMap(([provider, w]) =>
       Object.keys(NAMES)
-        .filter((k) => typeof w?.[k]?.used === 'number' && w[k].used >= limits[k])
+        .filter((k) => typeof w?.[k]?.used === 'number' && w[k].used >= (lastResort.includes(provider) ? lastResortLimits : limits)[k])
         .map((k) => w[k].resetsAt),
     )
     .filter((s) => typeof s === 'number')
