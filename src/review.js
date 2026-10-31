@@ -45,7 +45,7 @@ export function windowFallback(config, reviewer, spendFile) {
 
 /**
  * Whether `reviewer` is on a last-resort provider (REQ-PLAN-7) and the diff from `base` to `head` is routine
- * (REQ-GATE-54): no file under `routineReview.riskPaths` and at most `routineReview.maxLines` added plus deleted lines.
+ * (REQ-GATE-55): no file under `routineReview.riskPaths` and at most `routineReview.maxLines` added plus deleted lines.
  * A routine diff is reviewed by another tier first, so a small plan is spent on risky diffs.
  */
 export function routineDiff(config, reviewer, repo, base, head) {
@@ -161,7 +161,7 @@ export function reviewStage({ repo, base, head, card, config, changed, reviewer,
   if (!reviewer) return { name: 'review', pass: false, problems: [{ rule: 'no-cross-reviewer' }] };
   const chain = config.reviewFallback ? fallbackReviewers(config, reviewer) : [];
   // A reviewer whose window is nearly used goes after the first fallback whose window is not (REQ-GATE-24).
-  // A routine diff goes to the strongest tier off the last-resort providers first (REQ-GATE-54).
+  // A routine diff goes to the strongest tier off the last-resort providers first (REQ-GATE-55).
   const routine =
     config.reviewFallback && routineDiff(config, reviewer, repo, base, head)
       ? chain.find((t) => !config.lastResort.includes(family(t)))
