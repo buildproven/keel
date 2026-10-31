@@ -184,6 +184,70 @@ export function scriptsChanged(before, after) {
   return scripts(before) !== scripts(after);
 }
 
+// The non-registry sources REQ-GATE-54 names, and no others: a candidate cannot invent a prefix to skip the check.
+const NON_REGISTRY_SOURCE = /^(?:file:|git:|git\+(?:https?|ssh|file):|github:|gitlab:|bitbucket:|ssh:|git@)/i;
+const isPlainObject = (value) => typeof value === 'object' && value !== null && !Array.isArray(value);
+const LOCK_STRING_FIELDS = ['version', 'resolved', 'integrity'];
+/** Why a parsed candidate package-lock cannot be verified, or null when its shape is valid (REQ-GATE-54). */
+function lockfileShapeProblem(lock) {
+  if (!isPlainObject(lock)) return 'candidate package-lock.json is not an object';
+  if (![1, 2, 3].includes(lock.lockfileVersion)) return 'candidate package-lock.json has no valid lockfileVersion (1, 2, or 3)';
+  if (lock.lockfileVersion === 1) return null; // v1 keeps entries under `dependencies` and has no `packages` map.
+  if (!isPlainObject(lock.packages)) return 'candidate package-lock.json has no packages map';
+  for (const [path, entry] of Object.entries(lock.packages)) {
+    if (!isPlainObject(entry)) return `candidate package-lock.json entry ${JSON.stringify(path)} is not an object`;
+    const field = LOCK_STRING_FIELDS.find((name) => name in entry && typeof entry[name] !== 'string');
+    if (field) return `candidate package-lock.json entry ${JSON.stringify(path)} has a non-string ${field}`;
+  }
+  return null;
+}
+
+const hasValue = (entry, field) => typeof entry?.[field] === 'string' && entry[field].length > 0;
+const nonRegistrySource = (value) =>
+  typeof value === 'string' && (NON_REGISTRY_SOURCE.test(value) || /^https?:\/\/.*\.git(?:[#?]|$)/i.test(value));
+
+/**
+ * Problems in a candidate package-lock whose registry entries lose verification fields they had at the merge base
+ * (REQ-GATE-54). Bundled, linked, file, and git sources do not use registry tarball verification fields.
+ */
+export function lockfileIntegrityProblems(beforeText, afterText) {
+  if (afterText === null) return [];
+  let afterLock;
+  try {
+    afterLock = JSON.parse(afterText);
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    return [{ rule: 'lockfile-integrity', path: 'package-lock.json', detail: 'candidate package-lock.json is not valid JSON' }];
+  }
+  const malformed = lockfileShapeProblem(afterLock);
+  if (malformed) return [{ rule: 'lockfile-integrity', path: 'package-lock.json', detail: malformed }];
+  const after = afterLock.packages;
+  if (beforeText === null) return [];
+  let before;
+  try {
+    before = JSON.parse(beforeText)?.packages;
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    return []; // REQ-GATE-54 needs a valid merge-base entry to prove that verification fields were dropped.
+  }
+  if (!isPlainObject(before) || !isPlainObject(after)) return [];
+  const problems = [];
+  for (const [path, entry] of Object.entries(after)) {
+    const previous = before[path];
+    // Every candidate entry is an object (lockfileShapeProblem); its version is not trusted to decide whether it is checked.
+    if (!isPlainObject(previous)) continue;
+    if (entry.inBundle === true || previous.inBundle === true || entry.link === true || previous.link === true) continue;
+    if ([entry.version, entry.resolved, previous.version, previous.resolved].some(nonRegistrySource)) continue;
+    if (
+      hasValue(previous, 'integrity') &&
+      hasValue(previous, 'resolved') &&
+      (!hasValue(entry, 'integrity') || !hasValue(entry, 'resolved'))
+    )
+      problems.push({ rule: 'lockfile-integrity', path });
+  }
+  return problems;
+}
+
 // Tools whose pyproject.toml tables configure tests, lint, or types; a change here redefines "passing" (REQ-PROJ-4).
 // Other tables (dependencies, build-system, project metadata, other tools) stay free to change.
 const LOCKED_TOOLS = new Set(['pytest', 'ruff', 'mypy', 'pyright', 'coverage']);
