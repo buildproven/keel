@@ -28,6 +28,9 @@ import { UsageError } from './usage.js';
 // Stops caused by a provider, not by the card or the code (REQ-LINEAR-19).
 const TRANSIENT_STOPS = new Set(['quota', 'review-unavailable']);
 
+// Linear state types of a closed issue, which Keel never reopens (REQ-LINEAR-16).
+const CLOSED = new Set(['completed', 'canceled']);
+
 /**
  * Exit code of `keel poll` and `keel run <ISSUE-ID>` (REQ-RUN-20): 1 when a run failed, was blocked,
  * lost its PR, or its auto-merge call or a self-merge (REQ-MERGE-3) failed; 3 when budget, a provider, or a path lease (REQ-LEASE-3) deferred work;
@@ -661,7 +664,7 @@ async function runOne({ repo, base, pr, merge, log, config, client, issue: picke
       issue: issue.id,
       outcome,
       detail: e.message,
-      result: outcome === 'reportFailed' ? reportableResult(result) : undefined,
+      result: outcome === 'reportFailed' ? result : undefined,
     });
     const down = networkFailure(e);
     // Linear never heard of this build, and the issue state is unchanged: say which issue, so a human reports it (REQ-LINEAR-40).
@@ -671,16 +674,6 @@ async function runOne({ repo, base, pr, merge, log, config, client, issue: picke
       );
     throw e;
   }
-}
-
-/** The parts of a run result that reporting reads (REQ-LINEAR-6), small enough for a ledger row. */
-function reportableResult(result) {
-  const { pass, stopped, tier, attempt, branch, worktree, failure, pr, merge, needsReview, pendingReview, followUps } = result;
-  const kept = { pass, stopped, tier, attempt, branch, worktree, failure, pr, merge, needsReview, pendingReview, followUps };
-  return {
-    ...Object.fromEntries(Object.entries(kept).filter(([, v]) => v !== undefined)),
-    ...(result.receipt?.head ? { receipt: { head: result.receipt.head } } : {}),
-  };
 }
 
 /**
@@ -693,21 +686,27 @@ async function retryReports({ repo, base, config, client, log, skip = null }) {
   for (const [id, result] of unreportedRuns(repo)) {
     if (id === skip) continue;
     try {
-      const outcome = await reportRun({ repo, base, config, client, issue: { id }, result });
+      const state = await client.stateType(id);
+      // Closed since, often by the merged PR's `Closes` line: never reopen it (REQ-LINEAR-16), and post nothing that
+      // calls its branch unneeded. The report is done.
+      const outcome = CLOSED.has(state)
+        ? { outcome: 'closedMeanwhile', issue: id, result, detail: `closed (${state}) before the report was retried` }
+        : await reportRun({ repo, base, config, client, issue: { id }, result, state });
       recordPollAttempt(repo, { issue: id, outcome: outcome.outcome, detail: outcome.detail });
       outcomes.push(outcome);
     } catch (e) {
-      // Kept visible and not fatal: the other issues still run (REQ-LINEAR-6).
-      log(`${id} built (branch ${result.branch}) but the retried report to Linear failed: ${e.message}; stays reportFailed`);
+      // Kept visible and not fatal: the other issues still run, and the next poll tries again (REQ-LINEAR-6).
+      recordPollAttempt(repo, { issue: id, outcome: 'reportFailed', detail: e.message, result });
+      log(`${id} built (branch ${result.branch}) but not reported to Linear again: ${e.message}; stays reportFailed`);
     }
   }
   return outcomes;
 }
 
 /** Report one run's result to Linear (REQ-LINEAR-5, -13, -16, -18, -19); returns the poll outcome. */
-async function reportRun({ repo, base, config, client, issue, result }) {
+async function reportRun({ repo, base, config, client, issue, result, state = null }) {
   // A run takes minutes; a human or another session may have closed the issue meanwhile. Never reopen it (REQ-LINEAR-16).
-  if (['completed', 'canceled'].includes(await client.stateType(issue.id))) {
+  if (CLOSED.has(state ?? (await client.stateType(issue.id)))) {
     await client.comment(
       issue.id,
       `keel: this issue was closed while keel ran, so its state is unchanged. Keel's ${result.pass ? 'passing' : 'unfinished'} branch \`${result.branch}\` is not needed; remove it with \`keel clean\`.`,
@@ -833,8 +832,6 @@ async function pollOne({ repo, project, client, config, base, pr, merge, log, ru
   recordPollAttempt(repo, { issue: issue.id, outcome: outcome.outcome, detail: outcome.detail, byHand: true });
   return [outcome, ...filingFailed(await fileFollowUps({ repo, project, config, client, log, base, capacityFn }))];
 }
-
-const CLOSED = new Set(['completed', 'canceled']);
 
 /**
  * Each issue with the open prerequisites its text names added to `blockedBy` (REQ-LINEAR-26), so it waits like a

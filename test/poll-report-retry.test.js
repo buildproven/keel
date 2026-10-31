@@ -127,7 +127,8 @@ test('REQ-LINEAR-6 a retried report that fails again stays reportFailed, is logg
     .filter((r) => r.issue === 'BUI-1')
     .at(-1);
   assert.equal(latest.outcome, 'reportFailed');
-  assert.ok(latest.result, 'the result is kept for the next retry');
+  assert.match(latest.detail, /rate limited/, 'the outcome of the retried report is recorded');
+  assert.equal(latest.result.branch, 'keel/BUI-1', 'the result is kept for the next retry');
 });
 
 test('REQ-LINEAR-6 a retried report on an issue closed meanwhile does not reopen it and is recorded as done', async () => {
@@ -138,17 +139,14 @@ test('REQ-LINEAR-6 a retried report on an issue closed meanwhile does not reopen
 
   const closed = fakeClient([], { state: 'completed' });
   await poll({ repo: dir, project: 'x', client: closed, config: {}, runFn });
-  assert.deepEqual(
-    closed.calls.map((c) => c.name),
-    ['comment'],
-    'no state move',
-  );
+  assert.deepEqual(closed.calls, [], 'no state move, and no comment that calls the branch unneeded');
   const latest = readJsonl(pollLedgerFile())
     .filter((r) => r.issue === 'BUI-1')
     .at(-1);
   assert.equal(latest.outcome, 'closedMeanwhile');
   await poll({ repo: dir, project: 'x', client: closed, config: {}, runFn });
-  assert.equal(closed.calls.length, 1, 'not reported a third time');
+  assert.deepEqual(closed.calls, [], 'not retried again');
+  assert.equal(readJsonl(pollLedgerFile()).filter((r) => r.issue === 'BUI-1').length, 2, 'one reportFailed row, one closedMeanwhile');
 });
 
 test('REQ-LINEAR-6 a reportFailed row from before results were kept is left alone', async () => {
