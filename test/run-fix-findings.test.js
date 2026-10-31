@@ -226,6 +226,7 @@ test('REQ-RUN-38 keel report shows findings turns and their cost, not as attempt
   assert.doesNotMatch(formatReport(report(rows.filter((x) => !x.role))), /findings turns/);
   const config = {
     learnStart: true,
+    lastResort: [],
     tiers: [
       { provider: 'exec', model: 'b', effort: 'high' },
       { provider: 'exec', model: 'c', effort: 'high' },

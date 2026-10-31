@@ -119,7 +119,7 @@ export const DEFAULTS = {
   lastResort: ['codex'],
   lastResortLimits: { fiveHour: 50, week: 50 },
   // The last-resort family reviews a diff with a file under riskPaths (substring, case-insensitive) or more than maxLines
-  // added plus deleted lines. Every other diff is reviewed by a fresh session of the strongest other tier (REQ-GATE-45).
+  // added plus deleted lines. Every other diff is reviewed by a fresh session of the strongest other tier (REQ-GATE-54).
   routineReview: {
     maxLines: 150,
     riskPaths: ['auth', 'payment', 'billing', 'stripe', 'secret', 'migration', '.github/', 'keel.json', 'security'],

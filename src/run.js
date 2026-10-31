@@ -91,7 +91,7 @@ export function learnedStart(rows, repo, ruleTier, config) {
   const priced = (tier) => mine.filter((r) => at(r) === tier && !r.resumed && typeof r.cost === 'number').map((r) => r.cost);
   let tier = ruleTier;
   let note = null;
-  // A last-resort tier (REQ-RUN-47) is reached by escalation only: learning never starts a card on it.
+  // A last-resort tier (REQ-RUN-52) is reached by escalation only: learning never starts a card on it.
   while (tier < config.tiers.length - 1 && !config.lastResort.includes(config.tiers[tier + 1].family ?? config.tiers[tier + 1].provider)) {
     const lastAt = firsts.findLastIndex((r) => at(r) === tier);
     // Only runs that learning moved above this tier count; a rule (L, protected) that starts higher says nothing.

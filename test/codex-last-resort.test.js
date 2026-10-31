@@ -23,14 +23,14 @@ const codex = tier('codex', 'exec-codex', "console.log('VERDICT: pass')");
 const claude = tier('claude', 'exec-claude', "console.log('VERDICT: pass')");
 const review = (r) => r.results.find((x) => x.name === 'review');
 
-test('REQ-RUN-47 learned routing never starts a card on a last-resort tier, however the costs compare', () => {
+test('REQ-RUN-52 learned routing never starts a card on a last-resort tier, however the costs compare', () => {
   const rows = [];
   for (let i = 0; i < 12; i++) {
     const at = new Date(Date.UTC(2026, 9, 1, 0, i)).toISOString();
     rows.push({ run: `r${i}`, repo: '/r', attempt: 1, tier: 1, cost: 0.3, attemptPass: false, at });
     rows.push({ run: `r${i}`, repo: '/r', attempt: 2, tier: 2, cost: 0.5, attemptPass: true, at });
   }
-  assert.equal(learnedStart(rows, '/r', 1, fixtureConfig()).tier, 1);
+  assert.equal(learnedStart(rows, '/r', 1, fixtureConfig({ lastResort: ['codex'] })).tier, 1);
   // With codex taken off the last-resort list, the same ledger climbs to it: the guard is the setting, not the data.
   assert.equal(learnedStart(rows, '/r', 1, fixtureConfig({ lastResort: [] })).tier, 2);
 });
@@ -48,7 +48,7 @@ test('REQ-PLAN-7 a last-resort provider is reserved at lastResortLimits, others 
   assert.equal(reservedProviders({ codex: null }, DEFAULTS.planLimits, ['codex'], DEFAULTS.lastResortLimits).size, 0);
 });
 
-test('REQ-GATE-45 a routine diff is reviewed by the other tier first, and the receipt says so', () => {
+test('REQ-GATE-54 a routine diff is reviewed by the other tier first, and the receipt says so', () => {
   const { dir, base } = fixtureRepo();
   commit(dir, { ...REGRESSION_TEST, ...FIXED_SRC });
   const r = gate({
@@ -63,7 +63,7 @@ test('REQ-GATE-45 a routine diff is reviewed by the other tier first, and the re
   assert.deepEqual(review(r).fallback, { from: 'exec/exec-codex/high', status: 'routine diff' });
 });
 
-test('REQ-GATE-45 a diff under a risk path, or over maxLines, is reviewed by the last-resort family', () => {
+test('REQ-GATE-54 a diff under a risk path, or over maxLines, is reviewed by the last-resort family', () => {
   for (const [files, over] of [
     [{ ...REGRESSION_TEST, ...FIXED_SRC, 'src/auth-token.js': 'export const t = 1;\n' }, {}],
     [{ ...REGRESSION_TEST, ...FIXED_SRC }, { routineReview: { maxLines: 1, riskPaths: [] } }],
@@ -82,7 +82,7 @@ test('REQ-GATE-45 a diff under a risk path, or over maxLines, is reviewed by the
   }
 });
 
-test('REQ-GATE-45 a routine review is off when routineReview is null or reviewFallback is off', () => {
+test('REQ-GATE-54 a routine review is off when routineReview is null or reviewFallback is off', () => {
   for (const over of [{ routineReview: null }, { reviewFallback: false }]) {
     const { dir, base } = fixtureRepo();
     commit(dir, { ...REGRESSION_TEST, ...FIXED_SRC });
@@ -97,7 +97,7 @@ test('REQ-GATE-45 a routine review is off when routineReview is null or reviewFa
   }
 });
 
-test('REQ-GATE-45 keel audit leaves a routine-diff review alone but still re-reviews an outage fallback', () => {
+test('REQ-GATE-54 keel audit leaves a routine-diff review alone but still re-reviews an outage fallback', () => {
   assert.equal(FALLBACK.exec('passed; review by exec/exec-claude/high (fallback: exec/exec-codex/high routine diff)'), null);
   assert.equal(FALLBACK.exec('passed; review by x (fallback: exec/exec-codex/high quota)')?.[1], 'exec/exec-codex/high');
 });

@@ -79,5 +79,6 @@ export const fixtureConfig = (over = {}) => ({
   testCommand: FIXTURE_TEST,
   heldOutCommand: FIXTURE_TEST,
   review: false, // the fixture tiers are one family; review tests turn it on with a reviewer
+  lastResort: [], // fixture tiers stand for any family; last-resort tests name theirs
   ...over,
 });
