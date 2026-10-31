@@ -44,6 +44,26 @@ export function windowFallback(config, reviewer, spendFile) {
 }
 
 /**
+ * Whether `reviewer` is on a last-resort provider (REQ-PLAN-7) and the diff from `base` to `head` is routine
+ * (REQ-GATE-54): no file under `routineReview.riskPaths` and at most `routineReview.maxLines` added plus deleted lines.
+ * A routine diff is reviewed by another tier first, so a small plan is spent on risky diffs.
+ */
+export function routineDiff(config, reviewer, repo, base, head) {
+  const rr = config.routineReview;
+  if (!rr || !config.lastResort.includes(family(reviewer))) return false;
+  const rows = git(['diff', '--numstat', '--no-renames', base, head], repo)
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map((l) => l.split('\t'));
+  // numstat prints `-` for a binary file: its size is unknown, so it is never routine.
+  if (rows.some(([added, deleted]) => added === '-' || deleted === '-')) return false;
+  const lines = rows.reduce((n, [added, deleted]) => n + Number(added) + Number(deleted), 0);
+  const risky = rows.some(([, , path]) => rr.riskPaths.some((p) => path.toLowerCase().includes(p.toLowerCase())));
+  return !risky && lines <= rr.maxLines;
+}
+
+/**
  * Who wrote a change that `keel gate` checks alone (REQ-CLI-9): `--author`, else `KEEL_AUTHOR`, else `claude` inside
  * Claude Code (it sets CLAUDECODE=1), else unknown (null).
  */
@@ -141,7 +161,12 @@ export function reviewStage({ repo, base, head, card, config, changed, reviewer,
   if (!reviewer) return { name: 'review', pass: false, problems: [{ rule: 'no-cross-reviewer' }] };
   const chain = config.reviewFallback ? fallbackReviewers(config, reviewer) : [];
   // A reviewer whose window is nearly used goes after the first fallback whose window is not (REQ-GATE-24).
-  const alt = windowFallback(config, reviewer, spendFile);
+  // A routine diff goes to the strongest tier off the last-resort providers first (REQ-GATE-54).
+  const routine =
+    config.reviewFallback && routineDiff(config, reviewer, repo, base, head)
+      ? chain.find((t) => !config.lastResort.includes(family(t)))
+      : null;
+  const alt = routine ?? windowFallback(config, reviewer, spendFile);
   const order = alt ? [alt, reviewer, ...chain.filter((t) => t !== alt)] : [reviewer, ...chain];
   let spent = { cost: null, usage: null };
   let unknown = false; // a reviewer spent tokens at no known price (REQ-LED-12)
@@ -167,7 +192,7 @@ export function reviewStage({ repo, base, head, card, config, changed, reviewer,
     }
     const why = unavailable.length ? { unavailable } : {};
     if (t === reviewer) return { ...r, ...total(), ...why };
-    const status = outage ? (outage.status === 'ok' ? 'no verdict' : outage.status) : 'window nearly used';
+    const status = outage ? (outage.status === 'ok' ? 'no verdict' : outage.status) : routine ? 'routine diff' : 'window nearly used';
     return { ...r, ...total(), ...why, fallback: { from: label(reviewer), status, ...(tried.length ? { tried } : {}) } };
   }
   return { ...primary, ...total(), unavailable, ...(tried.length ? { tried } : {}) };
