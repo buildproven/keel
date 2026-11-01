@@ -74,6 +74,8 @@ issues; `keel poll` (nightly, or `keel poll --issue <ID> --merge`) builds them.
 - `keel report --recur` lists failure classes that recur across gates, with the previous window's count. Start a
   prevention card from its top class, and check that the count falls after the merge.
 - Name behavior and interfaces; never prescribe the implementation.
+- When the repo has a generated traceability file (such as `docs/TRACEABILITY.md`) that a test keeps in step with
+  the tests, add it to `paths`: a card that adds a test must regenerate it, or the build stops as blocked.
 - Every requirement has an acceptance line a test can check. If you cannot write one,
   the card is not ready: ask, or mark it `no-keel`.
 - Protected paths (auth, payments, migrations, infra) need a held-out-test-friendly
