@@ -268,10 +268,10 @@ function keptNames(dir, added, config) {
 
 /**
  * Held-out tests from the author tier (REQ-RUN-17), written on a temporary checkout of base the builder never sees.
- * They are kept only when they fail on base as a real test failure that names them. Returns the failure and its worker
- * status, or null.
+ * They are kept only when they fail on base as a real test failure that names them, with `hash`, the run's card hash
+ * before `heldOut` is set, beside them (REQ-RUN-63). Returns the failure and its worker status, or null.
  */
-function authorHeldOut({ repo, card, config, baseSha, runId, heldDir, log, defect = null }) {
+function authorHeldOut({ repo, card, hash, config, baseSha, runId, heldDir, log, defect = null }) {
   const index = config.heldOutAuthorTier;
   const t = config.tiers[index];
   log(`held-out ${defect ? 're-author' : 'author'}: tier ${index} ${t.provider}/${t.model}/${t.effort}`);
@@ -309,11 +309,14 @@ function authorHeldOut({ repo, card, config, baseSha, runId, heldDir, log, defec
       if (r.code === 0) return `the authored tests pass on base, so they prove nothing:\n${out}`;
       if (!added.some((p) => r.out.includes(basename(p)))) return `the failure on base does not name an authored test file:\n${out}`;
       const kept = keptNames(dir, added, config);
+      // The card hash goes first and comes back last, so a half-written set is never reused (REQ-RUN-63).
+      rmSync(heldOutHashFile(heldDir), { force: true });
       rmSync(heldDir, { recursive: true, force: true }); // Only Keel's own per-card directory under its state dir.
       for (const [i, p] of kept.entries()) {
         mkdirSync(dirname(join(heldDir, p)), { recursive: true });
         copyFileSync(join(dir, added[i]), join(heldDir, p));
       }
+      writeFileSync(heldOutHashFile(heldDir), `${hash}\n`);
       return null;
     });
     return failure ? { failure, status } : null;
@@ -321,6 +324,18 @@ function authorHeldOut({ repo, card, config, baseSha, runId, heldDir, log, defec
     appendAttempt({ usage: null, durationMs: 0, workerStatus: 'harness-error', ...row });
   }
 }
+
+/**
+ * The file that records the card hash a per-card held-out dir was authored for (REQ-RUN-63). It sits beside the dir,
+ * not in it, so the gate never copies it into a checkout and the defect check never shows it as a test.
+ */
+const heldOutHashFile = (heldDir) => `${heldDir}.card-hash`;
+
+/** Whether the per-card held-out dir holds tests authored for this card text (REQ-RUN-63). */
+const heldOutFor = (heldDir, card) => {
+  const file = heldOutHashFile(heldDir);
+  return existsSync(heldDir) && existsSync(file) && readFileSync(file, 'utf8').trim() === cardHash(card);
+};
 
 /** The test names a held-out stage that failed on head names in its private output (REQ-RUN-46), or null. */
 function heldOutFailing(receipt) {
@@ -338,7 +353,7 @@ const HELD_OUT_REPLACED =
  * builds, are defective. On DEFECT, author new ones into `heldDir` (REQ-RUN-17), kept only when they fail on base.
  * Returns true when the run goes on with the new set; false escalates as before.
  */
-function checkHeldOut({ repo, card, config, t, baseSha, runId, heldDir, wt, head, output, row, log }) {
+function checkHeldOut({ repo, card, hash, config, t, baseSha, runId, heldDir, wt, head, output, row, log }) {
   const files = listFiles(card.heldOut).map((path) => ({ path, text: readFileSync(join(card.heldOut, path), 'utf8') }));
   const { answer, ...spent } = judgeHeldOut({ config, builder: t, card, files, output, cwd: wt, head });
   Object.assign(row, { reviewCost: spent.cost, reviewUsage: spent.usage, reviewUnpriced: Boolean(spent.unpriced) }); // REQ-LED-13
@@ -354,7 +369,7 @@ function checkHeldOut({ repo, card, config, t, baseSha, runId, heldDir, wt, head
   }
   row.heldOutDefect = verdict;
   log(`held-out tests defective per ${answer.by}: ${answer.reason}`);
-  const error = authorHeldOut({ repo, card, config, baseSha, runId, heldDir, log, defect: answer.reason });
+  const error = authorHeldOut({ repo, card, hash, config, baseSha, runId, heldDir, log, defect: answer.reason });
   if (!error) return true;
   row.heldOutDefect = { ...verdict, replaced: false };
   log(`held-out re-author failed, so the old tests stay; escalating:\n${error.failure}`);
@@ -893,9 +908,12 @@ function runLocked({ repo, card, config, baseSha, baseBranch, branch, wt, pr, me
     removeParkedWorktree({ repo, path: wt, branch });
     kept = null;
   }
+  const heldDir = join(stateDir(), 'heldout', basename(wt)); // Keel's own per-card held-out dir (REQ-RUN-17, -46)
+  // Held-out tests already authored for this card text are reused, so the author's provider is not needed (REQ-RUN-63).
+  const reuseHeldOut = heldOutFor(heldDir, card);
   if (!kept) {
     // Before a worktree or any worker call: nothing may use a window kept for the owner (REQ-PLAN-3).
-    const author = needsAuthoring(card, config) ? config.tiers[config.heldOutAuthorTier] : null;
+    const author = needsAuthoring(card, config) && !reuseHeldOut ? config.tiers[config.heldOutAuthorTier] : null;
     const blocked = config.tiers.every((t) => reserved.has(t.provider))
       ? 'every tier'
       : author && reserved.has(author.provider)
@@ -926,9 +944,10 @@ function runLocked({ repo, card, config, baseSha, baseBranch, branch, wt, pr, me
   linkShared(repo, wt, linkedDirs(config));
 
   const runId = randomUUID();
-  const heldDir = join(stateDir(), 'heldout', basename(wt)); // Keel's own per-card held-out dir (REQ-RUN-17, -46)
   if (needsAuthoring(card, config)) {
-    const error = kept && existsSync(heldDir) ? null : authorHeldOut({ repo, card, config, baseSha, runId, heldDir, log });
+    const reuse = reuseHeldOut || (kept && existsSync(heldDir));
+    if (reuse) log(`reusing the held-out tests in ${heldDir}, authored for this card text`);
+    const error = reuse ? null : authorHeldOut({ repo, card, hash, config, baseSha, runId, heldDir, log });
     if (error) {
       // No build attempt ran: the worktree and branch this run made hold no work, and would block the next run (REQ-RUN-41).
       if (!kept) removeParkedWorktree({ repo, path: wt, branch });
@@ -1101,7 +1120,7 @@ function runLocked({ repo, card, config, baseSha, baseBranch, branch, wt, pr, me
       if (failing && heldOutFailed?.some((n) => failing.includes(n)) && !heldOutChecked && config.heldOutAuthorTier !== null) {
         heldOutChecked = true;
         const output = receipt.results.find((r) => r.name === 'held-out').privateOutput;
-        heldOutReplaced = checkHeldOut({ repo, card, config, t, baseSha, runId, heldDir, wt, head: receipt.head, output, row, log });
+        heldOutReplaced = checkHeldOut({ repo, card, hash, config, t, baseSha, runId, heldDir, wt, head: receipt.head, output, row, log });
         if (heldOutReplaced) {
           card = { ...card, heldOut: heldDir };
           heldOutChecked = false;
