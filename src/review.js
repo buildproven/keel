@@ -15,7 +15,14 @@ export const label = (t) => `${t.provider}/${t.model}/${t.effort}`;
  * never reviews its own work (principle 2). With no builder (`keel gate` alone) it is the strongest tier.
  */
 export function reviewerFor(config, builder) {
-  for (let i = config.tiers.length - 1; i >= 0; i--) if (!builder || family(config.tiers[i]) !== family(builder)) return config.tiers[i];
+  // A last-resort provider (a small plan) reviews nothing unless lastResortReview allows it (REQ-GATE-56); with no
+  // other family left, a fresh session of the strongest remaining tier reviews.
+  const off = config.lastResortReview === false;
+  const usable = (t) => !off || !(config.lastResort ?? []).includes(family(t));
+  for (let i = config.tiers.length - 1; i >= 0; i--)
+    if (usable(config.tiers[i]) && (!builder || family(config.tiers[i]) !== family(builder))) return config.tiers[i];
+  if (!off) return null;
+  for (let i = config.tiers.length - 1; i >= 0; i--) if (usable(config.tiers[i])) return config.tiers[i];
   return null;
 }
 
@@ -25,7 +32,10 @@ export function reviewerFor(config, builder) {
  * reviewed, since it may share the builder's family.
  */
 export function fallbackReviewers(config, reviewer) {
-  const others = [...config.tiers].reverse().filter((t) => t !== reviewer && label(t) !== label(reviewer));
+  // A last-resort provider is no fallback for any review, approval or held-out judgement when lastResortReview is
+  // off (REQ-GATE-56).
+  const allowed = (t) => config.lastResortReview !== false || !(config.lastResort ?? []).includes(family(t));
+  const others = [...config.tiers].reverse().filter((t) => t !== reviewer && label(t) !== label(reviewer) && allowed(t));
   const order = [...others.filter((t) => family(t) !== family(reviewer)), ...others.filter((t) => family(t) === family(reviewer))];
   return order.filter((t, i) => order.findIndex((x) => label(x) === label(t)) === i);
 }
