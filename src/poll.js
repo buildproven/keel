@@ -98,6 +98,51 @@ function testPathsAt(repo, ref, config) {
   return kept;
 }
 
+/** How many of the latest merged Keel cards that added a test are read for the files they all changed (REQ-LINEAR-43). */
+const CARDS_READ = 20;
+// The subject of a merged Keel card on the default branch (REQ-LINEAR-43): the PR title `<ID>: <title>`, the single
+// commit `chore(<ID>): keel attempt <n> leftovers` a squash keeps, or a merge commit of the branch `keel/<ID>`.
+const KEEL_CARD =
+  /^(?:[A-Z][A-Z0-9]*-\d+: |chore\([A-Z][A-Z0-9]*-\d+\): keel attempt \d+ leftovers\b|Merge .*\bkeel\/[A-Z][A-Z0-9]*-\d+\b)/;
+
+// git-side filters for KEEL_CARD subjects, so the log holds only candidate cards (`--grep` reads every message line;
+// KEEL_CARD then checks the subject).
+const KEEL_GREPS = ['^[A-Z][A-Z0-9]*-[0-9]+: ', '^chore\\([A-Z][A-Z0-9]*-[0-9]+\\): keel attempt', '^Merge .*keel/[A-Z][A-Z0-9]*-[0-9]+'];
+/** The last testCompanionsAt answer: history at a commit never changes, so a filing pass reads it once (REQ-LINEAR-43). */
+let companionsCache = { key: null, files: null };
+
+/**
+ * The files at `base` that each of the last CARDS_READ merged Keel cards that added a test also changed, such as a
+ * generated traceability file or a test list (REQ-LINEAR-43), sorted. One such card is not a pattern: fewer than two
+ * give none. Each card is the change from its commit's first parent, so a merge commit counts as its whole branch. One
+ * `git log` reads every candidate card with its files; the answer is kept per repo, base commit, and test globs.
+ */
+function testCompanionsAt(repo, base, config) {
+  const key = [resolve(repo), revParse(base, repo), ...config.testGlobs].join('\0');
+  if (companionsCache.key === key) return companionsCache.files;
+  const args = ['log', '--first-parent', '--diff-merges=first-parent', '--no-renames', '--name-status', '-z', '-E'];
+  const log = exec('git', [...args, ...KEEL_GREPS.map((re) => `--grep=${re}`), '--format=%x01%P%x00%s', '--end-of-options', base], repo);
+  if (log.status !== 0) throw new Error(`git log ${base} failed: ${log.stderr.trim()}`);
+  let common = null;
+  let cards = 0;
+  for (const record of log.stdout.split('\x01').slice(1)) {
+    if (cards >= CARDS_READ) break;
+    // A record: parents, NUL, subject, NUL, then a newline and `status NUL path NUL` pairs.
+    const [parents, subject, ...rest] = record.split('\0');
+    if (!parents || !KEEL_CARD.test(subject)) continue;
+    const files = [];
+    for (let i = 0; i + 1 < rest.length; i += 2) files.push({ status: rest[i].trim(), path: rest[i + 1] });
+    if (!files.some((f) => f.status === 'A' && matchesAny(f.path, config.testGlobs))) continue;
+    const paths = new Set(files.map((f) => f.path));
+    common = common === null ? paths : new Set([...common].filter((p) => paths.has(p)));
+    cards++;
+  }
+  const atBase = cards < 2 ? null : filesAt(repo, base);
+  const files = atBase ? [...common].filter((p) => atBase.has(p)).sort() : [];
+  companionsCache = { key, files };
+  return files;
+}
+
 /** One EARS requirement for a finding (REQ-LINEAR-22): "When …, the … shall …". */
 function earsLine(f, path) {
   const what = f.title.trim().replace(/\.$/, '');
@@ -141,11 +186,15 @@ function followUpText(source, f, config, repo, base) {
       : 'A new test that fails before the change and passes after it proves the requirement.';
   const dir = path?.includes('/') ? `${path.slice(0, path.lastIndexOf('/'))}/**` : path;
   const paths = path ? [dir, ...testPathsAt(repo, base, config).filter((g) => g !== dir), '**/*.md'] : [];
+  // A follow-up proves its fix with a new test, so it may change what every test-adding card changed (REQ-LINEAR-43).
+  const companions = paths.length ? testCompanionsAt(repo, base, config).filter((p) => !matchesAny(p, paths)) : [];
+  paths.push(...companions);
+  const allowEdits = [locked, ...companions.filter((p) => locksAny(p, config.verificationPaths))].filter(Boolean);
   const block = [
     `kind: ${f.kind}`,
     'size: S',
     ...(paths.length ? [`paths: ${paths.join(', ')}`] : []),
-    ...(locked ? [`allowEdits: ${locked}`] : []),
+    ...(allowEdits.length ? [`allowEdits: ${allowEdits.join(', ')}`] : []),
   ];
   const lockNote = locked
     ? `\n\nThe fix edits \`${locked}\`, a file the gate locks because it defines what passing means; \`allowEdits\` allows that edit. The edit must not remove or weaken any check, job, or test step.`
