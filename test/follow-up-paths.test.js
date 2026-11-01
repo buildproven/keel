@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { beforeEach, test } from 'node:test';
 import { DEFAULTS } from '../src/config.js';
 import { cardFromIssue } from '../src/linear.js';
@@ -111,4 +114,48 @@ test('REQ-LINEAR-43 a card merged as a merge commit of keel/<ID> counts as its w
     g(dir, 'merge', '-q', '--no-ff', '-m', `Merge pull request #${id.slice(4)} from o/keel/${id}`, `keel/${id}`);
   }
   assert.equal((await keelBlock(dir)).block, `${UNCHANGED}, docs/traceability.json`);
+});
+
+/** A `git` first on PATH that logs each call's arguments to `log`, then runs the real git. */
+function countingGit() {
+  const dir = tmp('keel-fupaths-git-');
+  const log = join(dir, 'calls.log');
+  const real = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+  writeFileSync(join(dir, 'git'), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\nexec '${real}' "$@"\n`);
+  chmodSync(join(dir, 'git'), 0o755);
+  return { dir, calls: () => (existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean) : []) };
+}
+
+test('REQ-LINEAR-43 one filing pass reads the Keel card history once, with no git call per card', async () => {
+  const { dir } = fixtureRepo({ 'src/a.js': 'a\n', 'src/b.js': 'b\n', 'test/basic.test.js': 'ok\n' });
+  for (let i = 1; i <= 4; i++) commit(dir, { [`test/c${i}.test.js`]: 'ok\n', 'docs/traceability.json': `${i}\n` }, `BUI-${i}: card ${i}`);
+  queueFollowUps(
+    dir,
+    'BUI-7',
+    [
+      { kind: 'bug', title: 'a() is wrong', detail: 'src/a.js:1' },
+      { kind: 'bug', title: 'b() is wrong', detail: 'src/b.js:1' },
+    ],
+    g(dir, 'rev-parse', 'HEAD'),
+  );
+  const created = [];
+  const client = {
+    listIssues: async () => [],
+    comment: async () => {},
+    stateType: async () => 'completed',
+    createIssue: async (_source, fields) => created.push(fields) && `BUI-${700 + created.length}`,
+  };
+  const git = countingGit();
+  const path = process.env.PATH;
+  process.env.PATH = `${git.dir}:${path}`;
+  try {
+    await poll({ repo: dir, project: 'keel', client, config: { ...DEFAULTS }, runFn: () => assert.fail('no run'), limit: 0 });
+  } finally {
+    process.env.PATH = path;
+  }
+  assert.equal(created.length, 2, 'both follow-ups filed');
+  for (const f of created) assert.match(f.description, /paths: src\/\*\*, test\/\*\*, \*\*\/\*\.md, docs\/traceability\.json\n/);
+  const calls = git.calls();
+  assert.equal(calls.filter((c) => c.startsWith('log --first-parent')).length, 1, 'history read once per base');
+  assert.equal(calls.filter((c) => c.startsWith('diff ')).length, 0, 'no diff per card');
 });

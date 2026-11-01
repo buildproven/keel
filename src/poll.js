@@ -1,5 +1,5 @@
 import { removeParkedWorktree } from './clean.js';
-import { changedFiles, exec, isDirty, revParse, showFile } from './git.js';
+import { exec, isDirty, revParse, showFile } from './git.js';
 import { ALREADY_SATISFIED, verifyDone } from './done.js';
 import {
   attemptedIssueIds,
@@ -105,29 +105,42 @@ const CARDS_READ = 20;
 const KEEL_CARD =
   /^(?:[A-Z][A-Z0-9]*-\d+: |chore\([A-Z][A-Z0-9]*-\d+\): keel attempt \d+ leftovers\b|Merge .*\bkeel\/[A-Z][A-Z0-9]*-\d+\b)/;
 
+// git-side filters for KEEL_CARD subjects, so the log holds only candidate cards (`--grep` reads every message line;
+// KEEL_CARD then checks the subject).
+const KEEL_GREPS = ['^[A-Z][A-Z0-9]*-[0-9]+: ', '^chore\\([A-Z][A-Z0-9]*-[0-9]+\\): keel attempt', '^Merge .*keel/[A-Z][A-Z0-9]*-[0-9]+'];
+/** The last testCompanionsAt answer: history at a commit never changes, so a filing pass reads it once (REQ-LINEAR-43). */
+let companionsCache = { key: null, files: null };
+
 /**
  * The files at `base` that each of the last CARDS_READ merged Keel cards that added a test also changed, such as a
  * generated traceability file or a test list (REQ-LINEAR-43), sorted. One such card is not a pattern: fewer than two
- * give none. Each card is the change from its commit's first parent, so a merge commit counts as its whole branch.
+ * give none. Each card is the change from its commit's first parent, so a merge commit counts as its whole branch. One
+ * `git log` reads every candidate card with its files; the answer is kept per repo, base commit, and test globs.
  */
 function testCompanionsAt(repo, base, config) {
-  const log = exec('git', ['log', '--first-parent', '-z', '--format=%H %P%x00%s', '--end-of-options', base], repo);
+  const key = [resolve(repo), revParse(base, repo), ...config.testGlobs].join('\0');
+  if (companionsCache.key === key) return companionsCache.files;
+  const args = ['log', '--first-parent', '--diff-merges=first-parent', '--no-renames', '--name-status', '-z', '-E'];
+  const log = exec('git', [...args, ...KEEL_GREPS.map((re) => `--grep=${re}`), '--format=%x01%P%x00%s', '--end-of-options', base], repo);
   if (log.status !== 0) throw new Error(`git log ${base} failed: ${log.stderr.trim()}`);
-  const parts = log.stdout.split('\0');
   let common = null;
   let cards = 0;
-  for (let i = 0; i + 1 < parts.length && cards < CARDS_READ; i += 2) {
-    const [sha, parent] = parts[i].replace(/^\n/, '').split(' ');
-    if (!parent || !KEEL_CARD.test(parts[i + 1])) continue;
-    const files = changedFiles(parent, sha, repo);
+  for (const record of log.stdout.split('\x01').slice(1)) {
+    if (cards >= CARDS_READ) break;
+    // A record: parents, NUL, subject, NUL, then a newline and `status NUL path NUL` pairs.
+    const [parents, subject, ...rest] = record.split('\0');
+    if (!parents || !KEEL_CARD.test(subject)) continue;
+    const files = [];
+    for (let i = 0; i + 1 < rest.length; i += 2) files.push({ status: rest[i].trim(), path: rest[i + 1] });
     if (!files.some((f) => f.status === 'A' && matchesAny(f.path, config.testGlobs))) continue;
     const paths = new Set(files.map((f) => f.path));
     common = common === null ? paths : new Set([...common].filter((p) => paths.has(p)));
     cards++;
   }
-  if (cards < 2) return [];
-  const atBase = filesAt(repo, base);
-  return [...common].filter((p) => atBase.has(p)).sort();
+  const atBase = cards < 2 ? null : filesAt(repo, base);
+  const files = atBase ? [...common].filter((p) => atBase.has(p)).sort() : [];
+  companionsCache = { key, files };
+  return files;
 }
 
 /** One EARS requirement for a finding (REQ-LINEAR-22): "When …, the … shall …". */
