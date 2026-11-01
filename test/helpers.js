@@ -4,6 +4,10 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { DEFAULTS } from '../src/config.js';
 
+// The machine owner's KEEL_LAST_RESORT_REVIEW (REQ-GATE-56) must not change what a test sees: tests that need it set it
+// themselves. Every test that spawns keel imports this file, so this keeps the suite the same on every machine.
+delete process.env.KEEL_LAST_RESORT_REVIEW;
+
 // REQ-TRACE-5: every tmp() dir lives in one mkdtemp parent per test process, and the 'exit' hook removes exactly
 // that recorded parent, so `npm test` leaves nothing in TMPDIR (BUI-1214: ~3,500 keel-* dirs had piled up).
 // The dirs go in a `.noindex` child, as gate checkouts do (REQ-GATE-34): macOS Spotlight skips it, so it does not
