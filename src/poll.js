@@ -1,5 +1,5 @@
 import { removeParkedWorktree } from './clean.js';
-import { exec, isDirty, revParse, showFile } from './git.js';
+import { changedFiles, exec, isDirty, revParse, showFile } from './git.js';
 import { ALREADY_SATISFIED, verifyDone } from './done.js';
 import {
   attemptedIssueIds,
@@ -98,6 +98,38 @@ function testPathsAt(repo, ref, config) {
   return kept;
 }
 
+/** How many of the latest merged Keel cards that added a test are read for the files they all changed (REQ-LINEAR-43). */
+const CARDS_READ = 20;
+// The subject of a merged Keel card on the default branch (REQ-LINEAR-43): the PR title `<ID>: <title>`, the single
+// commit `chore(<ID>): keel attempt <n> leftovers` a squash keeps, or a merge commit of the branch `keel/<ID>`.
+const KEEL_CARD =
+  /^(?:[A-Z][A-Z0-9]*-\d+: |chore\([A-Z][A-Z0-9]*-\d+\): keel attempt \d+ leftovers\b|Merge .*\bkeel\/[A-Z][A-Z0-9]*-\d+\b)/;
+
+/**
+ * The files at `base` that each of the last CARDS_READ merged Keel cards that added a test also changed, such as a
+ * generated traceability file or a test list (REQ-LINEAR-43), sorted. One such card is not a pattern: fewer than two
+ * give none. Each card is the change from its commit's first parent, so a merge commit counts as its whole branch.
+ */
+function testCompanionsAt(repo, base, config) {
+  const log = exec('git', ['log', '--first-parent', '-z', '--format=%H %P%x00%s', '--end-of-options', base], repo);
+  if (log.status !== 0) throw new Error(`git log ${base} failed: ${log.stderr.trim()}`);
+  const parts = log.stdout.split('\0');
+  let common = null;
+  let cards = 0;
+  for (let i = 0; i + 1 < parts.length && cards < CARDS_READ; i += 2) {
+    const [sha, parent] = parts[i].replace(/^\n/, '').split(' ');
+    if (!parent || !KEEL_CARD.test(parts[i + 1])) continue;
+    const files = changedFiles(parent, sha, repo);
+    if (!files.some((f) => f.status === 'A' && matchesAny(f.path, config.testGlobs))) continue;
+    const paths = new Set(files.map((f) => f.path));
+    common = common === null ? paths : new Set([...common].filter((p) => paths.has(p)));
+    cards++;
+  }
+  if (cards < 2) return [];
+  const atBase = filesAt(repo, base);
+  return [...common].filter((p) => atBase.has(p)).sort();
+}
+
 /** One EARS requirement for a finding (REQ-LINEAR-22): "When …, the … shall …". */
 function earsLine(f, path) {
   const what = f.title.trim().replace(/\.$/, '');
@@ -141,11 +173,15 @@ function followUpText(source, f, config, repo, base) {
       : 'A new test that fails before the change and passes after it proves the requirement.';
   const dir = path?.includes('/') ? `${path.slice(0, path.lastIndexOf('/'))}/**` : path;
   const paths = path ? [dir, ...testPathsAt(repo, base, config).filter((g) => g !== dir), '**/*.md'] : [];
+  // A follow-up proves its fix with a new test, so it may change what every test-adding card changed (REQ-LINEAR-43).
+  const companions = paths.length ? testCompanionsAt(repo, base, config).filter((p) => !matchesAny(p, paths)) : [];
+  paths.push(...companions);
+  const allowEdits = [locked, ...companions.filter((p) => locksAny(p, config.verificationPaths))].filter(Boolean);
   const block = [
     `kind: ${f.kind}`,
     'size: S',
     ...(paths.length ? [`paths: ${paths.join(', ')}`] : []),
-    ...(locked ? [`allowEdits: ${locked}`] : []),
+    ...(allowEdits.length ? [`allowEdits: ${allowEdits.join(', ')}`] : []),
   ];
   const lockNote = locked
     ? `\n\nThe fix edits \`${locked}\`, a file the gate locks because it defines what passing means; \`allowEdits\` allows that edit. The edit must not remove or weaken any check, job, or test step.`
