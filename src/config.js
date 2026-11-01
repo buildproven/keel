@@ -118,6 +118,10 @@ export const DEFAULTS = {
   // lastResortLimits (REQ-PLAN-7). Only an escalation after the other tiers failed, or a risky review, reaches it.
   lastResort: ['codex'],
   lastResortLimits: { fiveHour: 50, week: 50 },
+  // Whether a last-resort provider may review or write held-out tests (REQ-GATE-56, REQ-RUN-64). Off: review and
+  // held-out authoring stay on the other tiers, and a last-resort provider is reached only by a build escalation.
+  // KEEL_LAST_RESORT_REVIEW=0 turns it off for every repo on a machine whose owner chose so.
+  lastResortReview: true,
   // The last-resort family reviews a diff with a file under riskPaths (substring, case-insensitive) or more than maxLines
   // added plus deleted lines. Every other diff is reviewed by a fresh session of the strongest other tier (REQ-GATE-55).
   routineReview: {
@@ -208,6 +212,7 @@ function validate(c) {
   if (typeof c.fixLowFindings !== 'boolean') bad('"fixLowFindings" must be true or false');
   if (typeof c.approveAllowEdits !== 'boolean') bad('"approveAllowEdits" must be true or false');
   if (typeof c.reviewFallback !== 'boolean') bad('"reviewFallback" must be true or false');
+  if (typeof c.lastResortReview !== 'boolean') bad('"lastResortReview" must be true or false');
   const windows = c.reviewWindows;
   const positive = (n) => typeof n === 'number' && n > 0;
   if (!windows || typeof windows !== 'object' || Array.isArray(windows))
@@ -283,6 +288,8 @@ export function loadConfig(repo, ref) {
       for (const k of Object.keys(DEFAULTS.startTier))
         if (!own(written, k)) config.startTier[k] = Math.min(config.startTier[k], config.tiers.length - 1);
   }
+  // The machine owner's choice beats keel.json: a small plan is the owner's, not the repo's (REQ-GATE-56).
+  if (process.env.KEEL_LAST_RESORT_REVIEW === '0') config.lastResortReview = false;
   // An index past the default ladder but inside the four-tier one before REQ-RUN-35 was written for that one: it named the other family's top tier then,
   // so it gets the REQ-RUN-28 default, loudly (REQ-RUN-39). Past tiers keel.json sets itself, it stays an error.
   const legacy =
@@ -299,7 +306,11 @@ export function loadConfig(repo, ref) {
   if ((legacy || !own(user, 'heldOutAuthorTier')) && Array.isArray(config.tiers) && config.tiers.length) {
     // Held-out tests from the other family by default, so M/L cards need no human (REQ-RUN-28); null opts out.
     const family = (t) => t?.family ?? t?.provider;
-    const other = config.tiers.findLastIndex((t) => family(t) !== family(config.tiers[0]));
+    // A last-resort provider writes no held-out tests unless lastResortReview allows it (REQ-RUN-64): then the
+    // strongest tier off lastResort above tier 0, a fresh session of the builder's family.
+    const usable = (t) => config.lastResortReview !== false || !(config.lastResort ?? []).includes(family(t));
+    let other = config.tiers.findLastIndex((t) => family(t) !== family(config.tiers[0]) && usable(t));
+    if (other === -1 && config.lastResortReview === false) other = config.tiers.findLastIndex((t, i) => i > 0 && usable(t));
     config.heldOutAuthorTier = other === -1 ? null : other;
   }
   return validate(config);

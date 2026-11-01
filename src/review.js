@@ -15,7 +15,14 @@ export const label = (t) => `${t.provider}/${t.model}/${t.effort}`;
  * never reviews its own work (principle 2). With no builder (`keel gate` alone) it is the strongest tier.
  */
 export function reviewerFor(config, builder) {
-  for (let i = config.tiers.length - 1; i >= 0; i--) if (!builder || family(config.tiers[i]) !== family(builder)) return config.tiers[i];
+  // A last-resort provider (a small plan) reviews nothing unless lastResortReview allows it (REQ-GATE-56); with no
+  // other family left, a fresh session of the strongest remaining tier reviews.
+  const off = config.lastResortReview === false;
+  const usable = (t) => !off || !(config.lastResort ?? []).includes(family(t));
+  for (let i = config.tiers.length - 1; i >= 0; i--)
+    if (usable(config.tiers[i]) && (!builder || family(config.tiers[i]) !== family(builder))) return config.tiers[i];
+  if (!off) return null;
+  for (let i = config.tiers.length - 1; i >= 0; i--) if (usable(config.tiers[i])) return config.tiers[i];
   return null;
 }
 
@@ -159,7 +166,10 @@ const reviewPrompt = (card, diff, previous) =>
 export function reviewStage({ repo, base, head, card, config, changed, reviewer, previous = null, spendFile = null }) {
   if (!config.review) return null;
   if (!reviewer) return { name: 'review', pass: false, problems: [{ rule: 'no-cross-reviewer' }] };
-  const chain = config.reviewFallback ? fallbackReviewers(config, reviewer) : [];
+  // A last-resort provider is no fallback reviewer either, unless lastResortReview allows it (REQ-GATE-56).
+  const chain = (config.reviewFallback ? fallbackReviewers(config, reviewer) : []).filter(
+    (t) => config.lastResortReview !== false || !config.lastResort.includes(family(t)),
+  );
   // A reviewer whose window is nearly used goes after the first fallback whose window is not (REQ-GATE-24).
   // A routine diff goes to the strongest tier off the last-resort providers first (REQ-GATE-55).
   const routine =
