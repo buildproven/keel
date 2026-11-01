@@ -32,7 +32,10 @@ export function reviewerFor(config, builder) {
  * reviewed, since it may share the builder's family.
  */
 export function fallbackReviewers(config, reviewer) {
-  const others = [...config.tiers].reverse().filter((t) => t !== reviewer && label(t) !== label(reviewer));
+  // A last-resort provider is no fallback for any review, approval or held-out judgement when lastResortReview is
+  // off (REQ-GATE-56).
+  const allowed = (t) => config.lastResortReview !== false || !(config.lastResort ?? []).includes(family(t));
+  const others = [...config.tiers].reverse().filter((t) => t !== reviewer && label(t) !== label(reviewer) && allowed(t));
   const order = [...others.filter((t) => family(t) !== family(reviewer)), ...others.filter((t) => family(t) === family(reviewer))];
   return order.filter((t, i) => order.findIndex((x) => label(x) === label(t)) === i);
 }
@@ -166,10 +169,7 @@ const reviewPrompt = (card, diff, previous) =>
 export function reviewStage({ repo, base, head, card, config, changed, reviewer, previous = null, spendFile = null }) {
   if (!config.review) return null;
   if (!reviewer) return { name: 'review', pass: false, problems: [{ rule: 'no-cross-reviewer' }] };
-  // A last-resort provider is no fallback reviewer either, unless lastResortReview allows it (REQ-GATE-56).
-  const chain = (config.reviewFallback ? fallbackReviewers(config, reviewer) : []).filter(
-    (t) => config.lastResortReview !== false || !config.lastResort.includes(family(t)),
-  );
+  const chain = config.reviewFallback ? fallbackReviewers(config, reviewer) : [];
   // A reviewer whose window is nearly used goes after the first fallback whose window is not (REQ-GATE-24).
   // A routine diff goes to the strongest tier off the last-resort providers first (REQ-GATE-55).
   const routine =

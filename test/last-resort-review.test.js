@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { loadConfig } from '../src/config.js';
-import { reviewerFor } from '../src/review.js';
+import { fallbackReviewers, reviewerFor, windowFallback } from '../src/review.js';
 import { commit, fixtureRepo } from './helpers.js';
 
 function configWith(extra, env = {}) {
@@ -40,4 +40,21 @@ test('REQ-RUN-64 with lastResortReview off, held-out tests are written by the st
   assert.equal(configWith({}, { KEEL_LAST_RESORT_REVIEW: '0' }).heldOutAuthorTier, 1, 'claude opus, not codex');
   assert.equal(configWith({}).heldOutAuthorTier, 2, 'the default still uses the other family');
   assert.equal(configWith({ heldOutAuthorTier: 2 }, { KEEL_LAST_RESORT_REVIEW: '0' }).heldOutAuthorTier, 2, 'an explicit tier is kept');
+});
+
+test('REQ-GATE-56 with lastResortReview off, no last-resort provider is a fallback reviewer on any path', () => {
+  const off = configWith({}, { KEEL_LAST_RESORT_REVIEW: '0' });
+  const reviewer = reviewerFor(off, off.tiers[0]);
+  // Review, allowEdits approval (REQ-RUN-30) and held-out judging (REQ-RUN-46) all take their chain from here.
+  assert.ok(fallbackReviewers(off, reviewer).every((t) => t.provider !== 'codex'));
+  assert.ok(fallbackReviewers(off, off.tiers[0]).every((t) => t.provider !== 'codex'));
+  // The window fallback (REQ-GATE-24) picks from the same chain, so it is never codex either.
+  const spend = null;
+  const alt = windowFallback({ ...off, reviewWindows: { claude: { hours: 5, tokens: 1 } } }, reviewer, spend);
+  assert.ok(alt === null || alt.provider !== 'codex');
+  const on = configWith({});
+  assert.ok(
+    fallbackReviewers(on, on.tiers[1]).some((t) => t.provider === 'codex'),
+    'the default keeps codex as a fallback',
+  );
 });
