@@ -1,4 +1,4 @@
-import { removeParkedWorktree } from './clean.js';
+import { holdsUncommitted, removeParkedWorktree } from './clean.js';
 import { exec, isDirty, revParse, showFile } from './git.js';
 import { ALREADY_SATISFIED, verifyDone } from './done.js';
 import {
@@ -755,7 +755,7 @@ async function runOne({ repo, base, pr, merge, log, config, client, issue: picke
   if (merge && result.pass && result.pr?.ok && result.merge?.selfMerge)
     recordSelfMerge(repo, { issue: issue.id, pr: result.pr.out.trim().split('\n').at(-1), sha: result.receipt.head });
   try {
-    return await reportRun({ repo, base, config, client, issue, result });
+    return await reportRun({ repo, base, config, client, issue, result, log });
   } catch (e) {
     // The build ran and was paid for: record it, then fail visibly, so the next poll does not build it again
     // (REQ-LINEAR-6). A transient stop stays retryable (REQ-LINEAR-19).
@@ -771,13 +771,20 @@ async function runOne({ repo, base, pr, merge, log, config, client, issue: picke
   }
 }
 
-/** Report one run's result to Linear (REQ-LINEAR-5, -13, -16, -18, -19); returns the poll outcome. */
-async function reportRun({ repo, base, config, client, issue, result }) {
+/** Report one run's result to Linear (REQ-LINEAR-5, -13, -16, -18, -19, -45); returns the poll outcome. */
+async function reportRun({ repo, base, config, client, issue, result, log }) {
+  // Work a hook kept from being committed (REQ-RUN-65) is never removed: the comment and the log name it (REQ-LINEAR-45).
+  const kept = !result.pass && result.worktree && holdsUncommitted(result.worktree);
+  const keptLine = kept ? `worktree kept: uncommitted changes in ${result.worktree}` : null;
+  if (keptLine) log(`${issue.id}: ${keptLine}`);
+  const noted = (body) => (keptLine ? `${body}\n\n${keptLine}` : body);
   // A run takes minutes; a human or another session may have closed the issue meanwhile. Never reopen it (REQ-LINEAR-16).
   if (['completed', 'canceled'].includes(await client.stateType(issue.id))) {
     await client.comment(
       issue.id,
-      `keel: this issue was closed while keel ran, so its state is unchanged. Keel's ${result.pass ? 'passing' : 'unfinished'} branch \`${result.branch}\` is not needed; remove it with \`keel clean\`.`,
+      noted(
+        `keel: this issue was closed while keel ran, so its state is unchanged. Keel's ${result.pass ? 'passing' : 'unfinished'} branch \`${result.branch}\` is not needed; remove it with \`keel clean\`.`,
+      ),
     );
     return { outcome: 'closedMeanwhile', issue: issue.id, result };
   }
@@ -820,32 +827,34 @@ async function reportRun({ repo, base, config, client, issue, result }) {
   // A provider limit says nothing about the card: retry it on the next poll, not never (REQ-LINEAR-19).
   if (TRANSIENT_STOPS.has(result.stopped)) {
     // A build that passed every stage but the unavailable review is kept and gated again next time (REQ-RUN-24).
-    if (!result.pendingReview && result.worktree) removeParkedWorktree({ repo, path: result.worktree, branch: result.branch });
-    const kept = result.pendingReview
+    if (!result.pendingReview && result.worktree && !kept) removeParkedWorktree({ repo, path: result.worktree, branch: result.branch });
+    const review = result.pendingReview
       ? ` The build passed every other stage and is kept at \`${result.branch}\`; the next poll reviews it.`
       : '';
     await client.comment(
       issue.id,
-      `keel: deferred (${result.stopped}): a model provider was unavailable, so no verdict on this card. The next poll retries it.${kept}\n\n${trim(result.failure, 1000) ?? ''}`,
+      noted(
+        `keel: deferred (${result.stopped}): a model provider was unavailable, so no verdict on this card. The next poll retries it.${review}\n\n${trim(result.failure, 1000) ?? ''}`,
+      ),
     );
     return { outcome: 'deferred', issue: issue.id, result };
   }
   if (result.stopped === 'config') {
-    await client.comment(issue.id, result.failure);
+    await client.comment(issue.id, noted(result.failure));
     return { outcome: 'blocked', issue: issue.id, result };
   }
   if (result.stopped === 'blocked') {
     // A claim that the work is already done closes the issue once its evidence holds (REQ-LINEAR-30).
     const done = ALREADY_SATISFIED.test(result.failure ?? '') ? verifyDone({ repo, base, config, reason: result.failure }) : null;
     if (done?.ok) {
-      await closeDone(client, issue.id, doneComment(done, result));
+      await closeDone(client, issue.id, noted(doneComment(done, result)));
       return { outcome: 'alreadyDone', issue: issue.id, result };
     }
     const unproven = done ? `\n\nThe worker says the card is already satisfied, but the evidence did not hold: ${done.why}.` : '';
-    await client.comment(issue.id, `${blockedComment(result)}${unproven}`);
+    await client.comment(issue.id, noted(`${blockedComment(result)}${unproven}`));
     return { outcome: 'blocked', issue: issue.id, result };
   }
-  await client.comment(issue.id, failedComment(result));
+  await client.comment(issue.id, noted(failedComment(result)));
   return { outcome: 'failed', issue: issue.id, result };
 }
 

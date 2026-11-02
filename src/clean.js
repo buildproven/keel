@@ -1,4 +1,4 @@
-import { readdirSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { exec, git, isDirty } from './git.js';
 import { stateDir } from './ledger.js';
@@ -22,11 +22,19 @@ export function listParkedWorktrees() {
     if (commonDir.status !== 0) continue; // Not a git worktree (leftover junk) — leave it for a human.
     const repo = dirname(commonDir.stdout.trim());
     const branch = headBranch(path);
-    // A status git cannot read counts as dirty: the worktree is kept, never discarded (REQ-CLEAN-4).
-    const status = exec('git', ['status', '--porcelain'], path);
-    found.push({ path, repo, branch, own: ownBranch(path, branch), clean: status.status === 0 && status.stdout.trim() === '' });
+    found.push({ path, repo, branch, own: ownBranch(path, branch), clean: !holdsUncommitted(path) });
   }
   return found;
+}
+
+/**
+ * True when a worktree holds uncommitted or untracked changes. A status git cannot read counts as dirty: the worktree is
+ * kept, never discarded (REQ-CLEAN-4, REQ-LINEAR-45). A path that no longer exists holds nothing.
+ */
+export function holdsUncommitted(path) {
+  if (!existsSync(path)) return false;
+  const status = exec('git', ['status', '--porcelain'], path);
+  return status.status !== 0 || status.stdout.trim() !== '';
 }
 
 /** The branch a worktree has checked out, or null when its HEAD is detached. */
