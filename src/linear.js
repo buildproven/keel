@@ -70,9 +70,24 @@ export function markedNew(card, path) {
   return false;
 }
 
+/** Issues whose latest poll outcome for this repo is `outcome`. */
+const issueIdsWithLatest = (repo, outcome) => new Set([...latestOutcomes(repo)].filter(([, o]) => o === outcome).map(([id]) => id));
+
 /** Issues whose latest poll outcome for this repo is `notKeel` (REQ-LINEAR-25): human work until a keel block (REQ-LINEAR-25). */
-export function notKeelIssueIds(repo) {
-  return new Set([...latestOutcomes(repo)].filter(([, outcome]) => outcome === 'notKeel').map(([id]) => id));
+export const notKeelIssueIds = (repo) => issueIdsWithLatest(repo, 'notKeel');
+
+/** Issues whose latest poll outcome for this repo is `skipped` (REQ-LINEAR-3): unmapped until their text is a card (REQ-LINEAR-46). */
+export const skippedIssueIds = (repo) => issueIdsWithLatest(repo, 'skipped');
+
+/** True when the issue's current text maps to a valid card (REQ-LINEAR-46). */
+export function mapsToCard(issue) {
+  try {
+    cardFromIssue(issue);
+    return true;
+  } catch {
+    // REQ-LINEAR-46: a mapping error only means the issue stays skipped; pickIssue reports it if it is ever picked.
+    return false;
+  }
 }
 
 /** Follow-up issues filed for this repo today, UTC (REQ-LINEAR-22). */
