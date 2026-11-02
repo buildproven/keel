@@ -76,8 +76,9 @@ test('REQ-LINEAR-39 archiveClosed reads every page of the project closed issues 
     { data: { issueArchive: { success: true } } },
     { data: { issueArchive: { success: true } } },
   ]);
-  assert.deepEqual(await linearHttpClient().archiveClosed('keel'), ['BUI-1', 'BUI-2']);
-  assert.deepEqual(calls[0].variables.filter, { project: { name: { eq: 'keel' } }, state: { type: { in: ['completed', 'canceled'] } } });
+  assert.deepEqual(await linearHttpClient().archiveClosed(), ['BUI-1', 'BUI-2']);
+  // No project filter: closed issues of unpolled projects, and of none, count toward the limit too.
+  assert.deepEqual(calls[0].variables.filter, { state: { type: { in: ['completed', 'canceled'] } } });
   assert.equal(calls[1].variables.after, 'c1');
   assert.deepEqual(
     calls.slice(2).map((c) => [/issueArchive/.test(c.query), c.variables.id]),
@@ -112,7 +113,7 @@ test('REQ-LINEAR-39 by default the poll archives through the Linear client', asy
   const { dir } = fixtureRepo();
   const asked = [];
   const logs = [];
-  const archiving = { ...client, archiveClosed: async (project) => (asked.push(project), ['BUI-9']) };
+  const archiving = { ...client, archiveClosed: async (...args) => (asked.push(args), ['BUI-9']) };
   await poll({
     repo: dir,
     project: 'keel',
@@ -122,6 +123,6 @@ test('REQ-LINEAR-39 by default the poll archives through the Linear client', asy
     fileOnly: true,
     log: (l) => logs.push(l),
   });
-  assert.deepEqual(asked, ['keel']);
+  assert.deepEqual(asked, [[]], 'archived once, for the whole workspace');
   assert.ok(logs.includes('archived 1 closed issue(s): BUI-9'), logs.join('\n'));
 });

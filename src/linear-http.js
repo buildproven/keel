@@ -156,12 +156,12 @@ export function linearHttpClient() {
       return { open, teams };
     },
     /**
-     * Archive the project's closed (completed or canceled) issues, so they stop counting toward Linear's Free-plan
-     * limit (REQ-LINEAR-39); returns their identifiers.
+     * Archive the workspace's closed (completed or canceled) issues, in every project and in none, so they stop
+     * counting toward Linear's Free-plan limit (REQ-LINEAR-39); returns their identifiers.
      */
-    async archiveClosed(project) {
+    async archiveClosed() {
       const apiKey = key();
-      const filter = { project: { name: { eq: project } }, state: { type: { in: ['completed', 'canceled'] } } };
+      const filter = { state: { type: { in: ['completed', 'canceled'] } } };
       const closed = [];
       let after = null;
       do {
