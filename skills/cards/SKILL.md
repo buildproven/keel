@@ -55,6 +55,9 @@ issues; `keel poll` (nightly, or `keel poll --issue <ID> --merge`) builds them.
      ```
      ~~~
 
+   Each `keel` line is `key: value` on one line; list globs comma-separated (`paths: src/a.js, test/**`). A YAML
+   list (`- src/a.js` on its own line) is rejected and the card is skipped.
+
    Keep `Root cause` and `Prevention` as headings: a `Word:` line above the first heading is read as a card header.
 
    A card that only adds tests for existing behavior sets `kind: chore` in its `keel` block (such tests pass on the

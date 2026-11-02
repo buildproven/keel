@@ -150,7 +150,10 @@ function splitKeelBlock(issue) {
   const headers = {};
   for (const line of m[1].split('\n').filter((l) => l.trim())) {
     const kv = line.match(/^([A-Za-z]+):\s*(.*)$/);
-    if (!kv) throw new Error(`issue ${issue.id} has a malformed line in its keel block: "${line.trim()}"`);
+    if (!kv) {
+      const hint = /^\s*-\s/.test(line) ? ' (a YAML list is not read: write `paths: a, b` on one line)' : '';
+      throw new Error(`issue ${issue.id} has a malformed line in its keel block: "${line.trim()}"${hint}`);
+    }
     headers[kv[1]] = kv[2].trim();
   }
   return { headers, rest: issue.description.replace(KEEL_BLOCK, '').trim() };
