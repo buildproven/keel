@@ -813,6 +813,20 @@ export function startReserved(tiers, tier, ruleTier, reserved, log = () => {}) {
   return null;
 }
 
+/**
+ * The tier to retry after a failed attempt when every tier above it is reserved (REQ-PLAN-8): the highest tier at or
+ * above `lowest` whose provider is not reserved, else null. Tiers above it are reserved, so it is at or below the tier
+ * that failed.
+ */
+export function retryReserved(tiers, lowest, reserved, log = () => {}) {
+  for (let t = tiers.length - 1; t >= lowest; t--) {
+    if (reserved.has(tiers[t].provider)) continue;
+    log(`tier ${t} retried: tiers ${t + 1}..${tiers.length - 1} are on a provider over its plan window`);
+    return t;
+  }
+  return null;
+}
+
 /** The message `keel run` prints when it stops without a pass (REQ-RUN-13, REQ-RUN-49). */
 export const describeStop = ({ stopped, failure, worktree }) => {
   const detail =
@@ -1283,7 +1297,9 @@ function runLocked({ repo, card, config, baseSha, baseBranch, branch, wt, pr, me
       )
     )
       floor = Math.max(floor, config.startTier.protected);
-    const next = skipReserved(config.tiers, nextTier(config.tiers, tier, floor, w.status, networkRetries), floor, reserved, log);
+    let next = skipReserved(config.tiers, nextTier(config.tiers, tier, floor, w.status, networkRetries), floor, reserved, log);
+    // A provider out of quota is not retried; any other failure may retry a usable tier below the reserved ones (REQ-PLAN-8).
+    if (next === null && w.status !== 'quota') next = retryReserved(config.tiers, Math.max(floor, ruleTier), reserved, log);
     log(`attempt ${attempt} failed (${w.status === 'ok' ? 'gate' : w.status})`);
     // Unpriced attempts cannot count; the priced spend still stops the card (REQ-RUN-22).
     if (config.cardBudgetUsd !== null) {
