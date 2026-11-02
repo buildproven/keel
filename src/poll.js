@@ -16,7 +16,10 @@ import {
   textPrerequisites,
   titleKey,
 } from './linear.js';
-import { resolve } from 'node:path';
+import { existsSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { loadConfig } from './config.js';
 import { cardLease, describeConflicts } from './lease.js';
 import { readLedger, spentToday, stateDir } from './ledger.js';
 import { finishSelfMerges, recordSelfMerge } from './merge.js';
@@ -172,8 +175,7 @@ const appendMarker = (path) => `Keel adds later findings in \`${path}\` to this 
 const problemItem = (f) =>
   `- ${f.title}${f.detail ? ` (${f.detail})` : ''}${f.cite?.text ? `\n\n\`${f.cite.path}:${f.cite.line}\` reads:\n\n> ${f.cite.text}` : ''}`;
 
-function followUpText(source, f, config, repo, base) {
-  const path = findingPath(f, repo, base);
+function followUpText(source, f, config, repo, base, path = findingPath(f, repo, base)) {
   const locked = path && locksAny(path, config.verificationPaths) ? path : null;
   const commit = f.found?.commit ?? f.cite?.ref ?? null;
   const pr = f.found?.pr ?? null;
@@ -282,6 +284,27 @@ function staleReason(repo, base, cite) {
   return now.includes(cite.text) ? null : `${cite.path}:${cite.line} no longer reads "${cite.text.slice(0, 120)}" on ${base}`;
 }
 
+/** Keel's install root, the directory above `src/` (REQ-LINEAR-46). */
+const KEEL_ROOT = fileURLToPath(new URL('..', import.meta.url));
+
+/** Whether a finding names Keel as the repo of `path`, as in `keel src/gate.js:95` (REQ-LINEAR-46). */
+function namesKeel(f, path) {
+  const re = new RegExp(`(?<![\\w./@-])keel\\s+${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:\\d`, 'i');
+  return [f.detail, f.title].some((t) => re.test(t ?? ''));
+}
+
+/**
+ * Where findings about Keel's own code are filed (REQ-LINEAR-46): `{ root, project, config, files }` from the keel.json
+ * of the checkout at `root`, or null when `root` has no keel.json (a packaged install ships none), it names no
+ * `linearProject`, or that project is the polled `project`, so the source project is already Keel's.
+ */
+function keelHome(root, project) {
+  if (!existsSync(join(root, 'keel.json'))) return null;
+  const config = loadConfig(root, 'HEAD');
+  if (!config.linearProject || config.linearProject === project) return null;
+  return { root, project: config.linearProject, config, files: filesAt(root, 'HEAD') };
+}
+
 /** A findings card takes appends up to this many findings, so it stays one card of size S or M (REQ-LINEAR-38). */
 const FINDINGS_PER_CARD = 5;
 /** States of a card that takes appends: never `started`, where a builder may hold it (REQ-LINEAR-38). */
@@ -335,9 +358,10 @@ const DUP_CLOSED_DAYS = 30;
  * leaves the queue when its issue is created, marked `dup`, or failed FILE_TRIES times. At followUpHoldAt unarchived
  * issues in the workspace, nothing more is filed and the rest waits, logged and recorded as `held` (REQ-LINEAR-37); an
  * unreadable count is a filing error that counts no try. Filed issues are not attempts,
- * so the loop builds them. A Linear error never stops a poll: it returns `{ error }`, and the poll reports it.
+ * so the loop builds them. A Linear error never stops a poll: it returns `{ error }`, and the poll reports it. A finding
+ * on Keel's own code goes to Keel's project instead, deduped there (REQ-LINEAR-46).
  */
-async function fileFollowUps({ repo, project, config, client, log, base = 'HEAD', capacityFn = null }) {
+async function fileFollowUps({ repo, project, config, client, log, base = 'HEAD', capacityFn = null, keelRoot = KEEL_ROOT }) {
   const pending = pendingFollowUps(repo, FILE_TRIES);
   if (!pending.length || !(config.followUpsPerDay > 0)) return {};
   const filed = new Map(); // source → new issue IDs
@@ -376,22 +400,41 @@ async function fileFollowUps({ repo, project, config, client, log, base = 'HEAD'
     // A finding already appended to a card is in its description, not its title (REQ-LINEAR-38).
     const texts = listed.map((i) => (i.description ?? '').toLowerCase());
     let cards = null; // open findings cards that take appends, oldest first, read once (REQ-LINEAR-38)
+    let baseFiles = null; // the built repo's files at base, read once
+    let keel; // Keel's own home, read once a finding may cite Keel's code (REQ-LINEAR-46)
+    // Keel's home when finding `f` cites Keel's code at `path`: it names `keel` as the repo, or the path is not in the
+    // built repo at base but is in Keel's checkout (REQ-LINEAR-46). Its issues are read once, for the dedupe.
+    const keelFor = async (f, path) => {
+      const named = namesKeel(f, path);
+      if (!named && (baseFiles ??= filesAt(repo, base)).has(path)) return null;
+      if (keel === undefined) keel = keelHome(keelRoot, project);
+      if (!keel || (!named && !keel.files.has(path))) return null;
+      if (!keel.known) {
+        const issues = await client.listIssues(keel.project, { closedWithinDays: DUP_CLOSED_DAYS });
+        keel.known = new Set(issues.map((i) => titleKey(i.title)));
+        keel.texts = issues.map((i) => (i.description ?? '').toLowerCase());
+      }
+      return keel;
+    };
     for (const f of pending) {
-      if (known.has(titleKey(f.title)) || texts.some((t) => t.includes(titleKey(f.title)))) {
+      const path = findingPath(f, repo, base);
+      const home = path && (await keelFor(f, path));
+      const seen = home || { known, texts };
+      if (seen.known.has(titleKey(f.title)) || seen.texts.some((t) => t.includes(titleKey(f.title)))) {
         recordPollAttempt(repo, { issue: f.source, outcome: 'dup', detail: { source: f.source, title: f.title } });
         continue;
       }
       // Fixed on the base since it was found: filing it would only make a builder report "already satisfied" (REQ-LINEAR-27).
-      const stale = staleReason(repo, base, f.cite);
+      // The built repo's base says nothing about Keel's code (REQ-LINEAR-46).
+      const stale = home ? null : staleReason(repo, base, f.cite);
       if (stale) {
         recordPollAttempt(repo, { issue: f.source, outcome: 'stale', detail: { source: f.source, title: f.title, reason: stale } });
         log(`follow-up "${f.title}" dropped as stale: ${stale}`);
         continue;
       }
       // A finding on a file an open findings card names goes into that card: it adds no issue, so neither the daily
-      // cap nor the workspace hold applies (REQ-LINEAR-38).
-      const path = findingPath(f, repo, base);
-      if (path) {
+      // cap nor the workspace hold applies (REQ-LINEAR-38). Keel's own findings never join a product's card (REQ-LINEAR-46).
+      if (path && !home) {
         cards ??= (await client.listIssues(project, { stateTypes: APPEND_STATES })).sort((a, b) =>
           String(a.createdAt).localeCompare(String(b.createdAt)),
         );
@@ -457,18 +500,31 @@ async function fileFollowUps({ repo, project, config, client, log, base = 'HEAD'
         }
       }
       current = f;
-      const blockedBy = f.source && (await isOpen(f.source)) ? { blockedBy: [f.source] } : {};
-      const id = await client.createIssue(
-        f.source,
-        { title: f.title.trim(), description: followUpText(f.source, f, config, repo, base), priority: 4, ...blockedBy },
-        project,
-      );
+      let id;
+      if (home) {
+        // Filed by project name, in Keel's project and its first team, described from Keel's checkout. No source
+        // blocks it: the source's branch is in another repo and cannot change Keel's code (REQ-LINEAR-46). A cited
+        // line read in the built repo is not Keel's line, so it is not quoted.
+        const description = followUpText(f.source, { ...f, cite: undefined }, home.config, home.root, 'HEAD', path);
+        id = await client.createIssue(null, { title: f.title.trim(), description, priority: 4 }, home.project);
+      } else {
+        const blockedBy = f.source && (await isOpen(f.source)) ? { blockedBy: [f.source] } : {};
+        id = await client.createIssue(
+          f.source,
+          { title: f.title.trim(), description: followUpText(f.source, f, config, repo, base, path), priority: 4, ...blockedBy },
+          project,
+        );
+      }
       current = null;
       if (unarchived !== null) unarchived++;
-      if (unbuilt !== null) unbuilt++;
-      recordPollAttempt(repo, { issue: id, outcome: 'filed', detail: { source: f.source, title: f.title } });
-      known.add(titleKey(f.title));
-      filed.set(f.source, [...(filed.get(f.source) ?? []), id]);
+      if (unbuilt !== null && !home) unbuilt++;
+      recordPollAttempt(repo, {
+        issue: id,
+        outcome: 'filed',
+        detail: { source: f.source, title: f.title, ...(home && { project: home.project }) },
+      });
+      seen.known.add(titleKey(f.title));
+      filed.set(f.source, [...(filed.get(f.source) ?? []), home ? `${id} (Keel's own code, filed in project ${home.project})` : id]);
     }
   } catch (e) {
     // An unreachable network stops the poll and charges no item a try (REQ-LINEAR-40): the item did nothing wrong.
@@ -889,7 +945,7 @@ function planCheck({ config, log, planFn }) {
  * `keel poll --issue <ID>` (REQ-LINEAR-14): an explicit human retry of one open issue, even if a previous poll
  * decided it. The `no-keel` opt-out still wins, and an invalid card raises its reason instead of skipping.
  */
-async function pollOne({ repo, project, client, config, base, pr, merge, log, runFn, refineFn, only, reserved, capacityFn }) {
+async function pollOne({ repo, project, client, config, base, pr, merge, log, runFn, refineFn, only, reserved, capacityFn, keelRoot }) {
   const issues = await client.listIssues(project);
   const issue = issues.find((i) => i.id === only);
   if (!issue || (issue.labels ?? []).some((l) => l.toLowerCase() === 'no-keel')) {
@@ -907,7 +963,7 @@ async function pollOne({ repo, project, client, config, base, pr, merge, log, ru
   if (outcome.outcome === 'leased') return [outcome];
   // The outcome keeps its own detail (a NEEDS_HUMAN question, SPLIT child IDs, REQ-LINEAR-33); byHand marks the run.
   recordPollAttempt(repo, { issue: issue.id, outcome: outcome.outcome, detail: outcome.detail, byHand: true });
-  return [outcome, ...filingFailed(await fileFollowUps({ repo, project, config, client, log, base, capacityFn }))];
+  return [outcome, ...filingFailed(await fileFollowUps({ repo, project, config, client, log, base, capacityFn, keelRoot }))];
 }
 
 const CLOSED = new Set(['completed', 'canceled']);
@@ -989,20 +1045,23 @@ export async function poll({
   limit = 1,
   issue: only = null,
   fileOnly = false,
+  // Where Keel's own source and keel.json live, for follow-ups that cite Keel's code (REQ-LINEAR-46).
+  keelRoot = KEEL_ROOT,
 }) {
   // A project that is not this repo's stops before Linear is read or a worktree made (REQ-LINEAR-34).
   resolveProject(project, config, repo);
   // File the queued follow-ups and stop: no issue is built, commented on, or recorded (REQ-LINEAR-31).
   // Closed issues stop counting toward Linear's limit before anything is filed (REQ-LINEAR-39).
   const archived = await archiveClosed(archiveFn, log);
-  if (fileOnly) return [...archived, ...filingFailed(await fileFollowUps({ repo, project, config, client, log, base, capacityFn }))];
+  if (fileOnly)
+    return [...archived, ...filingFailed(await fileFollowUps({ repo, project, config, client, log, base, capacityFn, keelRoot }))];
   const results = [...archived];
   const prereqStates = new Map(); // prerequisite states read this poll (REQ-LINEAR-26)
   const deferredNow = new Set(); // issues this poll deferred (REQ-LINEAR-19)
   const leasedNow = new Set(); // issues whose paths an open branch holds (REQ-LEASE-3)
   // Self-merges whose checks were pending at an earlier poll go first; none waits on CI here (REQ-MERGE-2).
   if (merge) results.push(...(await finishSelfMerges({ repo, config, client, log })));
-  results.push(...filingFailed(await fileFollowUps({ repo, project, config, client, log, base, capacityFn }))); // what an earlier poll could not file
+  results.push(...filingFailed(await fileFollowUps({ repo, project, config, client, log, base, capacityFn, keelRoot }))); // what an earlier poll could not file
   await rebuildConflicts({ repo, client, log });
   if (only) {
     const budget = overBudget({ repo, config, log });
@@ -1026,6 +1085,7 @@ export async function poll({
             only,
             reserved: plan.reserved,
             capacityFn,
+            keelRoot,
           })),
     ];
   }
@@ -1088,7 +1148,7 @@ export async function poll({
     recordPollAttempt(repo, { issue: issue.id, outcome: outcome.outcome, detail: outcome.detail });
     // A deferred issue is retried by the next poll, not again in this one: move on to other work (REQ-LINEAR-19).
     if (outcome.outcome === 'deferred') deferredNow.add(issue.id);
-    results.push(outcome, ...filingFailed(await fileFollowUps({ repo, project, config, client, log, base, capacityFn })));
+    results.push(outcome, ...filingFailed(await fileFollowUps({ repo, project, config, client, log, base, capacityFn, keelRoot })));
     // A card deferred for a path missing on base paid for no build: it uses no `limit` slot (REQ-LINEAR-44).
     if (outcome.outcome === 'deferred' && outcome.detail?.missing) i -= 1;
   }
