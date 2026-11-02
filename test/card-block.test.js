@@ -56,6 +56,13 @@ test('REQ-LINEAR-12 an unknown key rejects the card, so pick skips the issue wit
   assert.match(skipped[0][1], /allowEdit/);
 });
 
+test('REQ-LINEAR-12 a YAML list line in the block names the one-line form', () => {
+  assert.throws(
+    () => cardFromIssue(issue('```keel\npaths:\n  - src/a.js\n```\n- REQ-1: x.')),
+    /YAML list is not read: write `paths: a, b` on one line/,
+  );
+});
+
 test('REQ-LINEAR-12 a malformed line in the block rejects the card', () => {
   assert.throws(() => cardFromIssue(issue('```keel\nnot a header line\n```\n- REQ-1: x.')), /keel block/);
 });
