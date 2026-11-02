@@ -19,12 +19,55 @@ export function attemptedIssueIds(repo) {
   return new Set([...latestOutcomes(repo)].filter(([, outcome]) => outcome !== 'deferred').map(([id]) => id));
 }
 
-/** Each issue's latest attempt outcome for this repo, by issue id. */
-function latestOutcomes(repo) {
+/** Each issue's latest attempt row for this repo, by issue id. */
+function latestRows(repo) {
   const last = new Map();
   for (const r of readJsonl(pollLedgerFile()))
-    if (r.repo === repo && ![...SKIP_ROWS, ...SELF_MERGE_ROWS].includes(r.outcome)) last.set(r.issue, r.outcome);
+    if (r.repo === repo && ![...SKIP_ROWS, ...SELF_MERGE_ROWS].includes(r.outcome)) last.set(r.issue, r);
   return last;
+}
+
+/** Each issue's latest attempt outcome for this repo, by issue id. */
+const latestOutcomes = (repo) => new Map([...latestRows(repo)].map(([id, r]) => [id, r.outcome]));
+
+/** The latest attempt row of issue `id` for this repo, or null (REQ-LINEAR-44 reads its missing paths). */
+export const latestPollRow = (repo, id) => latestRows(repo).get(id) ?? null;
+
+/** A `paths` item with a glob character names no one file (REQ-LINEAR-44). */
+const GLOB_CHAR = /[*?[\]{}]/;
+
+/** The card's `paths` items that name one file exactly, without a leading `./` or trailing `/` (REQ-LINEAR-44). */
+export const exactPaths = (card) => [
+  ...new Set(
+    card.paths
+      .filter((p) => !GLOB_CHAR.test(p))
+      .map((p) => p.replace(/^(?:\.\/)+/, '').replace(/\/+$/, ''))
+      .filter(Boolean),
+  ),
+];
+
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * True when the card text marks `path` new (REQ-LINEAR-44): the title or body names it, and the word "new" stands
+ * earlier in that sentence on that line (`the new file \`test/a.test.js\``), or `(new)` follows it. Other paths and
+ * code spans in the sentence do not count, so `src/new.js` does not mark its neighbour new.
+ */
+export function markedNew(card, path) {
+  const [head, ...rest] = card.text.split(/^## /m);
+  const text = `${/^#\s+(.+)$/m.exec(head)?.[1] ?? ''}\n${rest.join('## ')}`;
+  const at = new RegExp(`(?<![\\w./-])(?:\\./)?${escapeRe(path)}(?![\\w/-]|\\.\\w)`, 'g');
+  for (const m of text.matchAll(at)) {
+    if (/^`?\s*\(new\)/i.test(text.slice(m.index + m[0].length))) return true;
+    const sentence = text
+      .slice(text.lastIndexOf('\n', m.index) + 1, m.index)
+      .split(/[.!?;]\s+/)
+      .at(-1)
+      .replace(/`[^`]*`/g, ' ')
+      .replace(/\S*(?:\/|\w\.\w)\S*/g, ' ');
+    if (/\bnew\b/i.test(sentence)) return true;
+  }
+  return false;
 }
 
 /** Issues whose latest poll outcome for this repo is `notKeel` (REQ-LINEAR-25): human work until a keel block (REQ-LINEAR-25). */
