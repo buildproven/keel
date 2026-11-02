@@ -272,9 +272,14 @@ function keptNames(dir, added, config) {
 
 /**
  * The kept held-out paths the card text names (REQ-RUN-62): the builder creates them, so the gate's no-overwrite rule
- * would stop every attempt. A path the base has needs no check: only files the author added are kept.
+ * would stop every attempt. A path the base has needs no check: only files the author added are kept. Only the whole
+ * path counts, optionally after `./`: `test_x.py` is not named by `tests/test_x.py`, nor `a/x.py` by `data/x.py`, and a
+ * sentence's closing `.` ends the path.
  */
-const collisions = (card, kept) => kept.filter((p) => builderText(card).includes(p));
+export const collisions = (card, kept) => {
+  const text = builderText(card);
+  return kept.filter((p) => new RegExp(`(?<![\\w./-])(?:\\./)?${RegExp.escape(p)}(?![\\w/-]|\\.\\w)`).test(text));
+};
 
 /**
  * Held-out tests from the author tier (REQ-RUN-17), written on a temporary checkout of base the builder never sees.

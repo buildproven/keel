@@ -5,7 +5,7 @@ import { beforeEach, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { parseCard } from '../src/config.js';
 import { readLedger } from '../src/ledger.js';
-import { run } from '../src/run.js';
+import { collisions, run } from '../src/run.js';
 import { fixtureConfig, fixtureRepo, tmp } from './helpers.js';
 
 const FAKE = fileURLToPath(new URL('./fake-worker.js', import.meta.url));
@@ -97,4 +97,26 @@ test('REQ-RUN-62 a collision that stays after one re-author stops held-out-autho
   const state = join(process.env.KEEL_STATE_DIR, 'heldout');
   const hashes = existsSync(state) ? readdirSync(state).filter((n) => n.endsWith('.card-hash')) : [];
   assert.deepEqual(hashes, [], 'colliding tests are never kept for a retry to reuse (REQ-RUN-63)');
+});
+
+test('REQ-RUN-62 only a whole path the card names is a collision, so a look-alike name costs no re-author', () => {
+  const named = (text, p) => collisions(parseCard(`# T-62: t\nkind: bug\nsize: M\n\n## Requirements\n- REQ-ADD-1: ${text}\n`), [p]);
+  for (const [text, p] of [
+    ['Create `tests/test_x.py`.', 'test_x.py'],
+    ['Create tests/test_x.py.', 'sub/tests/test_x.py'],
+    ['Read data/test_x.py.', 'a/test_x.py'],
+    ['Create tests/test_x.py.bak.', 'tests/test_x.py'],
+    ['Create tests/test_x.pyc now.', 'tests/test_x.py'],
+    ['Create tests/test_x.py/more.', 'tests/test_x.py'],
+  ])
+    assert.deepEqual(named(text, p), [], `${p} in: ${text}`);
+  for (const text of [
+    'Create `tests/test_x.py`.',
+    'Create tests/test_x.py.',
+    'Create ./tests/test_x.py for it.',
+    'Create it (tests/test_x.py), then stop.',
+    'Files: tests/test_x.py, src/x.py',
+    'tests/test_x.py',
+  ])
+    assert.deepEqual(named(text, 'tests/test_x.py'), ['tests/test_x.py'], text);
 });
