@@ -69,7 +69,7 @@ test('REQ-LINEAR-39 nothing closed logs nothing; an archive error is logged and 
   );
 });
 
-test('REQ-LINEAR-39 archiveClosed reads every page of the workspace closed issues, in any project, and archives each', async () => {
+test('REQ-LINEAR-39 archiveClosed reads every page of the project closed issues and archives each', async () => {
   stubFetch([
     { data: { issues: { pageInfo: { hasNextPage: true, endCursor: 'c1' }, nodes: [{ id: 'u1', identifier: 'BUI-1' }] } } },
     { data: { issues: { pageInfo: { hasNextPage: false }, nodes: [{ id: 'u2', identifier: 'BUI-2' }] } } },
