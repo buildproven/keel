@@ -430,8 +430,12 @@ function commitLeftovers(wt, card, attempt, branch) {
   if (!isDirty(wt)) return null;
   git(['add', '-A'], wt);
   const r = exec('git', ['commit', '-q', '-m', `chore(${card.id}): keel attempt ${attempt} leftovers`], wt);
-  return r.status === 0 ? null : `commit failed (hooks?):\n${`${r.stdout}${r.stderr}`.slice(-2000)}`;
+  return r.status === 0 ? null : `commit failed (hooks?):\n${lastLines(`${r.stdout}${r.stderr}`, COMMIT_TAIL_LINES)}`;
 }
+
+/** A rejected commit's summary keeps the end of its output, where a hook names what it rejected (REQ-RUN-65). */
+const COMMIT_TAIL_LINES = 40;
+const lastLines = (text, n) => text.trimEnd().split('\n').slice(-n).join('\n');
 
 /** Statuses that say nothing about the work: the next tier, or the next run, continues it as it is (REQ-RUN-44). */
 const KEEP_DIRTY = new Set(['ok', 'approved', 'auth', 'quota', 'network']);
@@ -1117,6 +1121,11 @@ function runLocked({ repo, card, config, baseSha, baseBranch, branch, wt, pr, me
         commitError =
           commitError ??
           (KEEP_DIRTY.has(w.status) ? commitLeftovers(wt, card, attempt, branch) : parkLeftovers(wt, card, attempt, branch, log));
+        // A rejected commit fails the attempt with the hook's words; the staged work stays for the next tier (REQ-RUN-65).
+        if (commitError) {
+          row.failure = commitError;
+          log(`attempt ${attempt}: ${commitError.split('\n')[0]}; the next attempt gets its output`);
+        }
         const gateStart = Date.now();
         const gateHead = (flaky = []) => gateWorktree({ wt, baseSha, card, config, t, log, flaky });
         receipt = commitError ? null : gateHead();
