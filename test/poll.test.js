@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { beforeEach, test } from 'node:test';
-import { attemptedIssueIds } from '../src/linear.js';
+import { attemptedIssueIds, cardFromIssue } from '../src/linear.js';
 import { poll } from '../src/poll.js';
 import { fixtureRepo, tmp } from './helpers.js';
 
@@ -174,4 +174,38 @@ test('REQ-LINEAR-16 an issue closed while Keel ran is not moved: one comment, ou
   );
   assert.match(comments[0].body, /closed while keel ran/i);
   assert.match(comments[0].body, /keel\/BUI-1/);
+});
+
+test('REQ-LINEAR-44 a path marked new in the paths line does not defer the card', async () => {
+  const { dir } = fixtureRepo();
+  const comments = [];
+  const description = [
+    '- REQ-1: When sub runs, it shall subtract.',
+    '',
+    '```keel',
+    'kind: feature',
+    'paths: src/add.js, src/sub.js (new), ./test/sub.test.js (new)',
+    '```',
+  ].join('\n');
+  const ran = [];
+  const runFn = ({ card }) => {
+    ran.push(card.paths);
+    return { pass: true, tier: 0, attempt: 1, branch: 'keel/BUI-1', needsReview: false, worktree: '/wt' };
+  };
+  const results = await poll({ repo: dir, project: 'x', client: fakeClient([issue({ description })], comments), config: {}, runFn });
+  assert.equal(results[0].outcome, 'inReview');
+  assert.deepEqual(ran, [['src/add.js', 'src/sub.js', './test/sub.test.js']], 'the builder scope holds real paths');
+  assert.ok(!comments.some((c) => /not on the base/.test(c.body ?? '')));
+  assert.deepEqual(cardFromIssue(issue({ description })).newPaths, ['src/sub.js', './test/sub.test.js']);
+
+  // Without the marker the same new file still defers the card.
+  const unmarked = description.replace(/ \(new\)/g, '');
+  const again = await poll({
+    repo: dir,
+    project: 'x',
+    client: fakeClient([issue({ id: 'BUI-2', description: unmarked })], comments),
+    config: {},
+    runFn,
+  });
+  assert.equal(again[0].outcome, 'deferred');
 });

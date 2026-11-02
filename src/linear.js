@@ -37,11 +37,12 @@ export const latestPollRow = (repo, id) => latestRows(repo).get(id) ?? null;
 const GLOB_CHAR = /[*?[\]{}]/;
 
 /** The card's `paths` items that name one file exactly, without a leading `./` or trailing `/` (REQ-LINEAR-44). */
+const exactPath = (p) => p.replace(/^(?:\.\/)+/, '').replace(/\/+$/, '');
 export const exactPaths = (card) => [
   ...new Set(
     card.paths
       .filter((p) => !GLOB_CHAR.test(p))
-      .map((p) => p.replace(/^(?:\.\/)+/, '').replace(/\/+$/, ''))
+      .map(exactPath)
       .filter(Boolean),
   ),
 ];
@@ -49,11 +50,13 @@ export const exactPaths = (card) => [
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /**
- * True when the card text marks `path` new (REQ-LINEAR-44): the title or body names it, and the word "new" stands
- * earlier in that sentence on that line (`the new file \`test/a.test.js\``), or `(new)` follows it. Other paths and
- * code spans in the sentence do not count, so `src/new.js` does not mark its neighbour new.
+ * True when the card marks `path` new (REQ-LINEAR-44): its `paths` line holds it with ` (new)` (REQ-CARD-6), or the
+ * title or body names it, and the word "new" stands earlier in that sentence on that line (`the new file
+ * \`test/a.test.js\``), or `(new)` follows it. Other paths and code spans in the sentence do not count, so
+ * `src/new.js` does not mark its neighbour new.
  */
 export function markedNew(card, path) {
+  if ((card.newPaths ?? []).some((p) => exactPath(p) === exactPath(path))) return true;
   const [head, ...rest] = card.text.split(/^## /m);
   const text = `${/^#\s+(.+)$/m.exec(head)?.[1] ?? ''}\n${rest.join('## ')}`;
   const at = new RegExp(`(?<![\\w./-])(?:\\./)?${escapeRe(path)}(?![\\w/-]|\\.\\w)`, 'g');

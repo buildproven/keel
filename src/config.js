@@ -342,6 +342,39 @@ const pathList = (field, v) => {
   return items;
 };
 
+const NEW_MARK = /(?:^|\s+)\(new\)$/i;
+
+/**
+ * `paths` with each trailing ` (new)` marker taken off, and the marked paths (REQ-CARD-6), so a file the card creates
+ * is a real path for scope and is not reported missing on base (REQ-LINEAR-44).
+ */
+function markedPaths(v) {
+  const paths = [];
+  const newPaths = [];
+  for (const item of pathList('paths', v)) {
+    if (!NEW_MARK.test(item)) {
+      paths.push(item);
+      continue;
+    }
+    const path = item.replace(NEW_MARK, '');
+    if (!path) throw new Error(`card: paths item ${JSON.stringify(item)} names no path; write "<path> (new)"`);
+    paths.push(path);
+    newPaths.push(path);
+  }
+  return { paths, newPaths };
+}
+
+/** `allowEdits` opens locked files that exist, so a ` (new)` marker there is an error (REQ-CARD-6). */
+function allowEditsList(v) {
+  const items = pathList('allowEdits', v);
+  const marked = items.find((p) => NEW_MARK.test(p));
+  if (marked)
+    throw new Error(
+      `card: allowEdits lists existing files only; ${JSON.stringify(marked)} is marked new: put a new file in paths as "<path> (new)"`,
+    );
+  return items;
+}
+
 /** Parse a card: `key: value` header lines before the first `## ` heading; the whole file is the task text. */
 export function parseCard(text, file = 'card.md') {
   const fields = {};
@@ -359,13 +392,15 @@ export function parseCard(text, file = 'card.md') {
   if (!SIZES.includes(fields.size)) throw new Error(`card ${id}: size "${fields.size}" is not one of ${SIZES.join(', ')}`);
   const acceptance = list(fields.acceptance);
   for (const a of acceptance) if (!NAME.test(a)) throw new Error(`card ${id}: acceptance name "${a}" must match [A-Za-z0-9_-]+`);
+  const { paths, newPaths } = markedPaths(fields.paths);
   return {
     id,
     title,
     kind: fields.kind,
     size: fields.size,
-    paths: pathList('paths', fields.paths),
-    allowEdits: pathList('allowEdits', fields.allowEdits),
+    paths,
+    newPaths,
+    allowEdits: allowEditsList(fields.allowEdits),
     acceptance,
     heldOut: fields.heldOut || null,
     text,
