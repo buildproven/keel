@@ -4,7 +4,10 @@ import { ALREADY_SATISFIED, verifyDone } from './done.js';
 import {
   attemptedIssueIds,
   cardFromIssue,
+  exactPaths,
   filedToday,
+  latestPollRow,
+  markedNew,
   notKeelIssueIds,
   notKeelReason,
   pendingFollowUps,
@@ -29,8 +32,8 @@ const TRANSIENT_STOPS = new Set(['quota', 'review-unavailable']);
 
 /**
  * Exit code of `keel poll` and `keel run <ISSUE-ID>` (REQ-RUN-20): 1 when a run failed, was blocked,
- * lost its PR, or its auto-merge call or a self-merge (REQ-MERGE-3) failed; 3 when budget, a provider, or a path lease (REQ-LEASE-3) deferred work;
- * else 0.
+ * lost its PR, or its auto-merge call or a self-merge (REQ-MERGE-3) failed; 3 when budget, a provider, a path lease
+ * (REQ-LEASE-3), or a path missing on base (REQ-LINEAR-44) deferred work; else 0.
  */
 export function pollExitCode(results) {
   if (
@@ -704,6 +707,37 @@ async function refineStep({ repo, base, config, client, issue, project, log, ref
 }
 
 /**
+ * The card's exactly named paths that are not in `base` and that its text does not mark new (REQ-LINEAR-44): a
+ * dependency not merged yet, a card for another repo, or a file that does not exist yet would stop the build for a human.
+ */
+function missingOnBase(repo, base, card) {
+  const wanted = exactPaths(card).filter((p) => !markedNew(card, p));
+  if (!wanted.length) return { missing: [] };
+  const sha = revParse(base, repo);
+  return { sha, missing: wanted.filter((p) => exec('git', ['cat-file', '-e', `${sha}:${p}`], repo).status !== 0) };
+}
+
+/**
+ * Before a build (REQ-LINEAR-44): when the card names a path missing on base, return a `deferred` outcome without a
+ * build, so the next poll tries again, and comment the missing paths unless the issue's latest poll row already
+ * deferred it for the same ones. Returns null when every named path is there.
+ */
+async function deferMissing({ repo, base, client, issue, card, log }) {
+  const { sha, missing } = missingOnBase(repo, base, card);
+  if (!missing.length) return null;
+  const list = missing.map((p) => `\`${p}\``).join(', ');
+  log(`${issue.id} deferred: ${missing.join(', ')} not on base ${sha.slice(0, 12)}`);
+  const last = latestPollRow(repo, issue.id);
+  const same = last?.outcome === 'deferred' && JSON.stringify(last.detail?.missing) === JSON.stringify(missing);
+  if (!same)
+    await client.comment(
+      issue.id,
+      `keel: deferred, not built: the card's \`paths\` name ${list}, which ${missing.length === 1 ? 'is' : 'are'} not on the base (${sha.slice(0, 12)}) and the card does not mark new. A dependency may not be merged yet, or the card may belong to another repo. Merge the dependency, fix the path, or mark a new file in the card text ("the new file \`${missing[0]}\`"); the next poll tries again.`,
+    );
+  return { outcome: 'deferred', issue: issue.id, detail: { missing } };
+}
+
+/**
  * One issue → (refine) → card → run → report cycle (REQ-LINEAR-4, -5, -32). `runFn` defaults to `run` from run.js and
  * `refineFn` to the refine turn; tests inject fakes so no live worker or gate runs.
  */
@@ -712,6 +746,8 @@ async function runOne({ repo, base, pr, merge, log, config, client, issue: picke
   if (step.outcome) return step.outcome;
   const { issue } = step;
   const card = cardFromIssue(issue);
+  const missing = await deferMissing({ repo, base, client, issue, card, log });
+  if (missing) return missing;
   const result = runFn({ repo, card, config, base, pr, merge, reserved, log });
   // Found work is queued before any Linear call, so a Linear error cannot lose it (REQ-LINEAR-22).
   queueFollowUps(repo, issue.id, result.followUps, result.branch, result.pr?.ok ? result.pr.out.trim().split('\n').at(-1) : null);
@@ -1044,6 +1080,8 @@ export async function poll({
     // A deferred issue is retried by the next poll, not again in this one: move on to other work (REQ-LINEAR-19).
     if (outcome.outcome === 'deferred') deferredNow.add(issue.id);
     results.push(outcome, ...filingFailed(await fileFollowUps({ repo, project, config, client, log, base, capacityFn })));
+    // A card deferred for a path missing on base paid for no build: it uses no `limit` slot (REQ-LINEAR-44).
+    if (outcome.outcome === 'deferred' && outcome.detail?.missing) i -= 1;
   }
   return results;
 }
