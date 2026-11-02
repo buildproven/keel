@@ -32,6 +32,7 @@ import {
   showBlob,
   showFile,
   trackedContentDirty,
+  sharedWorktree,
   withTempWorktree,
 } from './git.js';
 import {
@@ -314,15 +315,13 @@ export const stageLine = (r) =>
 
 /** Checks and the regression tests run on a fresh checkout of head, never on worker leftovers (REQ-GATE-1, -3, -13, -14). */
 function candidateStages(ctx) {
-  const { repo, head, card, config } = ctx;
+  const { head, card, config } = ctx;
   // Names come from the card, commands only from base keel.json (REQ-GATE-15): card text never reaches a shell.
   const unknown = card.acceptance.filter((name) => !Object.hasOwn(config.acceptance, name));
   if (unknown.length) return [fail('acceptance', 'unknown-acceptance', { names: unknown })];
-  return withTempWorktree(repo, head, (dir) => {
-    const installStart = Date.now();
-    const installed = prepareCheckout(repo, dir, config);
+  return ctx.onHead((dir, { installed, ms }) => {
     if (installed) return [{ ...fail('install', 'install-failed'), output: tail(installed.out) }];
-    const results = config.install ? [{ name: 'install', pass: true, problems: [], ms: Date.now() - installStart }] : [];
+    const results = config.install ? [{ name: 'install', pass: true, problems: [], ms }] : [];
     let suiteOut = ''; // what the whole suite printed on head (REQ-GATE-33)
     for (const [name, command] of Object.entries(config.checks)) {
       const r = runHead(command, dir, config);
@@ -510,8 +509,7 @@ function testEditProof(ctx) {
     ...fail('test-edit-proof', 'existing-test-changed', { path, why }),
     ...(output ? { output: tail(output) } : {}),
   });
-  const onHead = withTempWorktree(repo, head, (dir) => {
-    const installed = prepareCheckout(repo, dir, config);
+  const onHead = ctx.onHead((dir, { installed }) => {
     if (installed) return { ...fail('test-edit-proof', 'install-failed'), output: tail(installed.out) };
     for (const p of files) {
       const r = shell(filesCommand(config, [p]), dir, config);
@@ -549,7 +547,8 @@ function testEditProof(ctx) {
 }
 
 /** The cross-family verdict on edited existing tests (REQ-GATE-44), on the candidate's own diff (REQ-GATE-40). */
-const testEdits = (ctx) => (ctx.testEdits?.length ? testEditStage({ ...ctx, files: ctx.testEdits }) : null);
+const testEdits = (ctx) =>
+  ctx.testEdits?.length ? testEditStage({ ...ctx, files: ctx.testEdits, checkout: (fn) => ctx.onHead((dir) => fn(dir)) }) : null;
 
 export const listFiles = (dir) =>
   readdirSync(dir, { recursive: true, withFileTypes: true })
@@ -581,10 +580,17 @@ export function failingTests(out) {
   return [...names];
 }
 
-/** Copy held-out files into a checkout of ref and run the held-out command. Never overwrites a file. */
-function runHeldOut({ repo, card, config }, ref, files) {
-  return withTempWorktree(repo, ref, (dir) => {
-    if (prepareCheckout(repo, dir, config)) return { error: 'install-failed' };
+/**
+ * Copy held-out files into a checkout of ref and run the held-out command. Never overwrites a file. Head runs in the
+ * gate's shared head checkout (REQ-GATE-57), base in a fresh one.
+ */
+function runHeldOut({ repo, head, card, config, onHead }, ref, files) {
+  const checkout =
+    ref === head && onHead
+      ? onHead
+      : (fn) => withTempWorktree(repo, ref, (dir) => fn(dir, { installed: prepareCheckout(repo, dir, config) }));
+  return checkout((dir, { installed }) => {
+    if (installed) return { error: 'install-failed' };
     for (const rel of files) {
       if (existsSync(join(dir, rel))) return { error: 'held-out-overwrite' };
       if (writeInside(dir, rel, (t) => copyFileSync(join(card.heldOut, rel), t))) return { error: 'unsafe-path' };
@@ -621,12 +627,11 @@ function heldOut(ctx) {
  * a non-zero exit fails the stage, and its output (the surviving mutants) goes to the next attempt.
  */
 function mutation(ctx) {
-  const { repo, head, card, config, changed } = ctx;
+  const { card, config, changed } = ctx;
   if (!config.mutation || !needsProof(card)) return null;
   const files = changed.filter((f) => f.status !== 'D' && !matchesAny(f.path, config.testGlobs)).map((f) => f.path);
   if (!files.length) return null;
-  return withTempWorktree(repo, head, (dir) => {
-    const installed = prepareCheckout(repo, dir, config);
+  return ctx.onHead((dir, { installed }) => {
     if (installed) return { ...fail('mutation', 'install-failed'), output: tail(installed.out) };
     const env = { ...checkEnv(process.env, config.workerEnvAllow), KEEL_CHANGED_FILES: files.join('\n') };
     return headResult('mutation', sh(config.mutation, dir, { env }), 'mutants-survived');
@@ -741,34 +746,56 @@ export function gate({
     previous: previousReview(receiptDir, card, head, repo),
     changed: failed() ? [] : changedFiles(from, head, repo),
   };
+  // Every head stage runs in one checkout of head, prepared once and reset between stages (REQ-GATE-57, -58).
+  const improve = new Set();
+  const headTree = sharedWorktree(repo, head, {
+    prepare: (dir) => {
+      const start = Date.now();
+      const installed = prepareCheckout(repo, dir, config);
+      return { installed, ms: Date.now() - start };
+    },
+    // Dependency dirs stay in place; other install outputs are restored to their post-install contents after each reset.
+    keep: config.shareDirs,
+    preservePrepared: Boolean(config.install),
+    onFallback: (e) =>
+      improve.add(
+        `IMPROVE: the shared head checkout could not be reset, so a stage ran in a fresh worktree (REQ-GATE-59): ${e.message.split('\n')[0]}`,
+      ),
+  });
+  ctx.onHead = (fn) => headTree.use(fn);
   // Nothing to certify: a no-op head must not pass as work done (REQ-GATE-19, found when a no-op card passed in pilot round 2).
   if (!failed() && !ctx.changed.length) results.push(fail('changes', 'no-change'));
   // Stages that run the project's commands queue for a machine-wide slot (REQ-GATE-29).
   const heavy = new Set([candidateStages, redProof, testEditProof, heldOut, mutation]);
   // One start time for every stage, so a started gate keeps its place in the queue (REQ-SLOT-3).
   const slots = slotDir ? { dir: slotDir, size: fixedSlots(), since: Date.now(), log } : null;
-  const review = (c) => reviewStage({ ...c, base: c.from }); // the reviewer reads the candidate's own diff (REQ-GATE-40)
+  // The reviewer reads the candidate's own diff (REQ-GATE-40), in the shared head checkout (REQ-GATE-57).
+  const review = (c) => reviewStage({ ...c, base: c.from, checkout: (fn) => c.onHead((dir) => fn(dir)) });
   let waitMs = 0;
-  for (const stage of [staticChecks, candidateStages, redProof, testEditProof, heldOut, mutation, testEdits, review]) {
-    if (failed()) break;
-    const run = () => timed(() => [stage(ctx)].flat().filter(Boolean));
-    const asked = Date.now();
-    const slotted = () => {
-      waitMs += Date.now() - asked; // time queued for a gate slot (REQ-GATE-47)
-      return run();
-    };
-    results.push(...(slots && heavy.has(stage) ? withGateSlot(slots, slotted) : run()));
-  }
-  // Same process, same head: only the review runs again, so no stored receipt is trusted (REQ-GATE-28).
-  const last = results.at(-1);
-  if (waitReviewHours > 0 && last?.name === 'review' && last.problems.some((p) => p.rule === 'review-unavailable')) {
-    const ms = resetWaitMs(last.unavailable ?? [], now());
-    if (ms !== null && ms <= waitReviewHours * 3600 * 1000) {
-      for (const line of signInFixes(last.unavailable)) log(line); // fixing a sign-in beats the wait (REQ-GATE-53)
-      log(`every reviewer is out; waiting ${Math.ceil(ms / 60000)} min for the reset, then the review runs again`);
-      sleep(ms);
-      results[results.length - 1] = timed(() => [review(ctx)])[0];
+  try {
+    for (const stage of [staticChecks, candidateStages, redProof, testEditProof, heldOut, mutation, testEdits, review]) {
+      if (failed()) break;
+      const run = () => timed(() => [stage(ctx)].flat().filter(Boolean));
+      const asked = Date.now();
+      const slotted = () => {
+        waitMs += Date.now() - asked; // time queued for a gate slot (REQ-GATE-47)
+        return run();
+      };
+      results.push(...(slots && heavy.has(stage) ? withGateSlot(slots, slotted) : run()));
     }
+    // Same process, same head: only the review runs again, so no stored receipt is trusted (REQ-GATE-28).
+    const last = results.at(-1);
+    if (waitReviewHours > 0 && last?.name === 'review' && last.problems.some((p) => p.rule === 'review-unavailable')) {
+      const ms = resetWaitMs(last.unavailable ?? [], now());
+      if (ms !== null && ms <= waitReviewHours * 3600 * 1000) {
+        for (const line of signInFixes(last.unavailable)) log(line); // fixing a sign-in beats the wait (REQ-GATE-53)
+        log(`every reviewer is out; waiting ${Math.ceil(ms / 60000)} min for the reset, then the review runs again`);
+        sleep(ms);
+        results[results.length - 1] = timed(() => [review(ctx)])[0];
+      }
+    }
+  } finally {
+    headTree.close(); // after the last head stage, on pass, fail, or throw (REQ-GATE-60)
   }
   // Stages that failed an earlier gate of this same head pass here only as flaky (REQ-RUN-34).
   for (const r of results) if (r.pass && flaky.includes(r.name)) r.flaky = true;
@@ -807,6 +834,7 @@ export function gate({
   // A reviewer that cannot sign in is a lost fallback, named even when another reviewer answered (REQ-GATE-53).
   const signIn = signInFixes(results.find((r) => r.name === 'review')?.unavailable);
   if (signIn.length) receipt.improve = [...(receipt.improve ?? []), ...signIn];
+  if (improve.size) receipt.improve = [...(receipt.improve ?? []), ...improve];
   return receipt;
 }
 

@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 
@@ -149,12 +149,110 @@ export function withTempWorktree(repo, ref, fn) {
     added = true;
     return fn(dir);
   } finally {
-    try {
-      if (existsSync(dir)) makeRemovable(dir);
-      rmSync(dir, { recursive: true, force: true });
-      if (added) git(['worktree', 'prune'], repo);
-    } catch (e) {
-      process.stderr.write(`keel: could not remove temporary checkout ${dir}: ${e.message}\n`);
-    }
+    removeWorktree(repo, dir, added);
   }
+}
+
+/** Remove a temporary checkout (REQ-GATE-1); a failure goes to stderr and never replaces the stage's result or error. */
+function removeWorktree(repo, dir, added) {
+  try {
+    if (existsSync(dir)) makeRemovable(dir);
+    rmSync(dir, { recursive: true, force: true });
+    if (added) git(['worktree', 'prune'], repo);
+  } catch (e) {
+    process.stderr.write(`keel: could not remove temporary checkout ${dir}: ${e.message}\n`);
+  }
+}
+
+/** Untracked and ignored paths made by checkout preparation, NUL-safe for arbitrary file names. */
+function preparedPaths(dir, keep) {
+  const kept = keep.map((path) => path.replace(/\/+$/, ''));
+  return git(['status', '--porcelain=v1', '--ignored', '--untracked-files=normal', '-z'], dir)
+    .split('\0')
+    .filter((row) => row.startsWith('?? ') || row.startsWith('!! '))
+    .map((row) => row.slice(3).replace(/\/+$/, ''))
+    .filter((path) => path && !kept.some((root) => path === root || path.startsWith(`${root}/`)));
+}
+
+/** Copy prepared paths outside the checkout so a reset can restore their original contents. */
+function snapshotPrepared(dir, paths) {
+  if (!paths.length) return null;
+  const snapshot = mkdtempSync(join(tempRoot(), `keel-prepared-${process.pid}-`));
+  try {
+    for (const path of paths) {
+      const target = join(snapshot, path);
+      mkdirSync(dirname(target), { recursive: true });
+      cpSync(join(dir, path), target, { recursive: true, preserveTimestamps: true, verbatimSymlinks: true });
+    }
+    return snapshot;
+  } catch (error) {
+    removeSnapshot(snapshot);
+    throw error;
+  }
+}
+
+/** REQ-GATE-60: cleanup never replaces the gate result or the error that caused cleanup. */
+function removeSnapshot(snapshot) {
+  try {
+    makeRemovable(snapshot);
+    rmSync(snapshot, { recursive: true, force: true });
+  } catch (e) {
+    process.stderr.write(`keel: could not remove checkout preparation snapshot ${snapshot}: ${e.message}\n`);
+  }
+}
+
+/** A literal root-anchored git-clean exclude for a configured shared directory. */
+const cleanExclude = (path) => `/${path.replace(/\/+$/, '').replace(/[\\*?[\]]/g, '\\$&')}`;
+
+/**
+ * One temporary detached worktree of ref that several stages use in turn (REQ-GATE-57). The first `use` makes it and
+ * runs `prepare` once; each later `use` first resets it to ref (REQ-GATE-58): a forced checkout of ref and
+ * `git clean -ffdx` that keeps only the `keep` dirs (the shared dependency dirs), then restores any other paths made by
+ * `prepare` to their prepared contents, so no stage sees what an earlier one left. When the reset fails, that stage runs
+ * in a fresh worktree, prepared again, and `onFallback` gets the error (REQ-GATE-59). `fn` gets the dir and what `prepare`
+ * returned. `close` removes the checkout and preparation snapshot (REQ-GATE-60).
+ */
+export function sharedWorktree(repo, ref, { prepare = () => null, keep = [], preservePrepared = false, onFallback = () => {} } = {}) {
+  let dir = null;
+  let added = false;
+  let prepared = null;
+  let snapshot = null;
+  let restore = [];
+  const excludes = keep.flatMap((d) => ['-e', cleanExclude(d)]);
+  return {
+    use(fn) {
+      if (!dir) {
+        dir = mkdtempSync(join(tempRoot(), `keel-wt-${process.pid}-`));
+        git(['worktree', 'add', '--detach', '--quiet', dir, ref], repo);
+        added = true;
+        prepared = prepare(dir);
+        if (preservePrepared) {
+          restore = preparedPaths(dir, keep);
+          snapshot = snapshotPrepared(dir, restore);
+        }
+        return fn(dir, prepared);
+      }
+      try {
+        git(['checkout', '--force', '--detach', '--quiet', ref], dir);
+        git(['clean', '-ffdx', '--quiet', ...excludes], dir);
+        for (const path of restore) {
+          const target = join(dir, path);
+          mkdirSync(dirname(target), { recursive: true });
+          cpSync(join(snapshot, path), target, { recursive: true, preserveTimestamps: true, verbatimSymlinks: true });
+        }
+      } catch (e) {
+        // REQ-GATE-59: a checkout that cannot be reset is not fresh; this stage gets a fresh one and the cause is named.
+        onFallback(e);
+        return withTempWorktree(repo, ref, (fresh) => fn(fresh, prepare(fresh)));
+      }
+      return fn(dir, prepared);
+    },
+    close() {
+      if (dir) removeWorktree(repo, dir, added);
+      if (snapshot) removeSnapshot(snapshot);
+      dir = null;
+      snapshot = null;
+      restore = [];
+    },
+  };
 }

@@ -166,7 +166,7 @@ const reviewPrompt = (card, diff, previous) =>
  * so an invented citation cannot fail a change (precision first). A reviewer with no verdict fails closed.
  * A reviewer whose quota window is nearly used gives way to the fallback before the quota runs out (REQ-GATE-24).
  */
-export function reviewStage({ repo, base, head, card, config, changed, reviewer, previous = null, spendFile = null }) {
+export function reviewStage({ repo, base, head, card, config, changed, reviewer, previous = null, spendFile = null, checkout = null }) {
   if (!config.review) return null;
   if (!reviewer) return { name: 'review', pass: false, problems: [{ rule: 'no-cross-reviewer' }] };
   const chain = config.reviewFallback ? fallbackReviewers(config, reviewer) : [];
@@ -188,7 +188,7 @@ export function reviewStage({ repo, base, head, card, config, changed, reviewer,
   const unavailable = []; // why each reviewer gave no verdict, in the order tried (REQ-GATE-26)
   // A provider outage must not stop the loop (REQ-GATE-22): try each in turn until one gives a verdict.
   for (const t of order) {
-    const r = reviewWith({ repo, base, head, card, config, changed, reviewer: t, previous, spendFile });
+    const r = reviewWith({ repo, base, head, card, config, changed, reviewer: t, previous, spendFile, checkout });
     // Every reviewer that ran spent tokens; the card's budget counts them all (REQ-GATE-21).
     spent = { cost: addCost(spent.cost, r.cost), usage: addUsage(spent.usage, r.usage) };
     unknown ||= unpriced(r);
@@ -263,7 +263,10 @@ function smallDocChange(repo, from, to, maxLines) {
   return rows.length > 0 && rows.every(([, , path]) => PROSE.has(extname(path))) && lines <= maxLines;
 }
 
-function reviewWith({ repo, base, head, card, config, changed, reviewer, previous, spendFile }) {
+/** A fresh checkout of ref for one call of fn, unless the gate passes its shared head checkout (REQ-GATE-57). */
+const scratch = (repo, ref, checkout) => checkout ?? ((fn) => withTempWorktree(repo, ref, fn));
+
+function reviewWith({ repo, base, head, card, config, changed, reviewer, previous, spendFile, checkout }) {
   const diff = git(['diff', '--text', '--no-textconv', base, head], repo);
   const light = config.lightReview;
   // A re-gate of a small doc fix needs less thought than the first read of the change (REQ-GATE-25).
@@ -271,7 +274,11 @@ function reviewWith({ repo, base, head, card, config, changed, reviewer, previou
     light && previous && light.effort !== reviewer.effort && smallDocChange(repo, previous.head, head, light.maxLines)
       ? light.effort
       : null;
-  return withTempWorktree(repo, head, (dir) => {
+  return scratch(
+    repo,
+    head,
+    checkout,
+  )((dir) => {
     const w = runWorker(effort ? { ...reviewer, effort } : reviewer, reviewPrompt(card, diff, previous), dir, config);
     recordReviewSpend(spendFile, family(reviewer), w.usage); // The window is shared by every session (REQ-GATE-24).
     const meta = { reviewer: label(reviewer), ...(effort ? { effort } : {}), cost: w.cost, usage: w.usage };
@@ -311,12 +318,16 @@ const APPROVAL = /^(APPROVE|DENY):\s*(.+)$/m;
  * (REQ-RUN-46). Returns { answer: { word, approved, by, reason } | null, missed, spent: { cost, usage, unpriced? } }:
  * how each tier that gave no answer ended (REQ-GATE-44), and what every tier that ran spent (REQ-LED-13).
  */
-function askApproval({ tiers, prompt, repo, ref, config, pattern = APPROVAL }) {
+function askApproval({ tiers, prompt, repo, ref, config, pattern = APPROVAL, checkout = null }) {
   let cost = null;
   let usage = null;
   let unknown = false;
   const missed = [];
-  return withTempWorktree(repo, ref, (dir) => {
+  return scratch(
+    repo,
+    ref,
+    checkout,
+  )((dir) => {
     let answer = null;
     for (const t of tiers) {
       const w = runWorker(t, prompt, dir, config);
@@ -420,7 +431,7 @@ export function judgeHeldOut({ config, builder, card, files, output, cwd, head }
  * APPROVE (the edited tests check at least as much) or DENY (the edit weakens them). The stage records the answer and
  * the spend; with no answer, or a denial, the files stay locked.
  */
-export function testEditStage({ repo, from, head, card, config, reviewer, files }) {
+export function testEditStage({ repo, from, head, card, config, reviewer, files, checkout = null }) {
   const result = (pass, why, extra = {}, problem = { rule: 'existing-test-changed' }) => ({
     name: 'test-edits',
     pass,
@@ -445,7 +456,7 @@ export function testEditStage({ repo, from, head, card, config, reviewer, files 
     reviewer,
     ...(config.reviewFallback ? fallbackReviewers(config, reviewer).filter((t) => family(t) === family(reviewer)) : []),
   ];
-  const { answer, missed, spent } = askApproval({ tiers, prompt, repo, ref: head, config });
+  const { answer, missed, spent } = askApproval({ tiers, prompt, repo, ref: head, config, checkout });
   // The tier that answered, else the first one asked, names the spend when no regular review runs (REQ-LED-13).
   spent.reviewer = answer?.by ?? label(reviewer);
   if (!answer) {
