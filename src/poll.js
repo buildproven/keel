@@ -310,7 +310,7 @@ function appendFinding(description, f, path) {
 }
 
 /**
- * Archive the polled project's closed issues (REQ-LINEAR-39), so they stop counting toward Linear's Free-plan limit.
+ * Archive the workspace's closed issues (REQ-LINEAR-39), so they stop counting toward Linear's Free-plan limit.
  * Returns the poll results to add: none, or one `followUpsFailed` when Linear failed, so the poll exits 1 and goes on.
  */
 async function archiveClosed(archiveFn, log) {
@@ -987,7 +987,7 @@ export async function poll({
   capacityFn = runFn === run ? () => client.capacity() : null,
   // Closed issues are archived through the Linear client (REQ-LINEAR-39); linearHttpClient always can. An in-memory
   // client without `archiveClosed` (a test fake of other behavior) archives nothing; tests of archiving inject `archiveFn`.
-  archiveFn = client.archiveClosed ? () => client.archiveClosed(project) : null,
+  archiveFn = client.archiveClosed ? () => client.archiveClosed() : null,
   limit = 1,
   issue: only = null,
   fileOnly = false,
