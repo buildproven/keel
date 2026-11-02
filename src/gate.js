@@ -447,8 +447,8 @@ function redProof(ctx) {
   if (!needsProof(card)) return null;
   const proof = proofFiles(ctx);
   if (!proof.length) return fail('red-proof', 'no-test-changed');
-  return withTempWorktree(repo, base, (dir) => {
-    const installed = prepareCheckout(repo, dir, config);
+  // In the gate's shared base checkout, which test-edit proof gets back reset to base (REQ-GATE-61, -62).
+  return ctx.onBase((dir, { installed }) => {
     if (installed) return { ...fail('red-proof', 'install-failed'), output: tail(installed.out) };
     const cached = baseGreenFile(ctx);
     let flaky = false;
@@ -502,7 +502,7 @@ function redProof(ctx) {
  * for a new test.
  */
 function testEditProof(ctx) {
-  const { repo, base, head, config } = ctx;
+  const { repo, head, config } = ctx;
   const files = ctx.testEdits ?? [];
   if (!files.length) return null;
   const locked = (path, why, output) => ({
@@ -518,8 +518,8 @@ function testEditProof(ctx) {
     return null;
   });
   if (onHead) return onHead;
-  return withTempWorktree(repo, base, (dir) => {
-    const installed = prepareCheckout(repo, dir, config);
+  // The shared base checkout, reset to base after red proof: none of its overlaid files are left (REQ-GATE-61, -62).
+  return ctx.onBase((dir, { installed }) => {
     if (installed) return { ...fail('test-edit-proof', 'install-failed'), output: tail(installed.out) };
     // One edited file at a time, the others as on base: an edit to one test must not be what makes another fail.
     for (const p of files) {
@@ -746,23 +746,28 @@ export function gate({
     previous: previousReview(receiptDir, card, head, repo),
     changed: failed() ? [] : changedFiles(from, head, repo),
   };
-  // Every head stage runs in one checkout of head, prepared once and reset between stages (REQ-GATE-57, -58).
+  // Every head stage runs in one checkout of head, prepared once and reset between stages (REQ-GATE-57, -58); red
+  // proof and test-edit proof share one checkout of base the same way (REQ-GATE-61, -62).
   const improve = new Set();
-  const headTree = sharedWorktree(repo, head, {
-    prepare: (dir) => {
-      const start = Date.now();
-      const installed = prepareCheckout(repo, dir, config);
-      return { installed, ms: Date.now() - start };
-    },
-    // Dependency dirs stay in place; other install outputs are restored to their post-install contents after each reset.
-    keep: config.shareDirs,
-    preservePrepared: Boolean(config.install),
-    onFallback: (e) =>
-      improve.add(
-        `IMPROVE: the shared head checkout could not be reset, so a stage ran in a fresh worktree (REQ-GATE-59): ${e.message.split('\n')[0]}`,
-      ),
-  });
+  const shared = (ref, which) =>
+    sharedWorktree(repo, ref, {
+      prepare: (dir) => {
+        const start = Date.now();
+        const installed = prepareCheckout(repo, dir, config);
+        return { installed, ms: Date.now() - start };
+      },
+      // Dependency dirs stay in place; other install outputs are restored to their post-install contents after each reset.
+      keep: config.shareDirs,
+      preservePrepared: Boolean(config.install),
+      onFallback: (e) =>
+        improve.add(
+          `IMPROVE: the shared ${which} checkout could not be reset, so a stage ran in a fresh worktree (REQ-GATE-59): ${e.message.split('\n')[0]}`,
+        ),
+    });
+  const headTree = shared(head, 'head');
+  const baseTree = shared(baseSha, 'base');
   ctx.onHead = (fn) => headTree.use(fn);
+  ctx.onBase = (fn) => baseTree.use(fn);
   // Nothing to certify: a no-op head must not pass as work done (REQ-GATE-19, found when a no-op card passed in pilot round 2).
   if (!failed() && !ctx.changed.length) results.push(fail('changes', 'no-change'));
   // Stages that run the project's commands queue for a machine-wide slot (REQ-GATE-29).
@@ -796,6 +801,7 @@ export function gate({
     }
   } finally {
     headTree.close(); // after the last head stage, on pass, fail, or throw (REQ-GATE-60)
+    baseTree.close(); // after the last base stage, on pass, fail, or throw (REQ-GATE-63)
   }
   // Stages that failed an earlier gate of this same head pass here only as flaky (REQ-RUN-34).
   for (const r of results) if (r.pass && flaky.includes(r.name)) r.flaky = true;
