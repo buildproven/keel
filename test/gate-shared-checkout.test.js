@@ -46,9 +46,11 @@ function traced(fn) {
   }
 }
 
-const ownCheckouts = () => {
+const ownTemps = () => {
   const root = join(tmpdir(), 'keel.noindex');
-  return existsSync(root) ? readdirSync(root).filter((n) => n.startsWith(`keel-wt-${process.pid}-`)) : [];
+  return existsSync(root)
+    ? readdirSync(root).filter((n) => n.startsWith(`keel-wt-${process.pid}-`) || n.startsWith(`keel-prepared-${process.pid}-`))
+    : [];
 };
 
 test('REQ-GATE-57: one gate with checks, held-out, and review creates one head worktree', () => {
@@ -126,7 +128,7 @@ test('REQ-GATE-59: a failed reset falls back to a fresh worktree with an IMPROVE
   const lines = (receipt.improve ?? []).filter((l) => /fresh worktree/.test(l));
   assert.equal(lines.length, 1, JSON.stringify(receipt.improve));
   assert.match(lines[0], /^IMPROVE: .*Permission denied/);
-  assert.deepEqual(ownCheckouts(), []);
+  assert.deepEqual(ownTemps(), []);
 });
 
 test('REQ-GATE-60: the shared head checkout is removed after the gate on pass, fail, and throw', () => {
@@ -143,10 +145,16 @@ test('REQ-GATE-60: the shared head checkout is removed after the gate on pass, f
   ]) {
     const { dir, base } = fixtureRepo();
     commit(dir, { 'docs/note.md': 'a note\n' });
-    const run = () => gate({ repo: dir, base, card: card(`kind: chore\nsize: M\nheldOut: ${held}`), config: fixtureConfig({ checks }) });
+    const run = () =>
+      gate({
+        repo: dir,
+        base,
+        card: card(`kind: chore\nsize: M\nheldOut: ${held}`),
+        config: fixtureConfig({ checks, install: 'mkdir -p dist && echo built > dist/generated.txt' }),
+      });
     if (outcome === 'throw') assert.throws(run);
     else assert.equal(run().pass, outcome === 'pass');
-    assert.deepEqual(ownCheckouts(), [], outcome);
+    assert.deepEqual(ownTemps(), [], outcome);
     assert.equal(worktrees(dir).length, 1, outcome);
   }
 });
@@ -172,4 +180,27 @@ test('REQ-GATE-57: with install set, one gate installs once and later head stage
     ['install', 'test', 'held-out'],
   );
   assert.equal(readFileSync(log, 'utf8'), 'run\n');
+});
+
+test('REQ-GATE-57: later head stages keep install artifacts outside shared dependency dirs', () => {
+  const { dir, base } = fixtureRepo();
+  commit(dir, { 'docs/note.md': 'a note\n' });
+  const held = tmp('keel-held-');
+  write(held, {
+    'test/held.test.js':
+      "import assert from 'node:assert';\nimport { readFileSync } from 'node:fs';\nassert.equal(readFileSync('dist/generated.txt', 'utf8'), 'built\\n');\n",
+  });
+  const log = join(tmp('keel-install-'), 'install.log');
+  const receipt = gate({
+    repo: dir,
+    base,
+    card: card(`kind: chore\nsize: M\nheldOut: ${held}`),
+    config: fixtureConfig({
+      install: `echo run >> ${JSON.stringify(log)} && mkdir -p dist && echo built > dist/generated.txt`,
+      checks: { test: `echo changed > dist/generated.txt && ${FIXTURE_TEST}` },
+    }),
+  });
+  assert.equal(receipt.pass, true, JSON.stringify(receipt.results, null, 2));
+  assert.equal(readFileSync(log, 'utf8'), 'run\n');
+  assert.deepEqual(ownTemps(), []);
 });

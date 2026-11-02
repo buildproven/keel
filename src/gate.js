@@ -754,8 +754,9 @@ export function gate({
       const installed = prepareCheckout(repo, dir, config);
       return { installed, ms: Date.now() - start };
     },
-    // The dependency dirs a stage needs stay; in install mode they are what the one install made.
+    // Dependency dirs stay in place; other install outputs are restored to their post-install contents after each reset.
     keep: config.shareDirs,
+    preservePrepared: Boolean(config.install),
     onFallback: (e) =>
       improve.add(
         `IMPROVE: the shared head checkout could not be reset, so a stage ran in a fresh worktree (REQ-GATE-59): ${e.message.split('\n')[0]}`,
