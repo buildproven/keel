@@ -149,12 +149,55 @@ export function withTempWorktree(repo, ref, fn) {
     added = true;
     return fn(dir);
   } finally {
-    try {
-      if (existsSync(dir)) makeRemovable(dir);
-      rmSync(dir, { recursive: true, force: true });
-      if (added) git(['worktree', 'prune'], repo);
-    } catch (e) {
-      process.stderr.write(`keel: could not remove temporary checkout ${dir}: ${e.message}\n`);
-    }
+    removeWorktree(repo, dir, added);
   }
+}
+
+/** Remove a temporary checkout (REQ-GATE-1); a failure goes to stderr and never replaces the stage's result or error. */
+function removeWorktree(repo, dir, added) {
+  try {
+    if (existsSync(dir)) makeRemovable(dir);
+    rmSync(dir, { recursive: true, force: true });
+    if (added) git(['worktree', 'prune'], repo);
+  } catch (e) {
+    process.stderr.write(`keel: could not remove temporary checkout ${dir}: ${e.message}\n`);
+  }
+}
+
+/**
+ * One temporary detached worktree of ref that several stages use in turn (REQ-GATE-57). The first `use` makes it and
+ * runs `prepare` once; each later `use` first resets it to ref (REQ-GATE-58): a forced checkout of ref and
+ * `git clean -ffdx` that keeps only the `keep` dirs (the shared dependency dirs), so no stage sees what an earlier one
+ * left. When the reset fails, that stage runs in a fresh worktree, prepared again, and `onFallback` gets the error
+ * (REQ-GATE-59). `fn` gets the dir and what `prepare` returned. `close` removes the checkout (REQ-GATE-60).
+ */
+export function sharedWorktree(repo, ref, { prepare = () => null, keep = [], onFallback = () => {} } = {}) {
+  let dir = null;
+  let added = false;
+  let prepared = null;
+  const excludes = keep.flatMap((d) => ['-e', `/${d.replace(/\/+$/, '')}`]);
+  return {
+    use(fn) {
+      if (!dir) {
+        dir = mkdtempSync(join(tempRoot(), `keel-wt-${process.pid}-`));
+        git(['worktree', 'add', '--detach', '--quiet', dir, ref], repo);
+        added = true;
+        prepared = prepare(dir);
+        return fn(dir, prepared);
+      }
+      try {
+        git(['checkout', '--force', '--detach', '--quiet', ref], dir);
+        git(['clean', '-ffdx', '--quiet', ...excludes], dir);
+      } catch (e) {
+        // REQ-GATE-59: a checkout that cannot be reset is not fresh; this stage gets a fresh one and the cause is named.
+        onFallback(e);
+        return withTempWorktree(repo, ref, (fresh) => fn(fresh, prepare(fresh)));
+      }
+      return fn(dir, prepared);
+    },
+    close() {
+      if (dir) removeWorktree(repo, dir, added);
+      dir = null;
+    },
+  };
 }
