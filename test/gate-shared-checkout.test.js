@@ -204,3 +204,124 @@ test('REQ-GATE-57: later head stages keep install artifacts outside shared depen
   assert.equal(readFileSync(log, 'utf8'), 'run\n');
   assert.deepEqual(ownTemps(), []);
 });
+
+// Red proof and test-edit proof on one base (REQ-GATE-61, -62): src/add.js is fixed, test/add.test.js is an edited
+// existing test that pins the new sum, and test/sum.test.js is a new test. Both proofs need a checkout of base.
+const ADD_TEST = (sum) =>
+  `import assert from 'node:assert';\nimport { it } from 'node:test';\nimport { add } from '../src/add.js';\nit('adds', () => {\n  assert.strictEqual(add(5, 3), ${sum});\n  assert.ok(add(0, 0) === 0);\n});\n`;
+const SUM_TEST = "import assert from 'node:assert';\nimport { add } from '../src/add.js';\nassert.strictEqual(add(2, 3), 5);\n";
+
+/** A repo whose head edits test/add.test.js and adds test/sum.test.js; each test run logs its commit, dir, and sum.test.js. */
+function bothProofs(over = {}) {
+  const { dir, base } = fixtureRepo({ 'src/add.js': 'export const add = (a, b) => a - b;\n', 'test/add.test.js': ADD_TEST(2) });
+  const head = commit(dir, {
+    'src/add.js': 'export const add = (a, b) => a + b;\n',
+    'test/add.test.js': ADD_TEST(8),
+    'test/sum.test.js': SUM_TEST,
+  });
+  const log = join(tmp('keel-proof-'), 'runs.log');
+  const record = (what) =>
+    `echo "$(git rev-parse HEAD) $PWD $(test -e test/sum.test.js && echo seen || echo clean) ${what}" >> ${JSON.stringify(log)}`;
+  const config = fixtureConfig({
+    checks: { test: FIXTURE_TEST },
+    testCommand: `${record('suite')} && ${FIXTURE_TEST}`,
+    testFilesCommand: `${record('{files}')} && for f in {files}; do node "$f" || exit 1; done`,
+    ...over,
+  });
+  const runs = () =>
+    (existsSync(log) ? readFileSync(log, 'utf8') : '')
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => {
+        const [sha, cwd, sum, ...what] = l.split(' ');
+        return { sha, cwd, sum, what: what.join(' ') };
+      });
+  return { dir, base, head, config, runs, bugCard: card('kind: bug\nsize: S') };
+}
+
+const proofStages = (receipt) =>
+  receipt.results.filter((x) => ['red-proof', 'test-edit-proof'].includes(x.name)).map((x) => [x.name, x.pass]);
+
+test('REQ-GATE-61: a gate with red proof and test-edit proof creates one base worktree', () => {
+  const { dir, base, config, bugCard } = bothProofs();
+  const { out: receipt, adds } = traced(() => gate({ repo: dir, base, card: bugCard, config }));
+  assert.deepEqual(
+    proofStages(receipt),
+    [
+      ['red-proof', true],
+      ['test-edit-proof', true],
+    ],
+    JSON.stringify(receipt.results, null, 1),
+  );
+  assert.deepEqual(
+    adds.filter((sha) => sha === base),
+    [base],
+    `one base worktree for red proof and test-edit proof: ${adds.join(', ')}`,
+  );
+  assert.deepEqual(ownTemps(), []);
+});
+
+test('REQ-GATE-62: a test file overlaid by red proof is gone before test-edit proof runs', () => {
+  const { dir, base, config, runs, bugCard } = bothProofs();
+  const receipt = gate({ repo: dir, base, card: bugCard, config });
+  assert.deepEqual(proofStages(receipt), [
+    ['red-proof', true],
+    ['test-edit-proof', true],
+  ]);
+  const onBase = runs().filter((r) => r.sha === base);
+  const overlaid = onBase.filter((r) => r.what === 'suite' && r.sum === 'seen');
+  assert.equal(overlaid.length, 1, `red proof ran the suite with the new test overlaid: ${JSON.stringify(onBase)}`);
+  const edited = onBase.filter((r) => r.what.includes('test/add.test.js'));
+  assert.equal(edited.length, 1, JSON.stringify(onBase));
+  // The same checkout, reset: red proof's overlaid test/sum.test.js is gone.
+  assert.equal(edited[0].cwd, overlaid[0].cwd, 'test-edit proof runs in the base checkout red proof used');
+  assert.equal(edited[0].sum, 'clean', 'test/sum.test.js from red proof is still in the base checkout');
+});
+
+test('REQ-GATE-63: the shared base checkout is removed after the gate on pass, fail, and throw', () => {
+  const worktrees = (dir) =>
+    g(dir, 'worktree', 'list', '--porcelain')
+      .split('\n')
+      .filter((l) => l.startsWith('worktree '));
+  for (const outcome of ['pass', 'fail', 'throw']) {
+    const { dir, base, config, runs, bugCard } = bothProofs({ install: 'mkdir -p dist && echo built > dist/generated.txt' });
+    // fail: test-edit proof finds the edited test passing alone on base; throw: a bad command after red proof.
+    if (outcome === 'fail') config.testFilesCommand = `${config.testFilesCommand.split(' && for ')[0]} && true`;
+    let receipt = null;
+    const run = () => (receipt = gate({ repo: dir, base, card: bugCard, config }));
+    if (outcome === 'throw') {
+      config.mutation = 5; // the mutation stage runs after both base stages and cannot run a number
+      assert.throws(run);
+      assert.ok(
+        runs().some((r) => r.sha === base && r.what.includes('test/add.test.js')),
+        'test-edit proof ran before the throw',
+      );
+    } else {
+      run();
+      assert.equal(receipt.pass, false, outcome); // test-edits has no approver, or test-edit proof fails
+      assert.deepEqual(proofStages(receipt), [
+        ['red-proof', true],
+        ['test-edit-proof', outcome === 'pass'],
+      ]);
+    }
+    assert.deepEqual(ownTemps(), [], outcome);
+    assert.equal(worktrees(dir).length, 1, outcome);
+  }
+});
+
+test('REQ-GATE-59: a failed reset of the shared base checkout falls back to a fresh worktree with an IMPROVE line', () => {
+  const { dir, base, config, bugCard } = bothProofs();
+  // Red proof's suite run leaves a read-only directory with a file in it, so the reset before test-edit proof fails.
+  config.testCommand = `mkdir -p ro && touch ro/f && chmod 555 ro && ${config.testCommand}`;
+  const { out: receipt, adds } = traced(() => gate({ repo: dir, base, card: bugCard, config }));
+  assert.deepEqual(proofStages(receipt), [
+    ['red-proof', true],
+    ['test-edit-proof', true],
+  ]);
+  assert.equal(adds.filter((sha) => sha === base).length, 2, 'the shared base checkout and one fresh fallback');
+  const lines = (receipt.improve ?? []).filter((l) => /shared base checkout/.test(l));
+  assert.equal(lines.length, 1, JSON.stringify(receipt.improve));
+  assert.match(lines[0], /^IMPROVE: .*fresh worktree.*Permission denied/);
+  assert.deepEqual(ownTemps(), []);
+});
