@@ -211,7 +211,7 @@ function combine(a, b) {
   return { ...b, usage, cost: sum(a.cost, b.cost), durationMs: a.durationMs + b.durationMs };
 }
 
-const authorPrompt = (card, defect) =>
+const authorPrompt = (card, defect, forbidden = []) =>
   [
     `You write held-out acceptance tests for card ${card.id} in this git worktree. Another agent implements the card later without seeing your tests; the gate then runs them.`,
     'Write tests only, in new test files, at least one per requirement, each naming its requirement ID. Do not change any other file and do not commit.',
@@ -220,6 +220,10 @@ const authorPrompt = (card, defect) =>
     // A re-authoring after a defect check (REQ-RUN-46) must not write the same defect again.
     ...(defect
       ? ['', `A reviewer found the previous held-out tests for this card defective: ${defect}`, 'Do not repeat that defect.']
+      : []),
+    // A re-authoring after a collision (REQ-RUN-62): the builder creates these paths, so the gate could never copy a test there.
+    ...(forbidden.length
+      ? ['', `Do not write a file at ${forbidden.join(', ')}: the card tells the builder to create it. Use another file name.`]
       : []),
     '',
     '# Card',
@@ -267,14 +271,39 @@ function keptNames(dir, added, config) {
 }
 
 /**
+ * The kept held-out paths the card text names (REQ-RUN-62): the builder creates them, so the gate's no-overwrite rule
+ * would stop every attempt. A path the base has needs no check: only files the author added are kept. Only the whole
+ * path counts, optionally after `./`: `test_x.py` is not named by `tests/test_x.py`, nor `a/x.py` by `data/x.py`, and a
+ * sentence's closing `.` ends the path.
+ */
+export const collisions = (card, kept) => {
+  const text = builderText(card);
+  return kept.filter((p) => new RegExp(`(?<![\\w./-])(?:\\./)?${RegExp.escape(p)}(?![\\w/-]|\\.\\w)`).test(text));
+};
+
+/**
  * Held-out tests from the author tier (REQ-RUN-17), written on a temporary checkout of base the builder never sees.
  * They are kept only when they fail on base as a real test failure that names them, with `hash`, the run's card hash
- * before `heldOut` is set, beside them (REQ-RUN-63). Returns the failure and its worker status, or null.
+ * before `heldOut` is set, beside them (REQ-RUN-63). When a kept path is one the card names, the author runs once more
+ * with those paths forbidden (REQ-RUN-62). Returns the failure and its worker status, or null.
  */
-function authorHeldOut({ repo, card, hash, config, baseSha, runId, heldDir, log, defect = null }) {
+function authorHeldOut(args) {
+  const first = authorOnce(args);
+  if (!first?.collision) return first;
+  args.log(`held-out author wrote ${first.collision.join(', ')}, a path the card names; authoring again under another name`);
+  const second = authorOnce({ ...args, forbidden: first.collision });
+  if (!second?.collision) return second;
+  return {
+    failure: `the held-out author twice wrote a path the card names, which the builder creates: ${second.collision.join(', ')}`,
+    status: second.status,
+  };
+}
+
+/** One author run (REQ-RUN-17): the failure and worker status, `collision` with the paths (REQ-RUN-62), or null. */
+function authorOnce({ repo, card, hash, config, baseSha, runId, heldDir, log, defect = null, forbidden = [] }) {
   const index = config.heldOutAuthorTier;
   const t = config.tiers[index];
-  log(`held-out ${defect ? 're-author' : 'author'}: tier ${index} ${t.provider}/${t.model}/${t.effort}`);
+  log(`held-out ${defect || forbidden.length ? 're-author' : 'author'}: tier ${index} ${t.provider}/${t.model}/${t.effort}`);
   const row = {
     run: runId,
     card: card.id,
@@ -294,7 +323,7 @@ function authorHeldOut({ repo, card, hash, config, baseSha, runId, heldDir, log,
     const failure = withTempWorktree(repo, baseSha, (dir) => {
       const installed = prepareCheckout(repo, dir, config);
       if (installed) return `install failed:\n${installed.out.slice(-2000)}`;
-      const w = runWorker(t, authorPrompt(card, defect), dir, config);
+      const w = runWorker(t, authorPrompt(card, defect, forbidden), dir, config);
       status = w.status;
       Object.assign(row, { workerStatus: w.status, usage: w.usage, cost: w.cost, durationMs: w.durationMs });
       if (w.status !== 'ok') return `author worker ${w.status}:\n${w.output}`;
@@ -309,6 +338,8 @@ function authorHeldOut({ repo, card, hash, config, baseSha, runId, heldDir, log,
       if (r.code === 0) return `the authored tests pass on base, so they prove nothing:\n${out}`;
       if (!added.some((p) => r.out.includes(basename(p)))) return `the failure on base does not name an authored test file:\n${out}`;
       const kept = keptNames(dir, added, config);
+      const collision = collisions(card, kept);
+      if (collision.length) return { collision }; // Nothing is written, so a retry never reuses them (REQ-RUN-63).
       // The card hash goes first and comes back last, so a half-written set is never reused (REQ-RUN-63).
       rmSync(heldOutHashFile(heldDir), { force: true });
       rmSync(heldDir, { recursive: true, force: true }); // Only Keel's own per-card directory under its state dir.
@@ -319,6 +350,7 @@ function authorHeldOut({ repo, card, hash, config, baseSha, runId, heldDir, log,
       writeFileSync(heldOutHashFile(heldDir), `${hash}\n`);
       return null;
     });
+    if (failure?.collision) return { collision: failure.collision, status };
     return failure ? { failure, status } : null;
   } finally {
     appendAttempt({ usage: null, durationMs: 0, workerStatus: 'harness-error', ...row });
