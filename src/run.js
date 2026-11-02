@@ -217,13 +217,18 @@ const authorPrompt = (card, defect, forbidden = []) =>
     'Write tests only, in new test files, at least one per requirement, each naming its requirement ID. Do not change any other file and do not commit.',
     'Each test must fail on the current code because the required behavior is missing, and pass once the card is implemented as written.',
     'Test only behavior the card states, through interfaces the card or the existing code names. Do not depend on new internal names the card does not give.',
+    // REQ-RUN-66: the builder writes its own fixtures; a shared support path would make the gate refuse to copy.
+    'Put every support file you add (fixtures, data, helpers) under a directory or file name that starts with `heldout`, such as `tests/fixtures/heldout-<topic>/`, so the builder never writes the same path.',
     // A re-authoring after a defect check (REQ-RUN-46) must not write the same defect again.
     ...(defect
       ? ['', `A reviewer found the previous held-out tests for this card defective: ${defect}`, 'Do not repeat that defect.']
       : []),
     // A re-authoring after a collision (REQ-RUN-62): the builder creates these paths, so the gate could never copy a test there.
     ...(forbidden.length
-      ? ['', `Do not write a file at ${forbidden.join(', ')}: the card tells the builder to create it. Use another file name.`]
+      ? [
+          '',
+          `Do not write a file at ${forbidden.join(', ')}: the builder may create it. Use another file name; support files go under a \`heldout\` path.`,
+        ]
       : []),
     '',
     '# Card',
@@ -278,8 +283,15 @@ function keptNames(dir, added, config) {
  */
 export const collisions = (card, kept) => {
   const text = builderText(card);
-  return kept.filter((p) => new RegExp(`(?<![\\w./-])(?:\\./)?${RegExp.escape(p)}(?![\\w/-]|\\.\\w)`).test(text));
+  return kept.filter((p) => new RegExp(`(?<![\\w./-])(?:\\./)?${RegExp.escape(p)}(?![\\w/-]|\\.\\w)`).test(text) || unmarkedSupport(p));
 };
+
+/**
+ * A kept support file (not a test file a runner discovers) with no path segment that starts with `heldout`
+ * (REQ-RUN-66). Its name cannot be changed without breaking the tests that load it, and the builder writes its own
+ * fixtures for the card, often at the same obvious path, so the gate's no-overwrite rule would stop every attempt.
+ */
+export const unmarkedSupport = (p) => !TEST_FILE.test(basename(p)) && !p.split('/').some((seg) => /^heldout/i.test(seg));
 
 /**
  * Held-out tests from the author tier (REQ-RUN-17), written on a temporary checkout of base the builder never sees.
@@ -290,11 +302,11 @@ export const collisions = (card, kept) => {
 function authorHeldOut(args) {
   const first = authorOnce(args);
   if (!first?.collision) return first;
-  args.log(`held-out author wrote ${first.collision.join(', ')}, a path the card names; authoring again under another name`);
+  args.log(`held-out author wrote ${first.collision.join(', ')}, a path the builder may create; authoring again under another name`);
   const second = authorOnce({ ...args, forbidden: first.collision });
   if (!second?.collision) return second;
   return {
-    failure: `the held-out author twice wrote a path the card names, which the builder creates: ${second.collision.join(', ')}`,
+    failure: `the held-out author twice wrote a path the builder may create: ${second.collision.join(', ')}`,
     status: second.status,
   };
 }
