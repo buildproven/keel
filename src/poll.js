@@ -7,12 +7,14 @@ import {
   exactPaths,
   filedToday,
   latestPollRow,
+  mapsToCard,
   markedNew,
   notKeelIssueIds,
   notKeelReason,
   pendingFollowUps,
   pickIssue,
   recordPollAttempt,
+  skippedIssueIds,
   textPrerequisites,
   titleKey,
 } from './linear.js';
@@ -1042,6 +1044,9 @@ export async function poll({
     // A notKeel issue that no longer reads as human work, as when a keel block was added, is picked again (REQ-LINEAR-25).
     const triaged = notKeelIssueIds(repo);
     for (const i of issues) if (triaged.has(i.id) && !notKeelReason(i)) attempted.delete(i.id);
+    // A skipped issue whose text now maps to a card, as when its keel block was fixed, is picked again (REQ-LINEAR-46).
+    const unmapped = skippedIssueIds(repo);
+    for (const i of issues) if (unmapped.has(i.id) && mapsToCard(i)) attempted.delete(i.id);
     const skipped = new Map();
     const waits = new Map();
     const human = new Map();
