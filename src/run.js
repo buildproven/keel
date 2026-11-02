@@ -291,7 +291,14 @@ export const collisions = (card, kept) => {
  * (REQ-RUN-66). Its name cannot be changed without breaking the tests that load it, and the builder writes its own
  * fixtures for the card, often at the same obvious path, so the gate's no-overwrite rule would stop every attempt.
  */
-export const unmarkedSupport = (p) => !TEST_FILE.test(basename(p)) && !p.split('/').some((seg) => /^heldout/i.test(seg));
+export const unmarkedSupport = (p) =>
+  !TEST_FILE.test(basename(p)) && !RUNNER_TEST.test(basename(p)) && !p.split('/').some((seg) => /^heldout/i.test(seg));
+
+/**
+ * Test files a runner finds by name that heldOutName leaves alone (Ruby specs; Java, Kotlin and C# names tie to the class
+ * name): the default `testGlobs` file patterns beyond TEST_FILE. They are tests, not support files (REQ-RUN-66).
+ */
+const RUNNER_TEST = /_spec\.rb$|Tests?\.java$|Test\.kt$|Test\.cs$/;
 
 /**
  * Held-out tests from the author tier (REQ-RUN-17), written on a temporary checkout of base the builder never sees.

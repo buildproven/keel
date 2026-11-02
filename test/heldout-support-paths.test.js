@@ -63,6 +63,14 @@ test('REQ-RUN-66 unmarkedSupport flags a support file with no heldout segment, n
   assert.equal(unmarkedSupport('tests/mcp/heldout_offer-stage.test.ts'), false);
   assert.equal(unmarkedSupport('tests/test_add.py'), false, 'a test file is renamed by heldOutName instead');
   assert.equal(unmarkedSupport('tests/fixtures/notheldout/a.txt'), true, 'only a segment that starts with heldout counts');
+  for (const name of [
+    'spec/add_spec.rb',
+    'src/test/java/AddTest.java',
+    'src/test/java/AddTests.java',
+    'src/AddTest.kt',
+    'Tests/AddTest.cs',
+  ])
+    assert.equal(unmarkedSupport(name), false, `${name} is a test file a runner finds by name`);
   assert.deepEqual(collisions(card(), ['tests/test_heldout_add.py', 'tests/fixtures/add.txt']), ['tests/fixtures/add.txt']);
 });
 
