@@ -37,7 +37,7 @@ test('REQ-RUN-48 a retry of a blocked card removes the worktree the blocked run 
   const { dir, base } = fixtureRepo();
   const blocked = run({ repo: dir, card: card(), config: config('blocked') });
   assert.equal(blocked.stopped, 'blocked');
-  assert.equal(g(blocked.worktree, 'log', '-1', '--format=%s'), 'chore(T-48): keel attempt 1 leftovers');
+  assert.equal(g(blocked.worktree, 'log', '-1', '--format=%s'), 'fix(T-48): fix add');
   const lines = [];
   const second = run({ repo: dir, card: card(), config: config('good'), log: (l) => lines.push(l) });
   assert.equal(second.pass, true, second.failure);

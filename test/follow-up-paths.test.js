@@ -159,3 +159,15 @@ test('REQ-LINEAR-43 one filing pass reads the Keel card history once, with no gi
   assert.equal(calls.filter((c) => c.startsWith('log --first-parent')).length, 1, 'history read once per base');
   assert.equal(calls.filter((c) => c.startsWith('diff ')).length, 0, 'no diff per card');
 });
+
+test('REQ-LINEAR-43 a squash-merged fix|feat|chore(<ID>): <title> card with the leftovers body line counts; one without it does not', async () => {
+  const { dir } = fixtureRepo(SUB);
+  const files = (i) => ({ [`test/c${i}.test.js`]: 'ok\n', [`src/c${i}.js`]: `${i}\n`, 'docs/traceability.json': `{"n":${i}}\n` });
+  commit(dir, files(1), 'fix(BUI-1): sub subtracts in order (#11)\n\nkeel attempt 1 leftovers');
+  commit(dir, files(2), 'feat(BUI-2): a new command (#12)\n\nkeel attempt 2 leftovers\n\nCo-Authored-By: Someone <s@example.com>');
+  commit(dir, files(3), 'chore(BUI-3): keel attempt 1 leftovers (#13)');
+  // A hand commit of the same shape, with no leftovers body line, is not a Keel card; it shares gen.json only with itself.
+  commit(dir, { 'test/h.test.js': 'ok\n', 'gen.json': '1\n' }, 'fix(BUI-4): by hand (#14)\n\nnothing about attempts');
+  commit(dir, { 'test/h2.test.js': 'ok\n', 'gen.json': '2\n' }, 'fix(BUI-5): by hand again (#15)');
+  assert.equal((await keelBlock(dir)).block, `${UNCHANGED}, docs/traceability.json`);
+});

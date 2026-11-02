@@ -78,7 +78,7 @@ test('REQ-RUN-33 another provider starts fresh, told which commits its branch al
   const [, second] = calls();
   assert.equal(second.env.resume, undefined);
   assert.match(second.prompt, /# Card/);
-  assert.match(second.prompt, /your branch already has these commits:\n[0-9a-f]{7,} chore\(T-41\): keel attempt 1 leftovers/i);
+  assert.match(second.prompt, /your branch already has these commits:\n[0-9a-f]{7,} fix\(T-41\): fix add/i);
 });
 
 test('REQ-RUN-33 claude resumes with --resume; codex with `exec resume <id> -`, the sandbox set by config', () => {

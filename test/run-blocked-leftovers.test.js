@@ -9,7 +9,7 @@ import { run } from '../src/run.js';
 import { BUGGY, fixtureConfig, fixtureRepo, g, tmp } from './helpers.js';
 
 const card = () => parseCard('# T-40: fix add\nkind: bug\nsize: S\n\n## Requirements\n- REQ-ADD-1: add(a, b) shall return a + b.\n');
-const LEFTOVERS = 'chore(T-40): keel attempt 1 leftovers';
+const LEFTOVERS = 'fix(T-40): fix add';
 const EDIT = 'export const add = (a, b) => a + b; // half done\n';
 const edit = `require('fs').writeFileSync('src/add.js', ${JSON.stringify(EDIT)}); require('fs').writeFileSync('notes.txt', 'new file\\n');`;
 const result = `console.log(JSON.stringify({ total_cost_usd: 0.01, usage: { input_tokens: 1, output_tokens: 1 } }));`;

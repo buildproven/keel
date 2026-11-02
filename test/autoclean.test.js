@@ -130,6 +130,31 @@ test('REQ-CLEAN-4 commits Keel did not make keep a worktree, however old', () =>
   assert.ok(branchExists(repo, 'keel/T-7'));
 });
 
+test('REQ-CLEAN-4 recognises old and new leftover subjects', () => {
+  const { repo, wt } = parked('T-9');
+  keelCommit(wt, 'T-9', 1); // the old subject
+  keelCommit(wt, 'T-9', 2, 'fix(T-9): fix add\n\nkeel attempt 2 leftovers'); // the new one: card type and title, body line
+  keelCommit(wt, 'T-9', 3, 'feat(T-9): add sub\n\nkeel attempt 3 leftovers');
+  assert.equal(
+    pass(Date.now() + 90 * DAY)
+      .lines.join('\n')
+      .includes('kept'),
+    false,
+  );
+  assert.ok(!existsSync(wt), 'Keel commits only: removed after worktreeKeepDays');
+  assert.ok(!branchExists(repo, 'keel/T-9'));
+
+  // The same subject without the body line, or for another card, is a human commit and keeps the worktree.
+  const human = parked('T-10');
+  keelCommit(human.wt, 'T-10', 1, 'fix(T-10): fix add');
+  keelCommit(human.wt, 'T-10', 2, 'fix(T-99): other card\n\nkeel attempt 2 leftovers');
+  assert.match(
+    pass(Date.now() + 90 * DAY).lines.join('\n'),
+    /kept .*T-10: commits only there that Keel did not make: [0-9a-f]+ fix\(T-99\)/,
+  );
+  assert.ok(existsSync(human.wt));
+});
+
 test('REQ-CLEAN-4 a worktree switched to a human branch is kept and that branch is never deleted', () => {
   const { repo, wt } = parked('T-8');
   g(repo, 'branch', 'user-work');

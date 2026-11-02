@@ -26,5 +26,5 @@ test('REQ-RUN-18 a worker that only edits files, never committing, still passes:
   const r = run({ repo: dir, card, config: fixtureConfig({ tiers: [tier] }) });
   assert.equal(r.pass, true, r.failure);
   assert.equal(g(r.worktree, 'status', '--porcelain'), '');
-  assert.match(g(r.worktree, 'log', '-1', '--format=%s'), /^chore\(T-7\): keel attempt 1/);
+  assert.match(g(r.worktree, 'log', '-1', '--format=%s'), /^fix\(T-7\): fix add$/);
 });

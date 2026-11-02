@@ -9,6 +9,53 @@ import { readLedger, stateDir } from './ledger.js';
 import { runLockHeld } from './run-lock.js';
 import { alive } from './slots.js';
 
+/** The longest commit subject Keel writes (REQ-RUN-7). */
+const SUBJECT_MAX = 72;
+const COMMIT_TYPE = { bug: 'fix', feature: 'feat', ui: 'feat' };
+
+/**
+ * The message of the commit Keel makes for a worker's leftovers (REQ-RUN-7): `<fix|feat|chore>(<id>): <card title>` by
+ * the card's kind, the title cut to 72 characters in all, and the body line `keel attempt <n> leftovers` that marks it
+ * as Keel's own (REQ-CLEAN-3).
+ */
+export function leftoversMessage(card, attempt) {
+  const prefix = `${COMMIT_TYPE[card.kind] ?? 'chore'}(${card.id}): `;
+  const title =
+    card.title
+      .replace(/\s+/g, ' ')
+      .replace(new RegExp(`^${escapeRe(card.id)}:?\\s*`), '')
+      .trim() || card.title.trim();
+  const room = Math.max(SUBJECT_MAX - prefix.length, 1);
+  const shown = title.length <= room ? title : `${title.slice(0, room - 1).trimEnd()}…`;
+  return `${prefix}${shown}\n\nkeel attempt ${attempt} leftovers\n`;
+}
+
+/**
+ * The commits of `ref` that no other branch outside keel/* and no remote-tracking ref holds, as { hash, subject, body }:
+ * the work that exists only in a parked worktree (REQ-CLEAN-3).
+ */
+export function onlyCommits(repo, ref) {
+  const out = git(['log', '--format=%h%x00%s%x00%b%x01', ref, '--not', '--exclude=keel/*', '--branches', '--remotes'], repo);
+  return out
+    .split('\x01')
+    .map((r) => r.replace(/^\n/, ''))
+    .filter(Boolean)
+    .map((r) => {
+      const [hash, subject, body = ''] = r.split('\0');
+      return { hash, subject, body };
+    });
+}
+
+/**
+ * Whether a commit is one Keel made for card `id`'s leftovers (REQ-CLEAN-3): the old subject `chore(<id>): keel attempt
+ * <n> leftovers`, or `<fix|feat|chore>(<id>): <title>` with the body line `keel attempt <n> leftovers`.
+ */
+export function isLeftoversCommit(id, { subject, body }) {
+  const who = escapeRe(id);
+  if (new RegExp(`^chore\\(${who}\\): keel attempt \\d+ leftovers$`).test(subject)) return true;
+  return new RegExp(`^(?:fix|feat|chore)\\(${who}\\): .`).test(subject) && /^keel attempt \d+ leftovers$/m.test(body);
+}
+
 const HOUR = 3600 * 1000;
 const DAY = 24 * HOUR;
 /** A ledger row's repo is the path a run was given; compare real paths (macOS /var is /private/var). */
@@ -56,13 +103,17 @@ function judge(w, { rows, now, keepDays }) {
   if (!w.clean) return { keep: 'uncommitted changes' };
   const id = w.branch.slice('keel/'.length);
   const ref = `refs/heads/${w.branch}`;
-  const leftovers = new RegExp(`^chore\\(${escapeRe(id)}\\): keel attempt \\d+ leftovers$`);
   // Commits no other branch outside keel/* and no remote-tracking ref holds: they exist only in this worktree.
-  const only = git(['log', '--format=%h %s', ref, '--not', '--exclude=keel/*', '--branches', '--remotes'], w.repo)
-    .split('\n')
-    .filter(Boolean);
-  const foreign = only.filter((l) => !leftovers.test(l.slice(l.indexOf(' ') + 1)));
-  if (foreign.length) return { keep: `commits only there that Keel did not make: ${foreign.slice(0, 3).join('; ')}` };
+  const only = onlyCommits(w.repo, ref);
+  const foreign = only.filter((c) => !isLeftoversCommit(id, c));
+  if (foreign.length) {
+    return {
+      keep: `commits only there that Keel did not make: ${foreign
+        .slice(0, 3)
+        .map((c) => `${c.hash} ${c.subject}`)
+        .join('; ')}`,
+    };
+  }
   const repo = realpathSync(w.repo);
   const last = rows.filter((r) => r.card === id && r.at && r.repo && sameDir(r.repo, repo)).at(-1);
   const activity = last ? Date.parse(last.at) : Number(git(['log', '-1', '--format=%ct', ref], w.repo)) * 1000;
