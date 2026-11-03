@@ -178,12 +178,27 @@ test('REQ-GATE-44 an edited test that passes alone on base stays locked, even wh
 test('REQ-GATE-44 an added-lines edit that passes on base is proven when its base version fails on head', () => {
   const r = reviewer('APPROVE: fine');
   // An allowlist edit: the extra entry is harmless on base, but the change adds an export the old list does not name.
-  const NAMES = (...names) => src("import * as api from '../src/add.js';", "import assert from 'node:assert';", "import { it } from 'node:test';", 'const known = [', ...names.map((n) => `  '${n}',`), '];', "it('exports only known names', () => {", '  assert.ok(Object.keys(api).every((k) => known.includes(k)));', '});');
+  const NAMES = (...names) =>
+    src(
+      "import * as api from '../src/add.js';",
+      "import assert from 'node:assert';",
+      "import { it } from 'node:test';",
+      'const known = [',
+      ...names.map((n) => `  '${n}',`),
+      '];',
+      "it('exports only known names', () => {",
+      '  assert.ok(Object.keys(api).every((k) => known.includes(k)));',
+      '});',
+    );
   const old = NAMES('add');
   const next = NAMES('add', 'extra');
   const sum = src(...HEAD, "it('sums', () => assert.strictEqual(add(2, 3), 5));");
   const { dir, base } = fixtureRepo({ ...BUGGY, 'test/names.test.js': old });
-  commit(dir, { 'src/add.js': 'export const add = (a, b) => a + b;\nexport const extra = 1;\n', 'test/names.test.js': next, 'test/sum.test.js': sum });
+  commit(dir, {
+    'src/add.js': 'export const add = (a, b) => a + b;\nexport const extra = 1;\n',
+    'test/names.test.js': next,
+    'test/sum.test.js': sum,
+  });
   const config = fixtureConfig({ testFilesCommand: FILES_COMMAND, review: true, tiers: [r.tier] });
   const receipt = gate({ repo: dir, base, card: card(), config, reviewer: r.tier });
   const proof = receipt.results.find((x) => x.name === 'test-edit-proof');
