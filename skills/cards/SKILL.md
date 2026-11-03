@@ -77,8 +77,9 @@ issues; `keel poll` (nightly, or `keel poll --issue <ID> --merge`) builds them.
 - `keel report --recur` lists failure classes that recur across gates, with the previous window's count. Start a
   prevention card from its top class, and check that the count falls after the merge.
 - Name behavior and interfaces; never prescribe the implementation.
-- When `paths` names a file the card creates, mark it new in the card text ("the new file `manifest.json`", or
-  `manifest.json` (new)): `keel poll` defers a card whose exactly named path is missing on the base and not marked new
+- When `paths` names a file the card creates, mark it new: in the `paths` line (`paths: src/**, manifest.json (new)`)
+  or in the card text ("the new file `manifest.json`", or `manifest.json` (new)). Never mark an `allowEdits` item new:
+  `allowEdits` lists existing files only, and the card is rejected. `keel poll` defers a card whose exactly named path is missing on the base and not marked new
   (REQ-LINEAR-44), so an unmarked new file never builds (BUI-1787 and BUI-1788 waited a night that way).
 - When a card adds or changes a `package.json` script, list `package.json` in `allowEdits`: Keel locks its scripts, and
   the build stops as blocked without it. Do not list `pyproject.toml` for a console script: only its tool sections are

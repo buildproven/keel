@@ -87,3 +87,27 @@ test('REQ-CARD-3 a card inside the repo is read from the base commit; outside ca
   write(outside, { 'T-3.md': '# T-3: t\nkind: feature\nsize: S\n' });
   assert.equal(readTrustedCard(dir, base, join(outside, 'T-3.md')).id, 'T-3');
 });
+
+test('REQ-CARD-6 paths item with (new) is stripped and marked new', () => {
+  const comma = parseCard('# X-1: t\nkind: feature\nsize: S\npaths: src/a.ts, src/b.ts (new), ./test/b.test.ts (NEW)\n');
+  assert.deepEqual(comma.paths, ['src/a.ts', 'src/b.ts', './test/b.test.ts']);
+  assert.deepEqual(comma.newPaths, ['src/b.ts', './test/b.test.ts']);
+  const json = parseCard('# X-1: t\nkind: feature\nsize: S\npaths: ["src/a.ts", "src/b.ts (new)"]\n');
+  assert.deepEqual(json.paths, ['src/a.ts', 'src/b.ts']);
+  assert.deepEqual(json.newPaths, ['src/b.ts']);
+  const none = parseCard('# X-1: t\nkind: feature\nsize: S\npaths: src/renew.ts, src/(new)/x.ts\n');
+  assert.deepEqual(none.paths, ['src/renew.ts', 'src/(new)/x.ts'], 'only a trailing " (new)" is a marker');
+  assert.deepEqual(none.newPaths, []);
+  assert.throws(() => parseCard('# X-1: t\nkind: feature\nsize: S\npaths: src/a.ts, (new)\n'), /paths item "\(new\)" names no path/);
+});
+
+test('REQ-CARD-6 allowEdits rejects (new)', () => {
+  assert.throws(
+    () => parseCard('# X-1: t\nkind: feature\nsize: S\npaths: src/**\nallowEdits: test/a.test.js (new)\n'),
+    /allowEdits lists existing files only.*test\/a\.test\.js \(new\)/,
+  );
+  assert.throws(
+    () => parseCard('# X-1: t\nkind: feature\nsize: S\npaths: src/**\nallowEdits: ["test/a.test.js (new)"]\n'),
+    /allowEdits lists existing files only/,
+  );
+});
