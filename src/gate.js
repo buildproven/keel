@@ -554,17 +554,19 @@ function testEditProof(ctx) {
 }
 
 /**
- * The other proof that an edit is needed (REQ-GATE-44): for an edit that only adds lines, the base version of the test,
+ * The other proof that an edit is needed (REQ-GATE-44): for an edit that only adds literal list entries, the base version of the test,
  * overlaid alone on head, fails with a real test failure. An edit that only widens an allowlist passes on base (the new entry is harmless there) but
  * breaks the old test once the change adds the file the allowlist must name.
  */
 function oldTestFailsOnHead(ctx, p) {
   const { repo, base, config } = ctx;
   if (!fileMode(base, p, repo)) return false;
-  // Only an edit that adds lines: a replaced or deleted line can loosen an assertion the change broke, which the old
-  // test failing on head would then hide as "needed".
-  const [added, removed] = git(['diff', '--numstat', '--no-textconv', base, ctx.head, '--', p], repo).trim().split('\t');
-  if (added === '-' || removed !== '0') return false;
+  // Only an edit whose every change is an added literal list entry ('skills/x.md',): a statement added or a line
+  // replaced (a `return;` before the broken assertion, a push into the list) can neutralize a test the change broke.
+  const diff = git(['diff', '-U0', '--no-textconv', base, ctx.head, '--', p], repo)
+    .split('\n')
+    .filter((l) => /^[+-]/.test(l) && !/^(\+\+\+|---) /.test(l));
+  if (!diff.length || !diff.every((l) => /^\+\s*(['"`])[^'"`\\]*\1,?\s*$/.test(l))) return false;
   return ctx.onHead((dir) => {
     let saved = null; // the head file, put back after the run
     const err = writeInside(dir, p, (t) => {
