@@ -206,8 +206,8 @@ test('REQ-GATE-44 an added-lines edit that passes on base is proven when its bas
   assert.equal(readFileSync(join(dir, 'test/names.test.js'), 'utf8'), next, 'head file is back after the run');
 });
 
-test('REQ-GATE-44 an added statement that neutralizes the old test stays locked', () => {
-  const r = reviewer('APPROVE: fine');
+test('REQ-GATE-44 an added statement that neutralizes the old test is denied by the test-edits review', () => {
+  const r = reviewer('DENY: the added push makes the allowlist check always pass');
   const body = (extra) =>
     src(
       "import * as api from '../src/add.js';",
@@ -228,12 +228,30 @@ test('REQ-GATE-44 an added statement that neutralizes the old test stays locked'
   });
   const config = fixtureConfig({ testFilesCommand: FILES_COMMAND, review: true, tiers: [r.tier] });
   const receipt = gate({ repo: dir, base, card: card(), config, reviewer: r.tier });
-  const proof = receipt.results.find((x) => x.name === 'test-edit-proof');
+  assert.equal(receipt.pass, false);
+  const stage = receipt.results.find((x) => x.name === 'test-edits');
+  assert.equal(stage.pass, false);
+  assert.match(stage.problems[0].why, /denied by exec\/exec-codex\/high: the added push/);
+});
+
+test('REQ-GATE-44 an edit that replaces a line never takes the base-version proof', () => {
+  const r = reviewer('APPROVE: fine');
+  const body = (n) =>
+    src(
+      "import * as api from '../src/add.js';",
+      "import assert from 'node:assert';",
+      "import { it } from 'node:test';",
+      "it('exports', () => {",
+      `  assert.ok(Object.keys(api).length > ${n});`,
+      '});',
+    );
+  const sum = src(...HEAD, "it('sums', () => assert.strictEqual(add(2, 3), 5));");
+  const { dir, base } = fixtureRepo({ ...BUGGY, 'test/names.test.js': body(1) });
+  commit(dir, { 'src/add.js': 'export const add = (a, b) => a + b;\n', 'test/names.test.js': body(0), 'test/sum.test.js': sum });
+  const config = fixtureConfig({ testFilesCommand: FILES_COMMAND, review: true, tiers: [r.tier] });
+  const proof = gate({ repo: dir, base, card: card(), config, reviewer: r.tier }).results.find((x) => x.name === 'test-edit-proof');
   assert.equal(proof.pass, false);
-  assert.deepEqual(
-    proof.problems.map((p) => [p.rule, p.path]),
-    [['existing-test-changed', 'test/names.test.js']],
-  );
+  assert.match(proof.problems[0].why, /passes alone on base/);
 });
 
 test('REQ-GATE-44 without testFilesCommand, on a chore card, or with no reviewer, an edited test stays locked', () => {
