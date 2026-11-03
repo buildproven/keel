@@ -16,7 +16,8 @@ import {
   shell,
   staticStage,
 } from './gate.js';
-import { escapeRe, removeParkedWorktree } from './clean.js';
+import { isLeftoversCommit, leftoversMessage, onlyCommits } from './autoclean.js';
+import { removeParkedWorktree } from './clean.js';
 import { mergeReadiness } from './doctor.js';
 import { GATE_CONTEXT, postGateStatus } from './status.js';
 import { appendAttempt, readLedger, stateDir } from './ledger.js';
@@ -448,7 +449,7 @@ function commitLeftovers(wt, card, attempt, branch) {
   }
   if (!isDirty(wt)) return null;
   git(['add', '-A'], wt);
-  const r = exec('git', ['commit', '-q', '-m', `chore(${card.id}): keel attempt ${attempt} leftovers`], wt);
+  const r = exec('git', ['commit', '-q', '-m', leftoversMessage(card, attempt)], wt);
   return r.status === 0 ? null : `commit failed (hooks?):\n${lastLines(`${r.stdout}${r.stderr}`, COMMIT_TAIL_LINES)}`;
 }
 
@@ -948,11 +949,7 @@ function replaceableKept({ repo, card, branch, wt }) {
   const lastBuild = rows.findLast((r) => !r.role);
   // A held-out-author or other role row is enough evidence of the earlier run, but must not hide a pending-review build.
   if (!rows.length || lastBuild?.pendingReview || !onBranch(wt, branch) || isDirty(wt)) return false;
-  const leftovers = new RegExp(`^chore\\(${escapeRe(card.id)}\\): keel attempt \\d+ leftovers$`);
-  return git(['log', '--format=%s', `refs/heads/${branch}`, '--not', '--exclude=keel/*', '--branches', '--remotes'], repo)
-    .split('\n')
-    .filter(Boolean)
-    .every((subject) => leftovers.test(subject));
+  return onlyCommits(repo, `refs/heads/${branch}`).every((c) => isLeftoversCommit(card.id, c));
 }
 
 /** Stops that happen before the worker produced anything (REQ-RUN-51). */

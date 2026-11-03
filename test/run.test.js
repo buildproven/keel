@@ -102,7 +102,8 @@ test('REQ-RUN-7 commits leftover worker changes before the gate', () => {
   const { dir } = fixtureRepo();
   const r = run({ repo: dir, card: card(), config: fixtureConfig({ tiers: [tier('good')] }) });
   assert.equal(g(r.worktree, 'status', '--porcelain'), '');
-  assert.match(g(r.worktree, 'log', '-1', '--format=%s'), /keel attempt 1 leftovers/);
+  assert.equal(g(r.worktree, 'log', '-1', '--format=%s'), 'fix(T-7): fix add');
+  assert.equal(g(r.worktree, 'log', '-1', '--format=%b'), 'keel attempt 1 leftovers');
 });
 
 test('REQ-RUN-8 exec workers receive the tier model and effort', () => {
