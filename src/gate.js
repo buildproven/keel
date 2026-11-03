@@ -519,7 +519,8 @@ function testEditProof(ctx) {
   });
   if (onHead) return onHead;
   // The shared base checkout, reset to base after red proof: none of its overlaid files are left (REQ-GATE-61, -62).
-  return ctx.onBase((dir, { installed }) => {
+  const passesOnBase = []; // edited tests that pass on base: needed only if their base version fails on head
+  const baseRun = ctx.onBase((dir, { installed }) => {
     if (installed) return { ...fail('test-edit-proof', 'install-failed'), output: tail(installed.out) };
     // One edited file at a time, the others as on base: an edit to one test must not be what makes another fail.
     for (const p of files) {
@@ -540,9 +541,49 @@ function testEditProof(ctx) {
       });
       if (restored) return fail('test-edit-proof', 'unsafe-path', { detail: restored });
       if (inconclusive(r)) return { ...fail('test-edit-proof', 'inconclusive', { path: p, code: r.code }), output: tail(r.out) };
-      if (r.code === 0) return locked(p, 'passes alone on base, so the change does not need the edit', r.out);
+      if (r.code === 0) passesOnBase.push({ p, out: r.out });
     }
-    return { name: 'test-edit-proof', pass: true, problems: [], files };
+    return null;
+  });
+  if (baseRun) return baseRun;
+  // Outside the base callback, so the two shared checkouts are never held together.
+  for (const { p, out } of passesOnBase) {
+    if (!oldTestFailsOnHead(ctx, p)) return locked(p, 'passes alone on base, so the change does not need the edit', out);
+  }
+  return { name: 'test-edit-proof', pass: true, problems: [], files };
+}
+
+/**
+ * The other proof that an edit is needed (REQ-GATE-44): for an edit that only adds lines, the base version of the test,
+ * overlaid alone on head, fails with a real test failure. An edit that only widens an allowlist passes on base (the new entry is harmless there) but
+ * breaks the old test once the change adds the file the allowlist must name.
+ */
+function oldTestFailsOnHead(ctx, p) {
+  const { repo, base, config } = ctx;
+  if (!fileMode(base, p, repo)) return false;
+  // Only an edit that deletes nothing. Whether an added line weakens the test (a `return;` before the broken assertion,
+  // a value that makes `assert.ok(` always pass) is not decidable from text; the test-edits review decides it.
+  const diff = git(['diff', '-U0', '--no-textconv', base, ctx.head, '--', p], repo)
+    .split('\n')
+    .filter((l) => /^[+-]/.test(l) && !/^(\+\+\+|---) /.test(l));
+  if (!diff.length || diff.some((l) => l.startsWith('-'))) return false;
+  return ctx.onHead((dir) => {
+    let saved = null; // the head file, put back after the run
+    const err = writeInside(dir, p, (t) => {
+      saved = existsSync(t) ? { data: readFileSync(t), mode: statSync(t).mode & 0o777 } : null;
+      const blob = showBlob(base, p, repo);
+      writeFileSync(t, blob.data);
+      chmodSync(t, blob.mode === '100755' ? 0o755 : 0o644);
+    });
+    if (err) return false;
+    const r = shell(filesCommand(config, [p]), dir, config);
+    writeInside(dir, p, (t) => {
+      if (saved) {
+        writeFileSync(t, saved.data);
+        chmodSync(t, saved.mode);
+      } else unlinkSync(t);
+    });
+    return r.code !== 0 && !inconclusive(r);
   });
 }
 
