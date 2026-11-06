@@ -449,9 +449,20 @@ function commitLeftovers(wt, card, attempt, branch) {
   }
   if (!isDirty(wt)) return null;
   git(['add', '-A'], wt);
-  const r = exec('git', ['commit', '-q', '-m', leftoversMessage(card, attempt)], wt);
+  const message = leftoversMessage(card, attempt);
+  let r = exec('git', ['commit', '-q', '-m', message], wt);
+  const lowered = lowerSubject(message);
+  if (r.status !== 0 && lowered !== message && /\[subject-case\]/.test(`${r.stdout}${r.stderr}`)) {
+    r = exec('git', ['commit', '-q', '-m', lowered], wt);
+  }
   return r.status === 0 ? null : `commit failed (hooks?):\n${lastLines(`${r.stdout}${r.stderr}`, COMMIT_TAIL_LINES)}`;
 }
+
+/**
+ * The commit message with the first letter of its subject (after `<type>(<id>): `) lower-cased (REQ-RUN-67):
+ * commitlint's `subject-case` (config-conventional) rejects any subject that starts with an upper-case letter.
+ */
+const lowerSubject = (message) => message.replace(/^([^:\n]*: )(\p{Lu})/u, (_, prefix, first) => prefix + first.toLowerCase());
 
 /** A rejected commit's summary keeps the end of its output, where a hook names what it rejected (REQ-RUN-65). */
 const COMMIT_TAIL_LINES = 40;
