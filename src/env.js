@@ -16,6 +16,18 @@ export function scrubEnv(env, allow = []) {
   return Object.fromEntries(Object.entries(env).filter(([name]) => keep.has(name) || !SECRET_WORD.test(name)));
 }
 
+/**
+ * The names Keel reads the Linear personal API key from, in order (REQ-LINEAR-47). The central env file names it
+ * `LINEAR_BUILDPROVEN_KEY`; `LINEAR_API_KEY` is the name the pollers' launchd env sets. An empty value counts as unset.
+ */
+export const LINEAR_KEY_NAMES = ['LINEAR_API_KEY', 'LINEAR_BUILDPROVEN_KEY'];
+
+/** `{ name, value }` for the first set name in LINEAR_KEY_NAMES, else null. Callers log the name, never the value. */
+export function linearKey(env) {
+  for (const name of LINEAR_KEY_NAMES) if (env[name]) return { name, value: env[name] };
+  return null;
+}
+
 let emptyGhDir = null;
 const madeGhDirs = [];
 let cleanupHooksInstalled = false;
