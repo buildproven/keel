@@ -171,3 +171,52 @@ test("REQ-LINEAR-47 a Keel finding is held by Keel's project's unbuilt follow-up
   assert.deepEqual(keelFull.client.created, []);
   assert.equal(keelFull.last.outcome, 'held');
 });
+
+test("REQ-LINEAR-47 a full project holds only its own queued follow-ups: the other project's, queued behind them, are filed", async () => {
+  const unbuilt = (prefix) =>
+    Array.from({ length: 2 }, (_, i) => ({ id: `${prefix}-${i}`, title: `${prefix} finding ${i}`, description: 'Found by keel.\n' }));
+  const config = fixtureConfig({ followUpsPerDay: 5, followUpOpenMax: 2, linearProject: 'dead-man-working' });
+  const PRODUCT = { kind: 'bug', title: 'add subtracts', detail: 'src/add.js:1 subtracts' };
+  const run = async (projects, findings) => {
+    process.env.KEEL_STATE_DIR = tmp('keel-route-state-'); // one ledger per run, so each run reads only its own rows
+    const { dir } = fixtureRepo();
+    queueFollowUps(dir, 'BUI-1711', findings, 'HEAD');
+    const client = fakeClient(projects);
+    const logs = [];
+    const r = await poll({
+      repo: dir,
+      project: 'dead-man-working',
+      client,
+      config,
+      runFn: () => assert.fail('no build'),
+      fileOnly: true,
+      log: (l) => logs.push(l),
+    });
+    return { r, client, logs, dir, held: readJsonl(pollLedgerFile(dir)).filter((row) => row.outcome === 'held') };
+  };
+  // Keel's project is full and its finding is first: the product finding behind it is still filed.
+  const keelFull = await run({ keel: unbuilt('KEEL') }, [KEEL_FINDING, PRODUCT]);
+  assert.deepEqual(keelFull.r, []);
+  assert.deepEqual(
+    keelFull.client.created.map((c) => [c.fields.title, c.sourceId]),
+    [[PRODUCT.title, 'BUI-1711']],
+  );
+  assert.equal(keelFull.held.length, 1);
+  assert.deepEqual(keelFull.held[0].detail, { reason: 'unbuilt', unbuilt: 2, max: 2, waiting: 1, project: 'keel' });
+  assert.ok(
+    keelFull.logs.some((l) => /^follow-ups held for project keel: 2 unbuilt follow-ups >= 2 \(followUpOpenMax\); 1 wait/.test(l)),
+    keelFull.logs.join('\n'),
+  );
+  assert.deepEqual(
+    pendingFollowUps(keelFull.dir, 3).map((f) => f.title),
+    [KEEL_FINDING.title],
+    'the held Keel finding stays queued',
+  );
+  // The product project is full and its finding is first: the Keel finding behind it is still filed.
+  const productFull = await run({ 'dead-man-working': unbuilt('DMW') }, [PRODUCT, KEEL_FINDING]);
+  assert.deepEqual(
+    productFull.client.created.map((c) => [c.fields.title, c.project]),
+    [[KEEL_FINDING.title, 'keel']],
+  );
+  assert.deepEqual(productFull.held[0].detail, { reason: 'unbuilt', unbuilt: 2, max: 2, waiting: 1 });
+});

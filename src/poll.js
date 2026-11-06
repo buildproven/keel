@@ -426,6 +426,20 @@ async function fileFollowUps({ repo, project, config, client, log, base = 'HEAD'
   let current = null;
   let unarchived = null; // the workspace's unarchived issues, once read (REQ-LINEAR-37)
   const unbuilt = new Map(); // project → its open Keel-filed follow-ups, once read (REQ-LINEAR-42)
+  // project → its count and how many queued items wait for it: a full project holds only its own items (REQ-LINEAR-47).
+  const held = new Map();
+  const recordHeld = () => {
+    for (const [p, { open, waiting }] of held) {
+      recordPollAttempt(repo, {
+        issue: null,
+        outcome: 'held',
+        detail: { reason: 'unbuilt', unbuilt: open, max: config.followUpOpenMax, waiting, ...(p === project ? {} : { project: p }) },
+      });
+      log(
+        `follow-ups held${p === project ? '' : ` for project ${p}`}: ${open} unbuilt follow-ups >= ${config.followUpOpenMax} (followUpOpenMax); ${waiting} wait in the queue`,
+      );
+    }
+  };
   let keel = null; // Keel's home, read once a finding may cite Keel's code (REQ-LINEAR-47)
   let atBase = null; // the repo's files at base, read once (REQ-LINEAR-47)
   // Every Linear error is caught here (REQ-LINEAR-22), recorded against the item, and returned, so one bad item cannot
@@ -502,7 +516,8 @@ async function fileFollowUps({ repo, project, config, client, log, base = 'HEAD'
         log(`follow-up cap reached (${config.followUpsPerDay} per day); ${pending.length - pending.indexOf(f)} wait in the queue`);
         break;
       }
-      // The project's unbuilt follow-ups are counted once; at followUpOpenMax the rest waits until the loop builds some (REQ-LINEAR-42).
+      // Each project's unbuilt follow-ups are counted once; at followUpOpenMax its items wait until the loop builds some
+      // (REQ-LINEAR-42), and the queue goes on to items for a project with room (REQ-LINEAR-47).
       if (config.followUpOpenMax > 0) {
         if (!unbuilt.has(dest))
           unbuilt.set(
@@ -511,14 +526,8 @@ async function fileFollowUps({ repo, project, config, client, log, base = 'HEAD'
           );
         const open = unbuilt.get(dest);
         if (open >= config.followUpOpenMax) {
-          const waiting = pending.length - pending.indexOf(f);
-          recordPollAttempt(repo, {
-            issue: null,
-            outcome: 'held',
-            detail: { reason: 'unbuilt', unbuilt: open, max: config.followUpOpenMax, waiting },
-          });
-          log(`follow-ups held: ${open} unbuilt follow-ups >= ${config.followUpOpenMax} (followUpOpenMax); ${waiting} wait in the queue`);
-          break;
+          held.set(dest, { open, waiting: (held.get(dest)?.waiting ?? 0) + 1 });
+          continue;
         }
       }
       // The workspace's room is read once, just before the first issue this pass would file (REQ-LINEAR-37).
@@ -552,6 +561,7 @@ async function fileFollowUps({ repo, project, config, client, log, base = 'HEAD'
       known.add(titleKey(f.title));
       filed.set(f.source, [...(filed.get(f.source) ?? []), home ? `${id} (in project ${dest})` : id]);
     }
+    recordHeld();
   } catch (e) {
     // An unreachable network stops the poll and charges no item a try (REQ-LINEAR-40): the item did nothing wrong.
     if (networkFailure(e)) throw e;
@@ -565,6 +575,7 @@ async function fileFollowUps({ repo, project, config, client, log, base = 'HEAD'
       if (current.source && current.tries + 1 >= FILE_TRIES)
         await notify(current.source, `keel: could not file follow-up "${current.title}" after ${FILE_TRIES} tries: ${error}`);
     }
+    recordHeld();
     await report(true);
     const all = [error, ...errors].join('; ');
     log(`follow-ups not filed: ${all}`);
