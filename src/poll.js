@@ -19,7 +19,7 @@ import {
   titleKey,
 } from './linear.js';
 import { realpathSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { basename, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from './config.js';
 import { cardLease, describeConflicts } from './lease.js';
@@ -190,14 +190,18 @@ const appendMarker = (path) => `Keel adds later findings in \`${path}\` to this 
 const problemItem = (f) =>
   `- ${f.title}${f.detail ? ` (${f.detail})` : ''}${f.cite?.text ? `\n\n\`${f.cite.path}:${f.cite.line}\` reads:\n\n> ${f.cite.text}` : ''}`;
 
-function followUpText(source, f, config, repo, base) {
+/**
+ * `origin` names the repo the finding was found in when the card is filed for another repo (REQ-LINEAR-47), so its
+ * source, commit, and PR are read there, not in the repo that builds the card.
+ */
+function followUpText(source, f, config, repo, base, origin = null) {
   const path = findingPath(f, repo, base);
   const locked = path && locksAny(path, config.verificationPaths) ? path : null;
   const commit = f.found?.commit ?? f.cite?.ref ?? null;
   const pr = f.found?.pr ?? null;
-  const seen = [commit && `commit ${commit.slice(0, 12)}`, pr && `PR ${pr}`].filter(Boolean).join(', ');
+  const seen = [commit && `commit ${commit.slice(0, 12)}${origin ? ` of ${origin}` : ''}`, pr && `PR ${pr}`].filter(Boolean).join(', ');
   const context = [
-    `Found by keel${source ? ` while building ${source}` : ''}.`,
+    `Found by keel${source ? ` while building ${source}` : ''}${origin ? ` in ${origin}` : ''}.`,
     `Keel ${source ? 'found this outside that card' : 'found this in a review of merged work'}, so it was filed, not fixed${seen ? `; seen at ${seen}` : ''}.`,
     ...(path ? [appendMarker(path)] : []),
   ];
@@ -458,14 +462,34 @@ async function fileFollowUps({ repo, project, config, client, log, base = 'HEAD'
       return seen.get(p);
     };
     await seenIn(project);
+    const routes = new Map(); // finding → its keelRoute answer, read once (REQ-LINEAR-47)
+    const routeOf = (f) => {
+      if (!routes.has(f))
+        routes.set(
+          f,
+          keelRoute(f, (atBase ??= filesAt(repo, base)), repo, project, () => (keel ??= keelHome(keelRoot))),
+        );
+      return routes.get(f);
+    };
+    const destOf = (f) => {
+      const r = routeOf(f);
+      return r && !r.why ? r.project : project;
+    };
+    // When a cap ends the pass at `f`, the items from `f` on that go to a full project wait for it too (REQ-LINEAR-47).
+    const holdRest = (f) => {
+      for (const r of pending.slice(pending.indexOf(f))) {
+        const h = held.get(destOf(r));
+        if (h) h.waiting++;
+      }
+    };
     let cards = null; // open findings cards that take appends, oldest first, read once (REQ-LINEAR-38)
     for (const f of pending) {
       // A finding on Keel's own code is filed in Keel's project, deduped there, and never appended to a card of this
       // project (REQ-LINEAR-47).
-      const route = keelRoute(f, (atBase ??= filesAt(repo, base)), repo, project, () => (keel ??= keelHome(keelRoot)));
+      const route = routeOf(f);
       if (route?.why) log(`follow-up "${f.title}" cites Keel's own code, but ${route.why}; filing it in ${project}`);
       const home = route && !route.why ? route : null;
-      const dest = home ? home.project : project;
+      const dest = destOf(f);
       const { known, texts } = await seenIn(dest);
       if (known.has(titleKey(f.title)) || texts.some((t) => t.includes(titleKey(f.title)))) {
         recordPollAttempt(repo, { issue: f.source, outcome: 'dup', detail: { source: f.source, title: f.title } });
@@ -514,6 +538,7 @@ async function fileFollowUps({ repo, project, config, client, log, base = 'HEAD'
       }
       if (filedToday(repo) >= config.followUpsPerDay) {
         log(`follow-up cap reached (${config.followUpsPerDay} per day); ${pending.length - pending.indexOf(f)} wait in the queue`);
+        holdRest(f);
         break;
       }
       // Each project's unbuilt follow-ups are counted once; at followUpOpenMax its items wait until the loop builds some
@@ -539,6 +564,7 @@ async function fileFollowUps({ repo, project, config, client, log, base = 'HEAD'
           log(
             `follow-ups held: ${unarchived} unarchived issues >= ${config.followUpHoldAt} (followUpHoldAt); ${waiting} wait in the queue`,
           );
+          holdRest(f);
           break;
         }
       }
@@ -547,7 +573,7 @@ async function fileFollowUps({ repo, project, config, client, log, base = 'HEAD'
       // No source for a Keel finding, so the client files it in Keel's project, not the source's; its card is built
       // against Keel's checkout, without the line this repo's commit holds at that path (REQ-LINEAR-47).
       const description = home
-        ? followUpText(f.source, { ...f, cite: undefined }, home.config, home.repo, 'HEAD')
+        ? followUpText(f.source, { ...f, cite: undefined }, home.config, home.repo, 'HEAD', basename(resolve(repo)))
         : followUpText(f.source, f, config, repo, base);
       const id = await client.createIssue(home ? null : f.source, { title: f.title.trim(), description, priority: 4, ...blockedBy }, dest);
       current = null;

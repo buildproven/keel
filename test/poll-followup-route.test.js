@@ -220,3 +220,60 @@ test("REQ-LINEAR-47 a full project holds only its own queued follow-ups: the oth
   );
   assert.deepEqual(productFull.held[0].detail, { reason: 'unbuilt', unbuilt: 2, max: 2, waiting: 1 });
 });
+
+test("REQ-LINEAR-47 a card filed in Keel's project says which repo its source, commit, and PR are in", async () => {
+  const { dir } = fixtureRepo();
+  const repoName = dir.split('/').at(-1);
+  const sha = g(dir, 'rev-parse', 'HEAD');
+  const PR = 'https://github.com/example/dead-man-working/pull/7';
+  queueFollowUps(dir, 'BUI-1711', [KEEL_FINDING, { kind: 'bug', title: 'add subtracts', detail: 'src/add.js:1 subtracts' }], 'HEAD', PR);
+  const client = fakeClient();
+  await fileOnly(dir, client);
+  const [keel, product] = client.created.map((c) => c.fields.description);
+  assert.match(keel, new RegExp(`^Found by keel while building BUI-1711 in ${repoName}\\.$`, 'm'));
+  assert.ok(keel.includes(`seen at commit ${sha.slice(0, 12)} of ${repoName}, PR ${PR}.`), keel);
+  // A card filed in the repo it was found in reads as before.
+  assert.match(product, /^Found by keel while building BUI-1711\.$/m);
+  assert.ok(product.includes(`seen at commit ${sha.slice(0, 12)}, PR ${PR}.`), product);
+});
+
+test("REQ-LINEAR-47 when the daily cap or the workspace hold ends the pass, a full project's held row counts every item queued for it", async () => {
+  const unbuilt = Array.from({ length: 2 }, (_, i) => ({ id: `KEEL-${i}`, title: `keel finding ${i}`, description: 'Found by keel.\n' }));
+  const PRODUCT = { kind: 'bug', title: 'add subtracts', detail: 'src/add.js:1 subtracts' };
+  const SECOND = { kind: 'bug', title: 'keel gate drops a log line', detail: 'keel src/gate.js:120 drops it' };
+  const run = async (over, extra = {}) => {
+    process.env.KEEL_STATE_DIR = tmp('keel-route-state-');
+    const { dir } = fixtureRepo();
+    queueFollowUps(dir, 'BUI-1711', [KEEL_FINDING, PRODUCT, SECOND], 'HEAD');
+    const client = fakeClient({ keel: unbuilt });
+    const logs = [];
+    await poll({
+      repo: dir,
+      project: 'dead-man-working',
+      client,
+      config: fixtureConfig({ followUpOpenMax: 2, linearProject: 'dead-man-working', ...over }),
+      runFn: () => assert.fail('no build'),
+      fileOnly: true,
+      log: (l) => logs.push(l),
+      ...extra,
+    });
+    const held = readJsonl(pollLedgerFile(dir)).filter((r) => r.outcome === 'held' && r.detail.project === 'keel');
+    return { client, logs, held };
+  };
+  // The cap of 1 a day ends the pass at SECOND, after PRODUCT is filed: both Keel findings wait for Keel's project.
+  const capped = await run({ followUpsPerDay: 1 });
+  assert.deepEqual(
+    capped.client.created.map((c) => c.fields.title),
+    [PRODUCT.title],
+  );
+  assert.equal(capped.held.length, 1);
+  assert.equal(capped.held[0].detail.waiting, 2);
+  assert.ok(
+    capped.logs.some((l) => /held for project keel: .*; 2 wait in the queue/.test(l)),
+    capped.logs.join('\n'),
+  );
+  // The workspace hold ends the pass at PRODUCT: SECOND, behind it, still counts as waiting for Keel's project.
+  const full = await run({ followUpsPerDay: 5, followUpHoldAt: 200 }, { capacityFn: async () => ({ open: 250 }) });
+  assert.deepEqual(full.client.created, []);
+  assert.equal(full.held[0].detail.waiting, 2);
+});
