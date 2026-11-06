@@ -441,10 +441,10 @@ commands by hand; the gate needs nothing else.
 | `src/autonomy.js`    | Human touch rate of polled issues, from the ledgers and GitHub                       | LED-14, 16, LINEAR-33                                                     |
 | `src/clean.js`       | Lists and removes parked worktrees                                                   | CLEAN-1, 2                                                                |
 | `src/autoclean.js`   | Removes finished parked worktrees and dead gate checkouts                            | CLEAN-3, 4, 5                                                             |
-| `src/doctor.js`      | Runs install and every check on a clean base; merge readiness; speed advice          | CLI-3, 4, 13, 14, 16, MERGE-1, PLAN-4                                     |
+| `src/doctor.js`      | Runs install and every check on a clean base; merge readiness; speed advice          | CLI-3, 4, 13, 14, 16, MERGE-1, PLAN-4, LINEAR-47                          |
 | `src/merge.js`       | Self-merge of a certified SHA once every check on it is green                        | MERGE-1..4, LINEAR-40                                                     |
 | `src/linear.js`      | Issue to card mapping, dependency-aware selection, review state                      | LINEAR-1..3, 5, 11..13, 20, 25, 26, 33                                    |
-| `src/linear-http.js` | Real Linear client over HTTP (`LINEAR_API_KEY`)                                      | LINEAR-7, 16, 47, 20, 22, 28, 30, 33, 36, CLI-16                          |
+| `src/linear-http.js` | Real Linear client over HTTP (`LINEAR_API_KEY`, else `LINEAR_BUILDPROVEN_KEY`)       | LINEAR-7, 16, 20, 22, 28, 30, 33, 36, 47, CLI-16                          |
 | `src/done.js`        | Verifies an already-satisfied claim: commit on base or merged PR, checks             | LINEAR-30                                                                 |
 | `src/poll.js`        | One pass of the autonomous loop: pick, refine, run, comment, review                  | LINEAR-4..19, 22, 25..33, 40, RUN-20, PLAN-3, 5                           |
 | `src/refine.js`      | Refine turn before a build: prompt, strict parse, ledger row                         | LINEAR-32, 33, LED-17, PLAN-3                                             |
