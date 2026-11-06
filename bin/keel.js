@@ -4,7 +4,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { autoClean } from '../src/autoclean.js';
 import { expectedBranch, listParkedWorktrees, removeParkedWorktree } from '../src/clean.js';
-import { loadConfig, readTrustedCard } from '../src/config.js';
+import { CardError, loadConfig, readTrustedCard } from '../src/config.js';
 import { branchCard, defaultBase, findDefaultBase, policyRef } from '../src/defaults.js';
 import { doctor, keelGateRequired, linearDoctor, mergeReadiness, setupAdvice } from '../src/doctor.js';
 import { git } from '../src/git.js';
@@ -373,6 +373,10 @@ if (values.version && command) {
     if (down) {
       log(`${command} stopped: network unreachable (${down.host}: ${down.code})`);
       process.exitCode = 4;
+    } else if (e instanceof CardError) {
+      // REQ-CARD-2: a bad card is one line naming the file and what is allowed; the usage text would bury it.
+      log(e.message);
+      process.exitCode = 2;
     } else if (e instanceof UsageError) usageFailure(e.message);
     else throw e;
   }

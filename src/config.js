@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { showFile } from './git.js';
+import { UsageError } from './usage.js';
 
 export const KINDS = ['bug', 'feature', 'refactor', 'ui', 'infra', 'chore'];
 const SIZES = ['S', 'M', 'L'];
@@ -9,6 +10,9 @@ const NAME = /^[A-Za-z0-9_-]+$/;
 const own = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
 const table = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const PROVIDERS = ['claude', 'codex', 'exec'];
+
+/** A card that cannot be read or parsed: the CLI prints it as one `keel:` line and exits 2, no stack trace (REQ-CARD-2). */
+export class CardError extends UsageError {}
 
 /** Review finding severities, most severe first (REQ-GATE-21). */
 export const SEVERITIES = ['critical', 'high', 'medium', 'low'];
@@ -325,7 +329,7 @@ const list = (v) =>
     : [];
 
 // A `paths`/`allowEdits` value is a comma list or a JSON array of strings; a stray bracket or quote would be a glob that matches nothing (REQ-CARD-5).
-const pathList = (field, v) => {
+const pathList = (where, field, v) => {
   let items;
   try {
     const parsed = JSON.parse(v);
@@ -336,8 +340,8 @@ const pathList = (field, v) => {
   items ??= list(v);
   for (const item of items)
     if (/[[\]"]/.test(item))
-      throw new Error(
-        `card: ${field} item ${JSON.stringify(item)} holds a bracket or quote; write a comma list or a JSON array of strings`,
+      throw new CardError(
+        `${where}: ${field} item ${JSON.stringify(item)} holds a bracket or quote; write a comma list or a JSON array of strings`,
       );
   return items;
 };
@@ -348,16 +352,16 @@ const NEW_MARK = /(?:^|\s+)\(new\)$/i;
  * `paths` with each trailing ` (new)` marker taken off, and the marked paths (REQ-CARD-6), so a file the card creates
  * is a real path for scope and is not reported missing on base (REQ-LINEAR-44).
  */
-function markedPaths(v) {
+function markedPaths(where, v) {
   const paths = [];
   const newPaths = [];
-  for (const item of pathList('paths', v)) {
+  for (const item of pathList(where, 'paths', v)) {
     if (!NEW_MARK.test(item)) {
       paths.push(item);
       continue;
     }
     const path = item.replace(NEW_MARK, '');
-    if (!path) throw new Error(`card: paths item ${JSON.stringify(item)} names no path; write "<path> (new)"`);
+    if (!path) throw new CardError(`${where}: paths item ${JSON.stringify(item)} names no path; write "<path> (new)"`);
     paths.push(path);
     newPaths.push(path);
   }
@@ -365,49 +369,74 @@ function markedPaths(v) {
 }
 
 /** `allowEdits` opens locked files that exist, so a ` (new)` marker there is an error (REQ-CARD-6). */
-function allowEditsList(v) {
-  const items = pathList('allowEdits', v);
+function allowEditsList(where, v) {
+  const items = pathList(where, 'allowEdits', v);
   const marked = items.find((p) => NEW_MARK.test(p));
   if (marked)
-    throw new Error(
-      `card: allowEdits lists existing files only; ${JSON.stringify(marked)} is marked new: put a new file in paths as "<path> (new)"`,
+    throw new CardError(
+      `${where}: allowEdits lists existing files only; ${JSON.stringify(marked)} is marked new: put a new file in paths as "<path> (new)"`,
     );
   return items;
 }
 
-/** Parse a card: `key: value` header lines before the first `## ` heading; the whole file is the task text. */
-export function parseCard(text, file = 'card.md') {
+/**
+ * Parse a card: `key: value` header lines before the first `## ` heading; the whole file is the task text. Every
+ * rejection is a CardError naming the file (or, for a card built from an issue, its id) and what is allowed (REQ-CARD-2).
+ */
+export function parseCard(text, file) {
+  const title = /^#\s+(.+)$/m.exec(text)?.[1].trim() ?? basename(file ?? 'card.md', '.md');
+  const id = /^([A-Z]+-\d+)/.exec(title)?.[1] ?? basename(file ?? 'card.md', '.md');
+  const where = `card ${file ?? id}`;
   const fields = {};
   for (const line of text.split(/^## /m)[0].split('\n')) {
     const m = /^([A-Za-z]+):\s*(.*)$/.exec(line.trim());
     if (!m) continue;
-    if (!FIELDS.includes(m[1])) throw new Error(`card: unknown header "${m[1]}" (allowed: ${FIELDS.join(', ')})`);
-    if (own(fields, m[1])) throw new Error(`card: header "${m[1]}" is given twice`);
+    if (!FIELDS.includes(m[1])) throw new CardError(`${where}: unknown header "${m[1]}" (allowed: ${FIELDS.join(', ')})`);
+    if (own(fields, m[1])) throw new CardError(`${where}: header "${m[1]}" is given twice`);
     fields[m[1]] = m[2].trim();
   }
-  const title = /^#\s+(.+)$/m.exec(text)?.[1].trim() ?? basename(file, '.md');
-  const id = /^([A-Z]+-\d+)/.exec(title)?.[1] ?? basename(file, '.md');
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(id)) throw new Error(`card: id "${id}" must match [A-Za-z0-9._-], max 64 chars`);
-  if (!KINDS.includes(fields.kind)) throw new Error(`card ${id}: kind "${fields.kind}" is not one of ${KINDS.join(', ')}`);
-  if (!SIZES.includes(fields.size)) throw new Error(`card ${id}: size "${fields.size}" is not one of ${SIZES.join(', ')}`);
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(id)) throw new CardError(`${where}: id "${id}" must match [A-Za-z0-9._-], max 64 chars`);
+  if (!Object.keys(fields).length)
+    throw new CardError(
+      `${where}: no header lines; start the card with "kind: <kind>" and "size: <S|M>" lines before the first "## " heading (kind: ${KINDS.join(', ')}; size: ${SIZES.join(', ')})`,
+    );
+  const header = (key, allowed) => {
+    const value = fields[key];
+    if (allowed.includes(value)) return value;
+    const why = value === undefined ? 'is missing' : 'is invalid';
+    throw new CardError(`${where}: header "${key}:" ${why}; ${key} "${value}" is not one of ${allowed.join(', ')}`);
+  };
+  const kind = header('kind', KINDS);
+  const size = header('size', SIZES);
   const acceptance = list(fields.acceptance);
-  for (const a of acceptance) if (!NAME.test(a)) throw new Error(`card ${id}: acceptance name "${a}" must match [A-Za-z0-9_-]+`);
-  const { paths, newPaths } = markedPaths(fields.paths);
+  for (const a of acceptance) if (!NAME.test(a)) throw new CardError(`${where}: acceptance name "${a}" must match [A-Za-z0-9_-]+`);
+  const { paths, newPaths } = markedPaths(where, fields.paths);
   return {
     id,
     title,
-    kind: fields.kind,
-    size: fields.size,
+    kind,
+    size,
     paths,
     newPaths,
-    allowEdits: allowEditsList(fields.allowEdits),
+    allowEdits: allowEditsList(where, fields.allowEdits),
     acceptance,
     heldOut: fields.heldOut || null,
     text,
   };
 }
 
-export const readCard = (file) => parseCard(readFileSync(file, 'utf8'), file);
+/** Read and parse a card file; a file that cannot be read is a CardError naming it (REQ-CARD-2). */
+export function readCard(file) {
+  let text;
+  try {
+    text = readFileSync(file, 'utf8');
+  } catch (e) {
+    // REQ-CARD-2: only a file-system refusal (ENOENT, EISDIR, EACCES, …) is the caller's mistake; anything else stays thrown.
+    if (typeof e?.code === 'string' && e.syscall) throw new CardError(`card ${file}: cannot read it (${e.code})`);
+    throw e;
+  }
+  return parseCard(text, file);
+}
 
 /**
  * A path with symlinks resolved and, on a case-insensitive filesystem, its true letter case (realpath.native), so an alias
@@ -425,7 +454,7 @@ export function readTrustedCard(repo, base, file) {
   const rel = relative(canonical(repo), canonical(file));
   if (rel.startsWith('..')) return readCard(file);
   const text = showFile(base, rel, repo);
-  if (text === null) throw new Error(`card ${rel} is not in the base commit; commit it to the base first or keep it outside the repo`);
+  if (text === null) throw new CardError(`card ${rel} is not in the base commit; commit it to the base first or keep it outside the repo`);
   return parseCard(text, file);
 }
 
