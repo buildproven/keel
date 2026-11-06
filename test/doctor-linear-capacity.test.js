@@ -43,13 +43,14 @@ test('REQ-CLI-16 a FAIL row fails the doctor, a WARN does not, and a read error 
   const env = { LINEAR_API_KEY: 'k' };
   let logs = [];
   assert.equal(await linearDoctor({ env, client: fake({ open: 250, teams }), log: (l) => logs.push(l) }), true);
-  assert.match(logs[0], /^FAIL linear 250 of 250/);
+  assert.equal(logs[0], 'INFO linear key from LINEAR_API_KEY');
+  assert.match(logs[1], /^FAIL linear 250 of 250/);
   logs = [];
   assert.equal(await linearDoctor({ env, client: fake({ open: 210, teams }), log: (l) => logs.push(l) }), false);
-  assert.match(logs[0], /^WARN linear 210 of 250/);
+  assert.match(logs[1], /^WARN linear 210 of 250/);
   logs = [];
   assert.equal(await linearDoctor({ env, client: fake(new Error('HTTP 500')), log: (l) => logs.push(l) }), false);
-  assert.deepEqual(logs, ['WARN linear capacity unknown: HTTP 500']);
+  assert.deepEqual(logs, ['INFO linear key from LINEAR_API_KEY', 'WARN linear capacity unknown: HTTP 500']);
 });
 
 test('REQ-CLI-16 capacity() counts unarchived issues across every page and returns each team archive period', async (t) => {

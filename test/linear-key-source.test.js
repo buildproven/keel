@@ -70,3 +70,11 @@ test('REQ-LINEAR-47 the doctor prints nothing about the key when none is set', a
   await linearDoctor({ env: {}, client: () => assert.fail('no client without a key'), log: (l) => logs.push(l) });
   assert.deepEqual(logs, []);
 });
+
+test('REQ-LINEAR-47 the doctor names the key variable first, also when the Linear read fails', async () => {
+  const logs = [];
+  const client = () => ({ capacity: async () => Promise.reject(new Error('HTTP 401')) });
+  const failed = await linearDoctor({ env: { LINEAR_BUILDPROVEN_KEY: 'lin_secret_value' }, client, log: (l) => logs.push(l) });
+  assert.equal(failed, false);
+  assert.deepEqual(logs, ['INFO linear key from LINEAR_BUILDPROVEN_KEY', 'WARN linear capacity unknown: HTTP 401']);
+});

@@ -17,7 +17,7 @@ export function scrubEnv(env, allow = []) {
 }
 
 /**
- * The names Keel reads the Linear personal API key from, in order (REQ-LINEAR-41). The central env file names it
+ * The names Keel reads the Linear personal API key from, in order (REQ-LINEAR-47). The central env file names it
  * `LINEAR_BUILDPROVEN_KEY`; `LINEAR_API_KEY` is the name the pollers' launchd env sets. An empty value counts as unset.
  */
 export const LINEAR_KEY_NAMES = ['LINEAR_API_KEY', 'LINEAR_BUILDPROVEN_KEY'];

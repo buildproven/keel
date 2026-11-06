@@ -157,13 +157,15 @@ export function linearCapacity({ open, teams }) {
 }
 
 /**
- * The doctor's Linear lines (REQ-CLI-16): nothing without a Linear key (LINEAR_API_KEY or LINEAR_BUILDPROVEN_KEY, REQ-LINEAR-41); else each linearCapacity row is logged as
+ * The doctor's Linear lines (REQ-CLI-16): nothing without a Linear key (LINEAR_API_KEY or LINEAR_BUILDPROVEN_KEY, REQ-LINEAR-47); else the key's variable name, then each linearCapacity row is logged as
  * `<LEVEL> <text>`. Returns true when a row is FAIL, so the doctor exits 1. A read error is logged as a WARN and does
  * not fail the doctor: Linear being down does not make the repo unhealthy, but it is shown.
  */
 export async function linearDoctor({ env, client, log }) {
   const found = linearKey(env);
   if (!found) return false;
+  // REQ-LINEAR-47: the name only, never the value; first, so a failed read with a wrong key still names its source.
+  log(`INFO linear key from ${found.name}`);
   let usage;
   try {
     usage = await client().capacity();
@@ -173,6 +175,5 @@ export async function linearDoctor({ env, client, log }) {
   }
   const rows = linearCapacity(usage);
   for (const r of rows) log(`${r.level} ${r.text}`);
-  log(`INFO linear key from ${found.name}`); // REQ-LINEAR-41: the name only, never the value
   return rows.some((r) => r.level === 'FAIL');
 }
