@@ -1,3 +1,5 @@
+import { LINEAR_KEY_NAMES, linearKey } from './env.js';
+
 /** Where a follow-up goes (REQ-LINEAR-22): its source issue's team and project, else the named project and its team. */
 async function home(apiKey, sourceId, project) {
   if (sourceId) {
@@ -98,14 +100,18 @@ const ARCHIVE_ISSUE = `mutation ($id: String!) { issueArchive(id: $id) { success
 const MOVE_ISSUE = `mutation ($id: String!, $stateId: String!) { issueUpdate(id: $id, input: { stateId: $stateId }) { success } }`;
 
 /**
- * Real Linear client (REQ-LINEAR-7): Linear's GraphQL HTTP API with LINEAR_API_KEY. Keel is a plain
+ * Real Linear client (REQ-LINEAR-7): Linear's GraphQL HTTP API with LINEAR_API_KEY or LINEAR_BUILDPROVEN_KEY. Keel is a plain
  * CLI subprocess with no MCP access, so this — not the session's MCP tools — is what `keel poll` uses.
  */
 export function linearHttpClient() {
   const key = () => {
-    const apiKey = process.env.LINEAR_API_KEY;
-    if (!apiKey) throw new Error('LINEAR_API_KEY is not set; keel poll needs a Linear personal API key');
-    return apiKey;
+    const found = linearKey(process.env);
+    if (!found) {
+      throw new Error(
+        `${LINEAR_KEY_NAMES.map((n) => `${n} is not set`).join(' and ')}; keel poll needs a Linear personal API key in one of them`,
+      );
+    }
+    return found.value;
   };
 
   return {
