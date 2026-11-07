@@ -3,6 +3,7 @@ import { parseArgs } from 'node:util';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { autoClean } from '../src/autoclean.js';
+import { ISSUE_ID, checkCard } from '../src/check-card.js';
 import { expectedBranch, listParkedWorktrees, removeParkedWorktree } from '../src/clean.js';
 import { CardError, loadConfig, readTrustedCard } from '../src/config.js';
 import { branchCard, defaultBase, findDefaultBase, policyRef } from '../src/defaults.js';
@@ -51,6 +52,10 @@ const USAGE = `keel — quality gate that picks the model
   keel poll [--project <name>] [--base <ref>] [--repo <dir>] [--pr | --merge] [--limit N | --issue <ID> | --file-only]
                                                                pick, build, and report on the next N Linear issues (needs LINEAR_API_KEY);
                                                                --file-only files queued follow-ups and builds nothing
+  keel check-card <card.md | ISSUE-ID> [--repo <dir>] [--base <ref>] [--project <name>]
+                                                               check a card before it is built: it parses, and every exact
+                                                               path is on base (default: origin's default branch, else
+                                                               HEAD) or marked "(new)"; exits 1 with the fix otherwise
   keel doctor [--repo <dir>] [--base <ref>]                  run the configured checks on a clean checkout of base; find red ones before a card does
   keel report [--escaped] [--dora] [--value [--days N]] [--recur]
                                                                ledger summary; --escaped lists fix: commits on files of merged
@@ -137,9 +142,9 @@ if (values.version && command) {
   process.stdout.write(`${USAGE}\n`);
 } else {
   // An issue ID that is not a file builds that Linear issue (REQ-CLI-8).
-  const isIssueRun = command === 'run' && /^[A-Z]+-[0-9]+$/.test(arg ?? '') && !existsSync(arg);
+  const isIssueRun = command === 'run' && ISSUE_ID.test(arg ?? '') && !existsSync(arg);
   try {
-    if (['init', 'gate', 'run', 'poll', 'doctor', 'audit', 'test'].includes(command) && !isDirectory(repo)) {
+    if (['init', 'gate', 'run', 'poll', 'check-card', 'doctor', 'audit', 'test'].includes(command) && !isDirectory(repo)) {
       throw new UsageError(`--repo ${repo} is not a directory`);
     }
     if (values.author !== undefined && command !== 'gate') throw new UsageError('--author is an option of gate only');
@@ -266,6 +271,12 @@ if (values.version && command) {
       });
       for (const r of results) log(`${r.issue ?? '(none)'}: ${r.outcome}${issueStopNote(r.result)}`);
       process.exitCode = pollExitCode(results);
+    } else if (command === 'check-card') {
+      // The poll's own parse and missing-path check, run when the card is written, not a night later (REQ-CARD-7..10).
+      if (!arg) throw new UsageError('check-card needs a card file or an issue ID');
+      const base = values.base ?? policyRef(repo);
+      const issues = () => linearHttpClient().listIssues(resolveProject(values.project, loadConfig(repo, base), repo));
+      process.exitCode = await checkCard({ repo, base, target: arg, issues, log, isFile: existsSync });
     } else if (command === 'doctor') {
       const base = values.base ?? 'HEAD';
       const rows = doctor({ repo, base, config: loadConfig(repo, base) });

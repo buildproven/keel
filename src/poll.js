@@ -1,14 +1,13 @@
 import { holdsUncommitted, removeParkedWorktree } from './clean.js';
 import { exec, isDirty, revParse, showFile } from './git.js';
 import { ALREADY_SATISFIED, verifyDone } from './done.js';
+import { missingOnBase } from './check-card.js';
 import {
   attemptedIssueIds,
   cardFromIssue,
-  exactPaths,
   filedToday,
   latestPollRow,
   mapsToCard,
-  markedNew,
   notKeelIssueIds,
   notKeelReason,
   pendingFollowUps,
@@ -823,17 +822,6 @@ async function refineStep({ repo, base, config, client, issue, project, log, ref
     return { outcome: { outcome: 'leased', issue: issue.id } };
   }
   return { issue: { ...issue, description } };
-}
-
-/**
- * The card's exactly named paths that are not in `base` and that its text does not mark new (REQ-LINEAR-44): a
- * dependency not merged yet, a card for another repo, or a file that does not exist yet would stop the build for a human.
- */
-function missingOnBase(repo, base, card) {
-  const wanted = exactPaths(card).filter((p) => !markedNew(card, p));
-  if (!wanted.length) return { missing: [] };
-  const sha = revParse(base, repo);
-  return { sha, missing: wanted.filter((p) => exec('git', ['cat-file', '-e', `${sha}:${p}`], repo).status !== 0) };
 }
 
 /**
