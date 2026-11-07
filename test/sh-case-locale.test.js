@@ -5,7 +5,7 @@ import { test } from 'node:test';
 // A shell `case` range such as `[A-Z]*)` follows the collation order of the locale: under en_US.UTF-8 (macOS)
 // `[A-Z]` also matches lower-case letters, so a test fixture passes in CI (C locale) and fails on the Mac.
 // Use a character class (`[[:upper:]]`, `[[:lower:]]`) instead.
-test('no shell case pattern in Keel uses a locale-dependent letter range', () => {
+test('REQ-RUN-67 no shell case pattern in Keel uses a locale-dependent letter range', () => {
   const r = spawnSync(
     'git',
     ['grep', '-n', '-E', String.raw`in \[(A-Z|a-z)\]\*?\)`, '--', 'src', 'test', 'bin', ':!test/sh-case-locale.test.js'],
