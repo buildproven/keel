@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 
-// Shell fixtures in the tests (a `case "$s" in [A-Z]*)` commit-msg hook, REQ-RUN-67) follow the locale's collation:
-// under en_US.UTF-8 (macOS) `[A-Z]` also matches lower case, so the suite passed in CI and failed on the Mac.
-// Both test commands pin the C locale, so every machine runs the suite the same way.
-test('REQ-RUN-67 the full-suite and per-file test commands run under the C locale', () => {
-  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
-  const keel = JSON.parse(readFileSync(new URL('../keel.json', import.meta.url), 'utf8'));
-  assert.match(pkg.scripts.test, /^LC_ALL=C /);
-  assert.match(keel.testFilesCommand, /^LC_ALL=C /);
+// The REQ-RUN-67 fixtures are sh hooks whose `[A-Z]` range follows the locale's collation. Run that test file under
+// a UTF-8 locale, as on a Mac, so a fixture that depends on the caller's locale fails here, not only on one machine.
+test('REQ-RUN-67 the commit-subject tests pass under a UTF-8 locale', () => {
+  const env = { ...process.env, LANG: 'en_US.UTF-8', LC_COLLATE: 'en_US.UTF-8', LC_CTYPE: 'en_US.UTF-8' };
+  delete env.LC_ALL;
+  delete env.NODE_TEST_CONTEXT; // else the child reports to this runner and exits 0
+  const r = spawnSync(process.execPath, ['--test', 'test/run-commit-subject.test.js'], { env, encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stdout.slice(-2000));
 });
