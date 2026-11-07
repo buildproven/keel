@@ -43,7 +43,7 @@ function commitMsgHook(dir, seen, body) {
 }
 
 const SUBJECT_CASE =
-  'case "$s" in [[:upper:]]*) echo "⧗   input: $(head -n 1 "$1")"; echo "✖   subject must not be sentence-case [subject-case]"; exit 1;; esac\nexit 0';
+  'case "$s" in [A-Z]*) echo "⧗   input: $(head -n 1 "$1")"; echo "✖   subject must not be sentence-case [subject-case]"; exit 1;; esac\nexit 0';
 
 const subjects = (seen) => (existsSync(seen) ? readFileSync(seen, 'utf8').trim().split('\n') : []);
 
