@@ -42,6 +42,10 @@ function commitMsgHook(dir, seen, body) {
   chmodSync(hook, 0o755);
 }
 
+// The hooks below are sh scripts that git runs with this process's environment. A `case` range such as `[A-Z]`
+// follows the locale's collation (under en_US.UTF-8 it matches lower case too), so pin the C locale.
+process.env.LC_ALL = 'C';
+
 const SUBJECT_CASE =
   'case "$s" in [A-Z]*) echo "⧗   input: $(head -n 1 "$1")"; echo "✖   subject must not be sentence-case [subject-case]"; exit 1;; esac\nexit 0';
 
