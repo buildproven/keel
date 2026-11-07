@@ -191,7 +191,7 @@ const problemItem = (f) =>
   `- ${f.title}${f.detail ? ` (${f.detail})` : ''}${f.cite?.text ? `\n\n\`${f.cite.path}:${f.cite.line}\` reads:\n\n> ${f.cite.text}` : ''}`;
 
 /**
- * `origin` names the repo the finding was found in when the card is filed for another repo (REQ-LINEAR-47), so its
+ * `origin` names the repo the finding was found in when the card is filed for another repo (REQ-LINEAR-48), so its
  * source, commit, and PR are read there, not in the repo that builds the card.
  */
 function followUpText(source, f, config, repo, base, origin = null) {
@@ -257,13 +257,13 @@ function citation(f, files = new Set()) {
           path = text.slice(i, end);
           break;
         }
-      // `keel src/gate.js:95` names Keel as the repo the path is in (REQ-LINEAR-47).
+      // `keel src/gate.js:95` names Keel as the repo the path is in (REQ-LINEAR-48).
       return { path, line: Number(m[2]), named: KEEL_NAMED.test(text.slice(0, end - path.length)) };
     }
   return null;
 }
 
-// The word `keel` right before a cited path, as in `keel src/gate.js:95` (REQ-LINEAR-47).
+// The word `keel` right before a cited path, as in `keel src/gate.js:95` (REQ-LINEAR-48).
 const KEEL_NAMED = /(?:^|[^\w-])keel\s+$/i;
 
 /** Every file path at `ref`, for `citation`. */
@@ -352,11 +352,11 @@ async function archiveClosed(archiveFn, log) {
   }
 }
 
-/** Keel's install root: the checkout this code runs from (REQ-LINEAR-47). */
+/** Keel's install root: the checkout this code runs from (REQ-LINEAR-48). */
 export const KEEL_ROOT = fileURLToPath(new URL('..', import.meta.url));
 
 /**
- * Keel's own repo, config, files, and Linear project (REQ-LINEAR-47): `root` must be the top of a git checkout whose
+ * Keel's own repo, config, files, and Linear project (REQ-LINEAR-48): `root` must be the top of a git checkout whose
  * keel.json at HEAD names `linearProject`; else `{ why }`, the reason a finding on Keel's code cannot be filed there.
  */
 function keelHome(root) {
@@ -370,7 +370,7 @@ function keelHome(root) {
 }
 
 /**
- * Where queued finding `f` goes when it cites Keel's own code rather than the built repo's (REQ-LINEAR-47): Keel's home
+ * Where queued finding `f` goes when it cites Keel's own code rather than the built repo's (REQ-LINEAR-48): Keel's home
  * (`keelHome`), `{ why }` when it names `keel` but Keel's home is unknown, or null for the polled project. A finding
  * cites Keel's code when it names `keel` before the path, or when the path is in neither the repo at `base` nor the
  * finding's own commit but is in Keel's checkout. A poll of Keel's own project routes nothing. `home` reads Keel's home.
@@ -392,7 +392,7 @@ const DUP_CLOSED_DAYS = 30;
 
 /**
  * File queued found work as Low issues in the same project (REQ-LINEAR-22), or Keel's own for a finding on Keel's code
- * (REQ-LINEAR-47), oldest first: a title an open issue already
+ * (REQ-LINEAR-48), oldest first: a title an open issue already
  * has is marked `dup`; at followUpsPerDay for this repo today the rest waits in the queue for a later poll. Each item
  * leaves the queue when its issue is created, marked `dup`, or failed FILE_TRIES times. At followUpHoldAt unarchived
  * issues in the workspace, nothing more is filed and the rest waits, logged and recorded as `held` (REQ-LINEAR-37); an
@@ -430,7 +430,7 @@ async function fileFollowUps({ repo, project, config, client, log, base = 'HEAD'
   let current = null;
   let unarchived = null; // the workspace's unarchived issues, once read (REQ-LINEAR-37)
   const unbuilt = new Map(); // project → its open Keel-filed follow-ups, once read (REQ-LINEAR-42)
-  // project → its count and how many queued items wait for it: a full project holds only its own items (REQ-LINEAR-47).
+  // project → its count and how many queued items wait for it: a full project holds only its own items (REQ-LINEAR-48).
   const held = new Map();
   const recordHeld = () => {
     for (const [p, { open, waiting }] of held) {
@@ -444,8 +444,8 @@ async function fileFollowUps({ repo, project, config, client, log, base = 'HEAD'
       );
     }
   };
-  let keel = null; // Keel's home, read once a finding may cite Keel's code (REQ-LINEAR-47)
-  let atBase = null; // the repo's files at base, read once (REQ-LINEAR-47)
+  let keel = null; // Keel's home, read once a finding may cite Keel's code (REQ-LINEAR-48)
+  let atBase = null; // the repo's files at base, read once (REQ-LINEAR-48)
   // Every Linear error is caught here (REQ-LINEAR-22), recorded against the item, and returned, so one bad item cannot
   // stop every later poll.
   try {
@@ -462,7 +462,7 @@ async function fileFollowUps({ repo, project, config, client, log, base = 'HEAD'
       return seen.get(p);
     };
     await seenIn(project);
-    const routes = new Map(); // finding → its keelRoute answer, read once (REQ-LINEAR-47)
+    const routes = new Map(); // finding → its keelRoute answer, read once (REQ-LINEAR-48)
     const routeOf = (f) => {
       if (!routes.has(f))
         routes.set(
@@ -475,7 +475,7 @@ async function fileFollowUps({ repo, project, config, client, log, base = 'HEAD'
       const r = routeOf(f);
       return r && !r.why ? r.project : project;
     };
-    // When a cap ends the pass at `f`, the items from `f` on that go to a full project wait for it too (REQ-LINEAR-47).
+    // When a cap ends the pass at `f`, the items from `f` on that go to a full project wait for it too (REQ-LINEAR-48).
     const holdRest = (f) => {
       for (const r of pending.slice(pending.indexOf(f))) {
         const h = held.get(destOf(r));
@@ -485,7 +485,7 @@ async function fileFollowUps({ repo, project, config, client, log, base = 'HEAD'
     let cards = null; // open findings cards that take appends, oldest first, read once (REQ-LINEAR-38)
     for (const f of pending) {
       // A finding on Keel's own code is filed in Keel's project, deduped there, and never appended to a card of this
-      // project (REQ-LINEAR-47).
+      // project (REQ-LINEAR-48).
       const route = routeOf(f);
       if (route?.why) log(`follow-up "${f.title}" cites Keel's own code, but ${route.why}; filing it in ${project}`);
       const home = route && !route.why ? route : null;
@@ -542,7 +542,7 @@ async function fileFollowUps({ repo, project, config, client, log, base = 'HEAD'
         break;
       }
       // Each project's unbuilt follow-ups are counted once; at followUpOpenMax its items wait until the loop builds some
-      // (REQ-LINEAR-42), and the queue goes on to items for a project with room (REQ-LINEAR-47).
+      // (REQ-LINEAR-42), and the queue goes on to items for a project with room (REQ-LINEAR-48).
       if (config.followUpOpenMax > 0) {
         if (!unbuilt.has(dest))
           unbuilt.set(
@@ -571,7 +571,7 @@ async function fileFollowUps({ repo, project, config, client, log, base = 'HEAD'
       current = f;
       const blockedBy = f.source && (await isOpen(f.source)) ? { blockedBy: [f.source] } : {};
       // No source for a Keel finding, so the client files it in Keel's project, not the source's; its card is built
-      // against Keel's checkout, without the line this repo's commit holds at that path (REQ-LINEAR-47).
+      // against Keel's checkout, without the line this repo's commit holds at that path (REQ-LINEAR-48).
       const description = home
         ? followUpText(f.source, { ...f, cite: undefined }, home.config, home.repo, 'HEAD', basename(resolve(repo)))
         : followUpText(f.source, f, config, repo, base);
@@ -1108,7 +1108,7 @@ export async function poll({
   limit = 1,
   issue: only = null,
   fileOnly = false,
-  // Follow-ups on Keel's own code go to the project this checkout's keel.json names (REQ-LINEAR-47).
+  // Follow-ups on Keel's own code go to the project this checkout's keel.json names (REQ-LINEAR-48).
   keelRoot = KEEL_ROOT,
 }) {
   // A project that is not this repo's stops before Linear is read or a worktree made (REQ-LINEAR-34).

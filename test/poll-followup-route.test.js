@@ -57,7 +57,7 @@ const fileOnly = (dir, client, extra = {}) =>
     ...extra,
   });
 
-test("REQ-LINEAR-47 a follow-up that cites `keel src/gate.js:95` from a product repo is filed in Keel's project, and the source comment names it", async () => {
+test("REQ-LINEAR-48 a follow-up that cites `keel src/gate.js:95` from a product repo is filed in Keel's project, and the source comment names it", async () => {
   const { dir } = fixtureRepo();
   queueFollowUps(dir, 'BUI-1711', [KEEL_FINDING], 'HEAD');
   const client = fakeClient();
@@ -78,7 +78,7 @@ test("REQ-LINEAR-47 a follow-up that cites `keel src/gate.js:95` from a product 
   assert.deepEqual(pendingFollowUps(dir), []);
 });
 
-test("REQ-LINEAR-47 a follow-up that cites a path missing from the product at base but present in Keel's root goes to Keel's project", async () => {
+test("REQ-LINEAR-48 a follow-up that cites a path missing from the product at base but present in Keel's root goes to Keel's project", async () => {
   const { dir } = fixtureRepo();
   queueFollowUps(dir, 'BUI-1711', [{ kind: 'bug', title: 'scan misses a marker', detail: 'src/scan.js:10 skips it' }], 'HEAD');
   const client = fakeClient();
@@ -87,7 +87,7 @@ test("REQ-LINEAR-47 a follow-up that cites a path missing from the product at ba
   assert.equal(client.created[0].sourceId, null);
 });
 
-test('REQ-LINEAR-47 a follow-up that cites a product path stays in the product project', async () => {
+test('REQ-LINEAR-48 a follow-up that cites a product path stays in the product project', async () => {
   const { dir } = fixtureRepo();
   queueFollowUps(dir, 'BUI-1711', [{ kind: 'bug', title: 'add subtracts', detail: 'src/add.js:1 subtracts' }], 'HEAD');
   const client = fakeClient();
@@ -98,7 +98,7 @@ test('REQ-LINEAR-47 a follow-up that cites a product path stays in the product p
   assert.doesNotMatch(client.comments[0].body, /in project/);
 });
 
-test("REQ-LINEAR-47 a path the finding's own branch added stays in the product project even when Keel has the same file", async () => {
+test("REQ-LINEAR-48 a path the finding's own branch added stays in the product project even when Keel has the same file", async () => {
   const { dir } = fixtureRepo();
   g(dir, 'checkout', '-q', '-b', 'keel/BUI-1711');
   commit(dir, { 'src/scan.js': 'export const scan = () => 1;\n' }, 'add scan');
@@ -110,7 +110,7 @@ test("REQ-LINEAR-47 a path the finding's own branch added stays in the product p
   assert.equal(client.created[0].project, 'dead-man-working');
 });
 
-test("REQ-LINEAR-47 a Keel finding whose title Keel's project already has is a dup, and is never appended to a product card", async () => {
+test("REQ-LINEAR-48 a Keel finding whose title Keel's project already has is a dup, and is never appended to a product card", async () => {
   const { dir } = fixtureRepo();
   queueFollowUps(dir, 'BUI-1711', [KEEL_FINDING], 'HEAD');
   const productCard =
@@ -125,7 +125,7 @@ test("REQ-LINEAR-47 a Keel finding whose title Keel's project already has is a d
   assert.equal(readJsonl(pollLedgerFile(dir)).at(-1).outcome, 'dup');
 });
 
-test("REQ-LINEAR-47 a poll of Keel's own project files a Keel finding in the source issue's project, as before", async () => {
+test("REQ-LINEAR-48 a poll of Keel's own project files a Keel finding in the source issue's project, as before", async () => {
   const { dir } = fixtureRepo();
   queueFollowUps(dir, 'BUI-1711', [KEEL_FINDING], 'HEAD');
   const client = fakeClient();
@@ -140,7 +140,7 @@ test("REQ-LINEAR-47 a poll of Keel's own project files a Keel finding in the sou
   assert.equal(client.created[0].sourceId, 'BUI-1711');
 });
 
-test("REQ-LINEAR-47 when Keel's install root names no Linear project, a Keel finding stays in the product project and the poll logs why", async () => {
+test("REQ-LINEAR-48 when Keel's install root names no Linear project, a Keel finding stays in the product project and the poll logs why", async () => {
   const { dir } = fixtureRepo();
   const { dir: bare } = fixtureRepo({ 'src/gate.js': 'export const gate = 1;\n' });
   queueFollowUps(dir, 'BUI-1711', [KEEL_FINDING], 'HEAD');
@@ -154,7 +154,7 @@ test("REQ-LINEAR-47 when Keel's install root names no Linear project, a Keel fin
   );
 });
 
-test("REQ-LINEAR-47 a Keel finding is held by Keel's project's unbuilt follow-ups, not the product project's", async () => {
+test("REQ-LINEAR-48 a Keel finding is held by Keel's project's unbuilt follow-ups, not the product project's", async () => {
   const unbuilt = (prefix) =>
     Array.from({ length: 2 }, (_, i) => ({ id: `${prefix}-${i}`, title: `${prefix} finding ${i}`, description: 'Found by keel.\n' }));
   const config = fixtureConfig({ followUpsPerDay: 5, followUpOpenMax: 2, linearProject: 'dead-man-working' });
@@ -172,7 +172,7 @@ test("REQ-LINEAR-47 a Keel finding is held by Keel's project's unbuilt follow-up
   assert.equal(keelFull.last.outcome, 'held');
 });
 
-test("REQ-LINEAR-47 a full project holds only its own queued follow-ups: the other project's, queued behind them, are filed", async () => {
+test("REQ-LINEAR-48 a full project holds only its own queued follow-ups: the other project's, queued behind them, are filed", async () => {
   const unbuilt = (prefix) =>
     Array.from({ length: 2 }, (_, i) => ({ id: `${prefix}-${i}`, title: `${prefix} finding ${i}`, description: 'Found by keel.\n' }));
   const config = fixtureConfig({ followUpsPerDay: 5, followUpOpenMax: 2, linearProject: 'dead-man-working' });
@@ -221,7 +221,7 @@ test("REQ-LINEAR-47 a full project holds only its own queued follow-ups: the oth
   assert.deepEqual(productFull.held[0].detail, { reason: 'unbuilt', unbuilt: 2, max: 2, waiting: 1 });
 });
 
-test("REQ-LINEAR-47 a card filed in Keel's project says which repo its source, commit, and PR are in", async () => {
+test("REQ-LINEAR-48 a card filed in Keel's project says which repo its source, commit, and PR are in", async () => {
   const { dir } = fixtureRepo();
   const repoName = dir.split('/').at(-1);
   const sha = g(dir, 'rev-parse', 'HEAD');
@@ -237,7 +237,7 @@ test("REQ-LINEAR-47 a card filed in Keel's project says which repo its source, c
   assert.ok(product.includes(`seen at commit ${sha.slice(0, 12)}, PR ${PR}.`), product);
 });
 
-test("REQ-LINEAR-47 when the daily cap or the workspace hold ends the pass, a full project's held row counts every item queued for it", async () => {
+test("REQ-LINEAR-48 when the daily cap or the workspace hold ends the pass, a full project's held row counts every item queued for it", async () => {
   const unbuilt = Array.from({ length: 2 }, (_, i) => ({ id: `KEEL-${i}`, title: `keel finding ${i}`, description: 'Found by keel.\n' }));
   const PRODUCT = { kind: 'bug', title: 'add subtracts', detail: 'src/add.js:1 subtracts' };
   const SECOND = { kind: 'bug', title: 'keel gate drops a log line', detail: 'keel src/gate.js:120 drops it' };
