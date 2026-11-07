@@ -60,6 +60,11 @@ issues; `keel poll` (nightly, or `keel poll --issue <ID> --merge`) builds them.
 
    Keep `Root cause` and `Prevention` as headings: a `Word:` line above the first heading is read as a card header.
 
+   After filing each card, run `keel check-card <ID>` in the repo and fix the card until it passes (exit 0). It
+   parses the card as `keel poll` does and lists each exact `paths` file that is not on the base and not marked new;
+   mark a file the card creates `<path> (new)`. A card that fails it is deferred or skipped by `keel poll`, a night
+   later (32 deferrals across 17 issues by 2026-11-07, BUI-1889).
+
    A card that only adds tests for existing behavior sets `kind: chore` in its `keel` block (such tests pass on the
    base, so a bug or feature card can never pass red proof) and says "put the new tests in a new test file": existing
    test files are locked, and a builder that edits them fails the gate (BUI-1137 lost two tiers that way).
