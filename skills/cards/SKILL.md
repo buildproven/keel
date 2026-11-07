@@ -96,5 +96,9 @@ issues; `keel poll` (nightly, or `keel poll --issue <ID> --merge`) builds them.
 - Protected paths (auth, payments, migrations, infra) need a held-out-test-friendly
   card: exact inputs and outputs, because Keel auto-merges them only with passing
   held-out tests (DESIGN §9).
+- Every card is held-out tested, so name the exact interface a test drives: the command, flag or env
+  variable that sets each input (a probe command, a wait shortened by env), the exact output lines, and the exit
+  status. A held-out author who must guess the interface writes tests no builder can pass: BUI-1893 failed all
+  four tiers on 2026-11-07 because its card said "wait shortened by env" without naming the variable.
 - No card larger than M. No card that only says "investigate" or "refactor everything".
 - Facts about the market, prices, or vendors cite a source or say `[unverified]`.
