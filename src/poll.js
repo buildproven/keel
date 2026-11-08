@@ -386,6 +386,9 @@ function keelRoute(f, atBase, repo, project, home) {
   return commit && exec('git', ['cat-file', '-e', `${commit}:${c.path}`], repo).status === 0 ? null : h;
 }
 
+/** Linear's answer to a comment on an archived (or deleted) issue (REQ-LINEAR-49). */
+const ARCHIVED = /\bEntity not found: Issue\b/;
+
 /** A found item whose title an issue closed this many days ago has is done or was declined (REQ-LINEAR-22). */
 const DUP_CLOSED_DAYS = 30;
 
@@ -409,12 +412,18 @@ async function fileFollowUps({ repo, project, config, client, log, base = 'HEAD'
   };
   const errors = [];
   // A comment is a notice about filing, not the filing: its Linear error is collected and returned like any other
-  // filing error, so it never stops a poll (REQ-LINEAR-22).
+  // filing error, so it never stops a poll (REQ-LINEAR-22). A source the poll's archive step already archived answers
+  // `Entity not found`: its notice is skipped and logged, not an error (REQ-LINEAR-49); any other error stays one
+  // (REQ-LINEAR-50).
   const notify = async (id, body) => {
     try {
       await client.comment(id, body);
     } catch (e) {
       if (networkFailure(e)) throw e; // REQ-LINEAR-40
+      if (ARCHIVED.test(e.message)) {
+        log(`follow-up notice skipped: ${id} is archived`);
+        return;
+      }
       errors.push(`comment on ${id}: ${e.message}`);
     }
   };
