@@ -285,8 +285,26 @@ const filesCommand = (config, files) => commandForFiles(config.testFilesCommand,
 /** The held-out command, targeted only when heldOutCommand was omitted from keel.json (REQ-GATE-10, REQ-RUN-17). */
 export const heldOutTestCommand = (config, files) =>
   config.heldOutFilesCommand ? commandForFiles(config.heldOutFilesCommand, files) : config.heldOutCommand;
-const proofFiles = ({ changed, config }) =>
+/** Added or changed files under a test glob (REQ-GATE-3): the new tests and the fixtures and helpers they read. */
+const testGlobFiles = ({ changed, config }) =>
   changed.filter((f) => f.status !== 'D' && matchesAny(f.path, config.testGlobs)).map((f) => f.path);
+/**
+ * A file a runner picks up by its name (REQ-GATE-64): `*.test.*`, `*.spec.*`, `test_*.py`, `*_test.py`, `*_test.go`, `*_spec.rb`,
+ * `*Test(s).java`, `*Test.kt`, `*Test.cs`, or a JS/TS source file in a `__tests__` directory. Fixtures, snapshots, and
+ * helpers such as conftest.py are not.
+ */
+const RUNNABLE_TEST =
+  /\.(?:test|spec)\.[^./]+$|(?:^|\/)test_[^/]+\.py$|_test\.(?:go|py)$|_spec\.rb$|Tests?\.java$|Test\.(?:kt|cs)$|(?:^|\/)__tests__\/(?:[^/]+\/)*[^/]+\.[mc]?[jt]sx?$/;
+/**
+ * The red-proof file set (REQ-GATE-64): the runnable test files among the test-glob files, so a fixture the suite output
+ * never names cannot force the whole suite on base (REQ-GATE-65). When none has a runnable name (cargo's `tests/*.rs`, a
+ * runner given a directory), every test-glob file stays, as before.
+ */
+export function proofFiles(ctx) {
+  const files = testGlobFiles(ctx);
+  const runnable = files.filter((p) => RUNNABLE_TEST.test(p));
+  return runnable.length ? runnable : files;
+}
 
 /**
  * Run a head command; on failure run it once more on the same checkout (REQ-GATE-18). A pass on the retry is
@@ -465,7 +483,8 @@ function redProof(ctx) {
         writeFileSync(cached, `${new Date().toISOString()}\n`); // Only a green base is cached (REQ-GATE-17).
       }
     }
-    for (const p of proof) {
+    // The fixtures and helpers the new tests read go on base with them (REQ-GATE-64); only the proof files run.
+    for (const p of testGlobFiles(ctx)) {
       const err = writeInside(dir, p, (t) => {
         const blob = showBlob(head, p, repo);
         writeFileSync(t, blob.data);
