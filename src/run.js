@@ -1342,7 +1342,21 @@ function runLocked({ repo, card, config, baseSha, baseBranch, branch, wt, pr, me
       log(`attempt ${attempt + 1} stays on tier ${tier} with new held-out tests`);
       continue;
     }
-    if (next === null) return { pass: false, stopped: 'quota', branch, worktree: wt, failure, followUps };
+    if (next === null) {
+      // A provider out of quota is a provider stop; any other failure with only reserved tiers left is a failure the
+      // poll must report, not a provider limit (REQ-RUN-68).
+      if (w.status === 'quota') return { pass: false, stopped: 'quota', branch, worktree: wt, failure, followUps };
+      const lowest = Math.max(floor, ruleTier);
+      const held = config.tiers
+        .map((t, i) => ({ i, provider: t.provider }))
+        .filter(({ i, provider }) => i >= lowest && reserved.has(provider))
+        .map(({ i, provider }) => `tier ${i} (${provider}: ${reserved.get(provider)})`);
+      const stages = (receipt?.results ?? []).filter((r) => !r.pass).map((r) => `\`${r.name}\``);
+      const what = `failed${stages.length ? ` the gate at ${stages.join(', ')}` : ''}${w.status === 'ok' ? '' : ` (worker ${w.status})`}`;
+      const why = `attempt ${attempt} on tier ${tier} ${what}; no tier is left: ${held.join(', ')} ${held.length === 1 ? 'is' : 'are'} held back by ${held.length === 1 ? 'its' : 'their'} plan reserve.`;
+      log(why);
+      return { pass: false, stopped: 'reserved', branch, worktree: wt, failure: `${why}\n\n${failure}`, followUps };
+    }
     networkRetries = next === tier && w.status === 'network' ? networkRetries + 1 : 0;
     tier = next;
   }
