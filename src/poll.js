@@ -33,6 +33,8 @@ import { UsageError } from './usage.js';
 
 // Stops caused by a provider, not by the card or the code (REQ-LINEAR-19).
 const TRANSIENT_STOPS = new Set(['quota', 'review-unavailable']);
+// Stops the next poll retries: the provider stops, and a gate failure whose only tiers left are reserved (REQ-LINEAR-51).
+const DEFERRED_STOPS = new Set([...TRANSIENT_STOPS, 'reserved']);
 
 /**
  * Exit code of `keel poll` and `keel run <ISSUE-ID>` (REQ-RUN-20): 1 when a run failed, was blocked,
@@ -60,6 +62,13 @@ function passedComment({ tier, attempt, branch, pr, merge }) {
 
 function failedComment({ stopped, failure, worktree }) {
   return `keel: stopped (${stopped}) after all attempts.\n\n${trim(failure) ?? '(no failure detail)'}\n\nWorktree kept at ${worktree}.`;
+}
+
+/** REQ-LINEAR-51: the first failure line names the stage and the reserved tiers, so a long summary is cut after it. */
+function reservedComment({ failure, worktree }) {
+  const [head, ...rest] = String(failure ?? '(no failure detail)').split('\n');
+  const kept = worktree ? `\n\nWorktree kept at ${worktree}.` : '';
+  return `keel: deferred (reserved): the build failed, and every stronger tier is held back by its plan reserve. The next poll retries it.\n\n${head}${rest.length ? `\n${trim(rest.join('\n'))}` : ''}${kept}`;
 }
 
 function blockedComment({ failure, worktree }) {
@@ -875,7 +884,7 @@ async function runOne({ repo, base, pr, merge, log, config, client, issue: picke
   } catch (e) {
     // The build ran and was paid for: record it, then fail visibly, so the next poll does not build it again
     // (REQ-LINEAR-6). A transient stop stays retryable (REQ-LINEAR-19).
-    const outcome = TRANSIENT_STOPS.has(result.stopped) ? 'deferred' : 'reportFailed';
+    const outcome = DEFERRED_STOPS.has(result.stopped) ? 'deferred' : 'reportFailed';
     recordPollAttempt(repo, { issue: issue.id, outcome, detail: e.message });
     const down = networkFailure(e);
     // Linear never heard of this build, and the issue state is unchanged: say which issue, so a human reports it (REQ-LINEAR-40).
@@ -953,6 +962,11 @@ async function reportRun({ repo, base, config, client, issue, result, log }) {
         `keel: deferred (${result.stopped}): a model provider was unavailable, so no verdict on this card. The next poll retries it.${review}\n\n${trim(result.failure, 1000) ?? ''}`,
       ),
     );
+    return { outcome: 'deferred', issue: issue.id, result };
+  }
+  // A real gate failure that no unreserved tier can take on: report it, and retry when a reserve frees (REQ-LINEAR-51).
+  if (result.stopped === 'reserved') {
+    await client.comment(issue.id, noted(reservedComment(result)));
     return { outcome: 'deferred', issue: issue.id, result };
   }
   if (result.stopped === 'config') {

@@ -62,7 +62,7 @@ test('REQ-PLAN-8 the retry stops at maxAttempts', () => {
   assert.equal(calls().length, 2);
 });
 
-test('REQ-PLAN-8 with no usable tier left the run still stops as quota', () => {
+test('REQ-PLAN-8 with no usable tier left the run stops as reserved (REQ-RUN-68)', () => {
   const { dir } = fixtureRepo();
   // The attempt touches a protected path, which raises the floor to tier 1 (REQ-RUN-2); tier 1 is reserved and tier 0
   // is below the floor, so no tier is usable.
@@ -75,7 +75,7 @@ test('REQ-PLAN-8 with no usable tier left the run still stops as quota', () => {
   const log = [];
   const r = run({ repo: dir, card, config, reserved: new Map([['codex', '5h 64% ≥ 50%']]), log: (m) => log.push(m) });
   assert.equal(r.pass, false);
-  assert.equal(r.stopped, 'quota');
+  assert.equal(r.stopped, 'reserved');
   assert.equal(calls().length, 1);
   assert.ok(!log.some((l) => /retried/.test(l)), log.join('\n'));
 });
