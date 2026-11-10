@@ -397,13 +397,16 @@ const HELD_OUT_VERDICT = /^(DEFECT|VALID):\s*(.+)$/m;
 /**
  * Ask the other family whether held-out tests that failed the same way on two builds are defective (REQ-RUN-46): the
  * cross-family reviewer first, then the fallbacks (REQ-GATE-22), in a scratch checkout of `head`. `files` are the
- * held-out tests as { path, text }; `output` is their private output on head. Returns { answer: { defect, by, reason }
- * | null, why?, cost, usage, unpriced? }; the spend counts whether or not a tier answered (REQ-LED-13), and `why` names
- * each tier's outcome when none did (REQ-GATE-44).
+ * held-out tests as { path, text }; `output` is their private output on head. A tier whose provider is over its plan
+ * reserve (`reserved`, provider → window, REQ-PLAN-3) is not asked, nor the builder's own tier: with the other family
+ * out, a fresh session of another tier of the builder's family judges (REQ-RUN-46a). Returns { answer: { defect, by,
+ * reason, fallback? } | null, why?, cost, usage, unpriced? }; `fallback` names the first choice and why it did not
+ * answer, the spend counts whether or not a tier answered (REQ-LED-13), and `why` names each tier's outcome when none
+ * did (REQ-GATE-44, REQ-RUN-46b).
  */
-export function judgeHeldOut({ config, builder, card, files, output, cwd, head }) {
+export function judgeHeldOut({ config, builder, card, files, output, cwd, head, reserved = new Map() }) {
   const first = reviewerFor(config, builder);
-  if (!first) return { answer: null, cost: null, usage: null };
+  if (!first) return { answer: null, why: 'no verdict: no tier of another family than the builder', cost: null, usage: null };
   const prompt = [
     'Held-out acceptance tests, written by another model from the card below, failed on two builds of the card in a row with the same failing test. The builder never sees these tests. This checkout is the latest build. Do not edit files.',
     'Decide whether the tests are defective, so that no correct implementation of the card could pass them: they assert what the card does not require or contradict it, depend on names or structure the card does not give, contradict themselves, or wait for a state that never occurs.',
@@ -419,9 +422,30 @@ export function judgeHeldOut({ config, builder, card, files, output, cwd, head }
     '# Held-out output on this build',
     output,
   ].join('\n');
-  const tiers = [first, ...(config.reviewFallback ? fallbackReviewers(config, first) : [])];
-  const { answer, missed, spent } = askApproval({ tiers, prompt, repo: cwd, ref: head, config, pattern: HELD_OUT_VERDICT });
-  if (answer) return { answer: { defect: answer.word === 'DEFECT', by: answer.by, reason: answer.reason }, ...spent };
+  const chain = [first, ...(config.reviewFallback ? fallbackReviewers(config, first) : [])];
+  const window = (t) => reserved.get(t.provider) ?? reserved.get(family(t));
+  // Not asked: the builder's own tier judging its own failure, and a provider kept for its plan reserve (REQ-RUN-46a).
+  const skipped = chain
+    .filter((t) => label(t) === label(builder) || window(t) !== undefined)
+    .map((t) =>
+      label(t) === label(builder)
+        ? { reviewer: label(t), status: 'builder tier', output: '' }
+        : { reviewer: label(t), status: 'reserved', output: `${family(t)} plan window ${window(t)}` },
+    );
+  const tiers = chain.filter((t) => !skipped.some((s) => s.reviewer === label(t)));
+  const asked = tiers.length
+    ? askApproval({ tiers, prompt, repo: cwd, ref: head, config, pattern: HELD_OUT_VERDICT })
+    : { answer: null, missed: [], spent: { cost: null, usage: null } };
+  const { answer, spent } = asked;
+  const at = (m) => chain.findIndex((t) => label(t) === m.reviewer);
+  const missed = [...skipped, ...asked.missed].sort((a, b) => at(a) - at(b)); // in the order of the chain
+  if (answer) {
+    const out = missed.find((m) => m.reviewer === label(first));
+    // A first choice that ran but answered off-format gave no verdict, as in review (REQ-GATE-22).
+    const status = !out || out.status === 'ok' ? 'no verdict' : out.status;
+    const fallback = answer.by === label(first) ? {} : { fallback: { from: label(first), status } };
+    return { answer: { defect: answer.word === 'DEFECT', by: answer.by, reason: answer.reason, ...fallback }, ...spent };
+  }
   return { answer: null, why: `no verdict: ${missedLine(missed, 'DEFECT or VALID')}`, ...spent };
 }
 
