@@ -6,11 +6,13 @@
  * Syntax, as `path.matchesGlob` reads it: `*` and `?` stay inside one segment, a `**` segment spans segments (one or
  * more at the end of the glob, zero or more elsewhere), `[...]` and `[!...]`/`[^...]` classes, `{a,b}` alternatives,
  * and `\` is a path separator. A wildcard never matches a leading dot: `*.js` is not `.eslintrc.js`, `**` does not enter
- * `.git/`. `!` and `#` at the start are literal.
+ * `.git/`, but a class of only a dot (`[.]env`) is a literal dot and does. `!` and `#` at the start are literal. An
+ * empty brace alternative leaves no empty segment: `a/{,b}/c` is `a/c` or `a/b/c`.
  */
 
-// Extglobs, POSIX classes, and brace ranges: path.matchesGlob reads them, this matcher does not.
-const UNSUPPORTED = /[?*+@!]\(|\[:|\{[^{},]*\.\.[^{},]*\}/;
+// Extglobs and brace ranges outside a class, and POSIX classes inside one: path.matchesGlob reads them, this matcher
+// does not. Class bodies are blanked first, so `[?()]` is a class of `?`, `(`, and `)`, not an extglob.
+const UNSUPPORTED = /[?*+@!]\(|\{[^{},]*\.\.[^{},]*\}/;
 const SEGMENT = '(?!\\.)[^/]*';
 const cache = new Map();
 
@@ -21,8 +23,28 @@ export function globMatches(path, glob) {
 }
 
 function compile(glob) {
-  if (UNSUPPORTED.test(glob)) throw new Error(`unsupported glob syntax in "${glob}": use *, **, ?, [...], {a,b}`);
-  return new RegExp(`^(?:${expand(glob.replaceAll('\\', '/')).map(pattern).join('|')})$`);
+  const globs = expand(glob.replaceAll('\\', '/')).map((alt) => alt.replace(/\/{2,}/g, '/'));
+  if (globs.some(unsupported)) throw new Error(`unsupported glob syntax in "${glob}": use *, **, ?, [...], {a,b}`);
+  return new RegExp(`^(?:${globs.map(pattern).join('|')})$`);
+}
+
+/** True when an expanded glob uses syntax the matcher does not read, judged with each segment's classes parsed. */
+function unsupported(glob) {
+  let posix = false;
+  const outside = glob.split('/').map((seg) => {
+    let out = '';
+    for (let i = 0; i < seg.length; i++) {
+      const close = seg[i] === '[' ? classEnd(seg, i) : -1;
+      if (close < 0) out += seg[i];
+      else {
+        if (seg.slice(i + 1, close).includes('[:')) posix = true;
+        out += '_';
+        i = close;
+      }
+    }
+    return out;
+  });
+  return posix || UNSUPPORTED.test(outside.join('/'));
 }
 
 /** `{a,b}` → one glob per alternative, nested braces included; a brace without a top-level comma is literal. */
@@ -66,7 +88,10 @@ function segment(seg) {
   for (let i = 0; i < seg.length; i++) {
     const c = seg[i];
     const close = c === '[' ? classEnd(seg, i) : -1;
-    if (c === '*') {
+    if (close > 0 && seg.slice(i + 1, close) === '.') {
+      out += '\\.'; // a class of only a dot is a literal dot, as path.matchesGlob reads it, so it may lead a segment
+      i = close;
+    } else if (c === '*') {
       out += '[^/]*';
       while (seg[i + 1] === '*') i++;
     } else if (c === '?') out += '[^/]';
@@ -77,7 +102,7 @@ function segment(seg) {
       i = close;
     } else out += c.replace(/[.*+?^${}()|[\]\\/]/, '\\$&');
   }
-  return /^[*?[]/.test(seg) ? `(?!\\.)${out}` : out;
+  return /^[*?[]/.test(seg) && !seg.startsWith('[.]') ? `(?!\\.)${out}` : out;
 }
 
 /** Index of the `]` that closes the class opened at `start`, or -1 when the `[` is literal. A `]` first in it is literal. */
