@@ -555,6 +555,14 @@ const heldBad = [
   "if (add(1, 1) !== 3) { console.log('not ok 1 - REQ-ADD-1 adds one and one'); throw new Error('held-out failed'); }",
   '',
 ].join('\n');
+const heldBadVitest = [
+  "import { add } from '../src/add.js';",
+  'if (add(1, 1) !== 3) {',
+  "  console.log('\\u001b[41m\\u001b[1m FAIL \\u001b[22m\\u001b[49m test/held.test.js\\u001b[2m > \\u001b[22mREQ-ADD-1 adds one and one');",
+  "  throw new Error('held-out failed');",
+  '}',
+  '',
+].join('\n');
 const heldGood = "import assert from 'node:assert';\nimport { add } from '../src/add.js';\nassert.strictEqual(add(1, 1), 2);\n";
 /** A Claude-family tier: builds as `mode`, and answers a defect question as `judged` (a fake-worker mode). */
 const claudeTier = (model, mode, judged = mode) => ({
@@ -587,6 +595,30 @@ fs.writeFileSync('test/held.test.js', p.includes(${JSON.stringify(HELD_REASON)})
 console.log(JSON.stringify({ total_cost_usd: 0.01, usage: { input_tokens: 1, output_tokens: 1 } }));`,
   ],
 });
+/** A default Claude tier that can build, author held-out tests, or judge in a fresh session. */
+const defaultClaudeTier = (model, judged) => ({
+  provider: 'exec',
+  family: 'claude',
+  model,
+  effort: 'high',
+  command: [
+    'node',
+    '-e',
+    `const fs = require('fs');
+const p = fs.readFileSync(0, 'utf8');
+if (p.startsWith('You are the builder')) {
+  const r = require('child_process').spawnSync(process.execPath, [${JSON.stringify(FAKE)}, 'good'], { input: p, stdio: ['pipe', 'inherit', 'inherit'] });
+  process.exit(r.status);
+}
+if (p.includes(${JSON.stringify(JUDGE_ASK)})) {
+  const r = require('child_process').spawnSync(process.execPath, [${JSON.stringify(FAKE)}, ${JSON.stringify(judged)}], { input: p, stdio: ['pipe', 'inherit', 'inherit'] });
+  process.exit(r.status);
+}
+fs.mkdirSync('test', { recursive: true });
+fs.writeFileSync('test/held.test.js', p.includes(${JSON.stringify(HELD_REASON)}) ? ${JSON.stringify(heldGood)} : ${JSON.stringify(heldBadVitest)});
+console.log(JSON.stringify({ total_cost_usd: 0.01, usage: { input_tokens: 1, output_tokens: 1 } }));`,
+  ],
+});
 // The other family's judge would answer, but its plan is kept in reserve (REQ-PLAN-3), so it must not be asked.
 const codexJudge = { provider: 'exec', family: 'codex', model: 'codex-judge', effort: 'high', command: ['node', FAKE, 'say:VALID: x'] };
 const CODEX_RESERVED = new Map([['codex', '5h 69% ≥ 50%']]);
@@ -596,13 +628,13 @@ test('REQ-RUN-46 (46a) with Codex over its plan reserve, a Claude tier other tha
   const lines = [];
   const config = fixtureConfig({
     tiers: [
-      claudeTier('b0', 'good', 'say:VALID: the builder judged'),
-      claudeTier('b1', 'good', 'say:VALID: the builder judged'),
-      heldAuthor('Error: usage limit reached, try again later'),
-      claudeTier('claude-judge', 'good', `say:DEFECT: ${HELD_REASON}`),
+      defaultClaudeTier('sonnet', `say:DEFECT: ${HELD_REASON}`),
+      defaultClaudeTier('opus', 'say:VALID: the builder judged'),
       codexJudge,
     ],
-    heldOutAuthorTier: 2,
+    heldOutAuthorTier: 1,
+    lastResort: ['codex'],
+    lastResortReview: false,
     maxAttempts: 3,
   });
   const r = run({ repo: fixtureRepo().dir, card: card('kind: bug\nsize: M'), config, reserved: CODEX_RESERVED, log: (l) => lines.push(l) });
@@ -610,24 +642,31 @@ test('REQ-RUN-46 (46a) with Codex over its plan reserve, a Claude tier other tha
   assert.equal(r.tier, 1, 'the attempt after the defect stays on the builder tier');
   assert.deepEqual(
     judgeAsks().map((c) => c.env.model),
-    ['claude-judge'],
-    'neither the reserved Codex judge nor the builder tier is asked',
+    ['sonnet'],
+    'the fresh Sonnet session judges instead of the Opus builder or reserved Codex',
   );
   const rows = readLedger().filter((x) => x.role === undefined);
   assert.deepEqual(rows[1].heldOutDefect, {
-    by: 'exec/claude-judge/low',
+    by: 'exec/sonnet/high',
     reason: HELD_REASON,
-    fallback: { from: 'exec/codex-judge/high', status: 'reserved' },
+    fallback: { from: 'exec/opus/high', status: 'builder tier' },
   });
   assert.equal(rows[1].reviewCost, 0.01, 'the fallback judge spend counts toward the card');
   assert.equal(readLedger().filter((x) => x.role === 'held-out-author').length, 2, 'authored, then re-authored');
-  assert.ok(lines.includes('held-out check: exec/codex-judge/high reserved, so exec/claude-judge/low judged'), lines.join('\n'));
+  assert.ok(lines.includes('held-out check: exec/opus/high builder tier, so exec/sonnet/high judged'), lines.join('\n'));
 
-  // A Codex judge that runs but answers off-format gave no verdict; the fallback says so, not `ok`.
+  // A first judge that runs but answers off-format gave no verdict; the fallback says so, not `ok`.
   process.env.KEEL_STATE_DIR = tmp('keel-state-');
-  const offFormat = { ...codexJudge, command: ['node', FAKE, 'say:the tests look fine'] };
-  const tiers = [...config.tiers.slice(0, -1), offFormat];
-  const again = run({ repo: fixtureRepo().dir, card: card('kind: bug\nsize: M'), config: { ...config, tiers } });
+  const tiers = [
+    defaultClaudeTier('sonnet', `say:DEFECT: ${HELD_REASON}`),
+    defaultClaudeTier('opus', 'say:the tests look fine'),
+    { ...codexJudge, command: ['node', FAKE, 'say:the tests look fine'] },
+  ];
+  const again = run({
+    repo: fixtureRepo().dir,
+    card: card('kind: bug\nsize: M'),
+    config: { ...config, tiers, lastResortReview: true },
+  });
   assert.equal(again.pass, true, again.failure);
   const [, second] = readLedger().filter((x) => x.role === undefined);
   assert.deepEqual(second.heldOutDefect.fallback, { from: 'exec/codex-judge/high', status: 'no verdict' });

@@ -392,8 +392,16 @@ const heldOutFor = (heldDir, card) => {
 /** The test names a held-out stage that failed on head names in its private output (REQ-RUN-46), or null. */
 function heldOutFailing(receipt) {
   const r = receipt?.results.find((x) => x.name === 'held-out' && x.problems.some((p) => p.rule === 'held-out-fails-on-head'));
-  const names = r ? failingTests(r.privateOutput ?? '') : [];
-  return names.length ? names : null;
+  // Colour is common in captured Vitest/Jest output. Remove terminal escapes before matching their FAIL markers;
+  // otherwise two identical failures look unnamed and the defect check never runs (REQ-RUN-46a).
+  const ansi = new RegExp(String.raw`\x1B\[[0-?]*[ -/]*[@-~]`, 'g');
+  const output = (r?.privateOutput ?? '').replace(ansi, '');
+  const vitest = output
+    .split('\n')
+    .map((line) => /^FAIL\s+(.+)$/.exec(line.trim())?.[1])
+    .filter(Boolean);
+  const names = [...new Set([...failingTests(output), ...vitest])];
+  return r && names.length ? names : null;
 }
 
 /** The failure text after a held-out defect (REQ-RUN-46): it names no test, output, or reason, all held out (REQ-RUN-19). */
