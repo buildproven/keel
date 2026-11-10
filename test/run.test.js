@@ -546,3 +546,137 @@ test('REQ-RUN-51 keel run of a Linear issue prints the stop class and failure on
   assert.doesNotMatch(second.stderr, /worktree exists/, second.stderr);
   assert.match(second.stderr, /^keel: BUI-51: failed \(auth: /m, 'the second run reached the worker again');
 });
+
+// REQ-RUN-46a/46b: a defective held-out test no build can pass, the same failing test name each run.
+const HELD_REASON = 'it asserts add(1,1) is 3';
+const JUDGE_ASK = 'DEFECT: <why>';
+const heldBad = [
+  "import { add } from '../src/add.js';",
+  "if (add(1, 1) !== 3) { console.log('not ok 1 - REQ-ADD-1 adds one and one'); throw new Error('held-out failed'); }",
+  '',
+].join('\n');
+const heldGood = "import assert from 'node:assert';\nimport { add } from '../src/add.js';\nassert.strictEqual(add(1, 1), 2);\n";
+/** A Claude-family tier: builds as `mode`, and answers a defect question as `judged` (a fake-worker mode). */
+const claudeTier = (model, mode, judged = mode) => ({
+  provider: 'exec',
+  family: 'claude',
+  model,
+  effort: 'low',
+  command: [
+    'node',
+    '-e',
+    `const p = require('fs').readFileSync(0, 'utf8');
+const r = require('child_process').spawnSync(process.execPath, [${JSON.stringify(FAKE)}, p.includes(${JSON.stringify(JUDGE_ASK)}) ? ${JSON.stringify(judged)} : ${JSON.stringify(mode)}], { input: p, stdio: ['pipe', 'inherit', 'inherit'] });
+process.exit(r.status);`,
+  ],
+});
+/** The held-out author: the defective test, or a correct one once the prompt names the defect; `judged` as above. */
+const heldAuthor = (judged) => ({
+  provider: 'exec',
+  family: 'claude',
+  model: 'author',
+  effort: 'high',
+  command: [
+    'node',
+    '-e',
+    `const fs = require('fs');
+const p = fs.readFileSync(0, 'utf8');
+if (p.includes(${JSON.stringify(JUDGE_ASK)})) { console.error(${JSON.stringify(judged)}); process.exit(1); }
+fs.mkdirSync('test', { recursive: true });
+fs.writeFileSync('test/held.test.js', p.includes(${JSON.stringify(HELD_REASON)}) ? ${JSON.stringify(heldGood)} : ${JSON.stringify(heldBad)});
+console.log(JSON.stringify({ total_cost_usd: 0.01, usage: { input_tokens: 1, output_tokens: 1 } }));`,
+  ],
+});
+// The other family's judge would answer, but its plan is kept in reserve (REQ-PLAN-3), so it must not be asked.
+const codexJudge = { provider: 'exec', family: 'codex', model: 'codex-judge', effort: 'high', command: ['node', FAKE, 'say:VALID: x'] };
+const CODEX_RESERVED = new Map([['codex', '5h 69% ≥ 50%']]);
+const judgeAsks = () => calls().filter((c) => c.prompt.includes(JUDGE_ASK));
+
+test('REQ-RUN-46 (46a) with Codex over its plan reserve, a Claude tier other than the builder judges; DEFECT re-authors', () => {
+  const lines = [];
+  const config = fixtureConfig({
+    tiers: [
+      claudeTier('b0', 'good', 'say:VALID: the builder judged'),
+      claudeTier('b1', 'good', 'say:VALID: the builder judged'),
+      heldAuthor('Error: usage limit reached, try again later'),
+      claudeTier('claude-judge', 'good', `say:DEFECT: ${HELD_REASON}`),
+      codexJudge,
+    ],
+    heldOutAuthorTier: 2,
+    maxAttempts: 3,
+  });
+  const r = run({ repo: fixtureRepo().dir, card: card('kind: bug\nsize: M'), config, reserved: CODEX_RESERVED, log: (l) => lines.push(l) });
+  assert.equal(r.pass, true, r.failure);
+  assert.equal(r.tier, 1, 'the attempt after the defect stays on the builder tier');
+  assert.deepEqual(
+    judgeAsks().map((c) => c.env.model),
+    ['claude-judge'],
+    'neither the reserved Codex judge nor the builder tier is asked',
+  );
+  const rows = readLedger().filter((x) => x.role === undefined);
+  assert.deepEqual(rows[1].heldOutDefect, {
+    by: 'exec/claude-judge/low',
+    reason: HELD_REASON,
+    fallback: { from: 'exec/codex-judge/high', status: 'reserved' },
+  });
+  assert.equal(rows[1].reviewCost, 0.01, 'the fallback judge spend counts toward the card');
+  assert.equal(readLedger().filter((x) => x.role === 'held-out-author').length, 2, 'authored, then re-authored');
+  assert.ok(lines.includes('held-out check: exec/codex-judge/high reserved, so exec/claude-judge/low judged'), lines.join('\n'));
+
+  // A Codex judge that runs but answers off-format gave no verdict; the fallback says so, not `ok`.
+  process.env.KEEL_STATE_DIR = tmp('keel-state-');
+  const offFormat = { ...codexJudge, command: ['node', FAKE, 'say:the tests look fine'] };
+  const tiers = [...config.tiers.slice(0, -1), offFormat];
+  const again = run({ repo: fixtureRepo().dir, card: card('kind: bug\nsize: M'), config: { ...config, tiers } });
+  assert.equal(again.pass, true, again.failure);
+  const [, second] = readLedger().filter((x) => x.role === undefined);
+  assert.deepEqual(second.heldOutDefect.fallback, { from: 'exec/codex-judge/high', status: 'no verdict' });
+});
+
+test('REQ-RUN-46 (46b) with no judge of any family able to answer, the run logs and records why per tier', () => {
+  const lines = [];
+  const auth = 'Not logged in. Please log in.';
+  const config = fixtureConfig({
+    tiers: [
+      claudeTier('b0', 'good', 'auth'),
+      claudeTier('b1', 'good', 'auth'),
+      heldAuthor(auth),
+      claudeTier('claude-judge', 'good', 'quota'),
+      codexJudge,
+    ],
+    heldOutAuthorTier: 2,
+    maxAttempts: 2,
+  });
+  const r = run({ repo: fixtureRepo().dir, card: card('kind: bug\nsize: M'), config, reserved: CODEX_RESERVED, log: (l) => lines.push(l) });
+  assert.equal(r.stopped, 'max-attempts');
+  assert.ok(
+    judgeAsks().every((c) => c.env.model !== 'codex-judge' && c.env.model !== 'b1'),
+    'the reserved judge and the builder tier are never asked',
+  );
+  const rows = readLedger().filter((x) => x.role === undefined);
+  assert.equal(rows[1].heldOutDefect, undefined);
+  assert.equal(rows[1].heldOutValid, undefined);
+  const why = rows[1].heldOutNoJudge;
+  assert.match(why, /^no verdict: exec\/codex-judge\/high: reserved \(codex plan window 5h 69% ≥ 50%\); /);
+  assert.match(why, /exec\/claude-judge\/low: quota \(Error: usage limit reached/);
+  assert.match(why, /exec\/author\/high: auth \(Not logged in/);
+  assert.match(why, /exec\/b1\/low: builder tier/);
+  assert.match(why, /exec\/b0\/low: auth \(Not logged in/);
+  const line = lines.find((l) => l.startsWith('held-out check: no judge available ('));
+  assert.ok(line, lines.join('\n'));
+  assert.ok(line.includes(`(${why.replace(/^no verdict: /, '')}); escalating`), line);
+
+  // With fallbacks off, the reserved judge is the only one: nothing runs, and the row still says why.
+  process.env.KEEL_STATE_DIR = tmp('keel-state-');
+  const before = judgeAsks().length;
+  const off = run({
+    repo: fixtureRepo().dir,
+    card: card('kind: bug\nsize: M'),
+    config: { ...config, reviewFallback: false },
+    reserved: CODEX_RESERVED,
+  });
+  assert.equal(off.stopped, 'max-attempts');
+  assert.equal(judgeAsks().length, before, 'no judge is asked');
+  const [, second] = readLedger().filter((x) => x.role === undefined);
+  assert.equal(second.heldOutNoJudge, 'no verdict: exec/codex-judge/high: reserved (codex plan window 5h 69% ≥ 50%)');
+});

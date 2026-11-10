@@ -402,18 +402,21 @@ const HELD_OUT_REPLACED =
 
 /**
  * The defect check (REQ-RUN-46): ask the other family whether the held-out tests, which failed the same way on two
- * builds, are defective. On DEFECT, author new ones into `heldDir` (REQ-RUN-17), kept only when they fail on base.
- * Returns true when the run goes on with the new set; false escalates as before.
+ * builds, are defective; with it over its plan reserve (`reserved`) or out, another tier of the builder's family
+ * (REQ-RUN-46a). On DEFECT, author new ones into `heldDir` (REQ-RUN-17), kept only when they fail on base. With no
+ * judge, the row records why (REQ-RUN-46b). Returns true when the run goes on with the new set; false escalates.
  */
-function checkHeldOut({ repo, card, hash, config, t, baseSha, runId, heldDir, wt, head, output, row, log }) {
+function checkHeldOut({ repo, card, hash, config, t, baseSha, runId, heldDir, wt, head, output, reserved, row, log }) {
   const files = listFiles(card.heldOut).map((path) => ({ path, text: readFileSync(join(card.heldOut, path), 'utf8') }));
-  const { answer, ...spent } = judgeHeldOut({ config, builder: t, card, files, output, cwd: wt, head });
+  const { answer, why, ...spent } = judgeHeldOut({ config, builder: t, card, files, output, cwd: wt, head, reserved });
   Object.assign(row, { reviewCost: spent.cost, reviewUsage: spent.usage, reviewUnpriced: Boolean(spent.unpriced) }); // REQ-LED-13
   if (!answer) {
-    log('held-out check: no tier answered DEFECT or VALID; escalating');
+    row.heldOutNoJudge = why;
+    log(`held-out check: no judge available (${why.replace(/^no verdict: /, '')}); escalating`);
     return false;
   }
-  const verdict = { by: answer.by, reason: answer.reason };
+  const verdict = { by: answer.by, reason: answer.reason, ...(answer.fallback ? { fallback: answer.fallback } : {}) };
+  if (answer.fallback) log(`held-out check: ${answer.fallback.from} ${answer.fallback.status}, so ${answer.by} judged`);
   if (!answer.defect) {
     row.heldOutValid = verdict;
     log(`held-out tests valid per ${answer.by}; escalating`);
@@ -1202,7 +1205,22 @@ function runLocked({ repo, card, config, baseSha, baseBranch, branch, wt, pr, me
       if (failing && heldOutFailed?.some((n) => failing.includes(n)) && !heldOutChecked && config.heldOutAuthorTier !== null) {
         heldOutChecked = true;
         const output = receipt.results.find((r) => r.name === 'held-out').privateOutput;
-        heldOutReplaced = checkHeldOut({ repo, card, hash, config, t, baseSha, runId, heldDir, wt, head: receipt.head, output, row, log });
+        heldOutReplaced = checkHeldOut({
+          repo,
+          card,
+          hash,
+          config,
+          t,
+          baseSha,
+          runId,
+          heldDir,
+          wt,
+          head: receipt.head,
+          output,
+          reserved,
+          row,
+          log,
+        });
         if (heldOutReplaced) {
           card = { ...card, heldOut: heldDir };
           heldOutChecked = false;
