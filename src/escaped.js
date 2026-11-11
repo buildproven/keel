@@ -58,15 +58,33 @@ function receiptBase(card, head) {
 }
 
 const filesCache = new Map();
-/** Files a commit changed; cached, since every baseline commit re-reads the same later fixes (REQ-LED-8). */
+/**
+ * Files a commit changed, as `{ path, old }` (`old` is the parent's path, which differs for a rename); cached, since
+ * every baseline commit re-reads the same later fixes (REQ-LED-8).
+ */
 const filesOf = (sha, repo) => {
   const key = `${repo}\0${sha}`;
   if (!filesCache.has(key)) filesCache.set(key, changedBy(sha, repo));
   return filesCache.get(key);
 };
 
-const changedBy = (sha, repo) =>
-  git(['diff-tree', '--no-commit-id', '--name-only', '-r', '-z', '--root', sha], repo).split('\0').filter(Boolean);
+/** `diff-tree -M` so a renamed file is one change from its old path, not a delete of every old line (REQ-LED-10). */
+function changedBy(sha, repo) {
+  const fields = git(['diff-tree', '--no-commit-id', '--name-status', '-M', '-r', '-z', '--root', sha], repo).split('\0');
+  const files = [];
+  for (let i = 0; i + 1 < fields.length && fields[i];) {
+    const status = fields[i];
+    if (status.startsWith('R')) {
+      // `-M` without `-C` reports renames only, never copies.
+      files.push({ path: fields[i + 2], old: fields[i + 1] });
+      i += 3;
+    } else {
+      files.push({ path: fields[i + 1], old: fields[i + 1] });
+      i += 2;
+    }
+  }
+  return files;
+}
 
 export function mainCommits(repo, ref, since) {
   return git(['log', '--no-merges', `--since=${since}`, '--format=%H%x00%cI%x00%s', ref], repo)
@@ -80,8 +98,11 @@ export function mainCommits(repo, ref, since) {
 }
 
 // Lockfiles change with every dependency fix; sharing one is no evidence the earlier change was defective (REQ-LED-6).
+// By shape, not a list of managers (REQ-LED-10): `*.lock` (yarn, Cargo, poetry, uv, Gemfile, flake, Podfile, mix, …),
+// `*.lockb`, `*.lockfile` (Gradle), `*[.-]lock.{json,yaml,yml,hcl}` (npm, pnpm, NuGet, conda-lock, Terraform), and the
+// lockfiles named otherwise.
 const LOCKFILE =
-  /(^|\/)(package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?|Cargo\.lock|poetry\.lock|uv\.lock|Pipfile\.lock|go\.sum|Gemfile\.lock|composer\.lock)$/;
+  /(^|\/)([^/]*\.lock|[^/]*\.lockb|[^/]*\.lockfile|[^/]*[.-]lock\.(json|ya?ml|hcl)|npm-shrinkwrap\.json|go\.sum|Package\.resolved|Cartfile\.resolved|gems\.locked|cabal\.project\.freeze)$/;
 
 // Prose and requirements lists: an edit there is not a defect in the earlier change (REQ-LED-10).
 const DOC = /\.(md|txt|rst)$/i;
@@ -92,17 +113,21 @@ const lineCount = (text) => (text === '' ? 0 : text.split('\n').length - (text.e
 /**
  * Per file a fix commit changed: the commits that wrote the old-side lines it modifies or deletes, by `git blame` at
  * its parent (REQ-LED-10). A pure insertion counts against the lines on either side of it, since it lands inside
- * their code. Files new in the fix have no old lines; doc, requirements, and lock files are not blamed at all. Blame
- * follows renames, so a line keeps its author's commit under a new path.
+ * their code. Files new in the fix have no old lines; doc, requirements, and lock files (by their path at the parent)
+ * are not blamed at all. Blame follows renames, so a line keeps its author's commit under a new path. A file the fix
+ * renames is diffed and blamed from its old path, so a rename alone changes no line; it is reported under its new path.
  */
 function ownersOf(sha, repo) {
   const owners = {};
-  for (const file of filesOf(sha, repo).filter(attributable)) {
-    const old = exec('git', ['cat-file', 'blob', `${sha}^:${file}`], repo);
+  // Blamed lines are the parent's, so the old path decides: code renamed to a doc name still had code lines changed.
+  for (const { path: file, old: oldPath } of filesOf(sha, repo).filter(({ old }) => attributable(old))) {
+    const old = exec('git', ['cat-file', 'blob', `${sha}^:${oldPath}`], repo);
     if (old.status !== 0) continue; // added by the fix
     const n = lineCount(old.stdout);
     const ranges = [];
-    const diff = git(['diff', '-U0', '--no-color', '--no-ext-diff', `${sha}^`, sha, '--', file], repo); // git() makes pathspecs literal (REQ-GATE-5)
+    // `-M` over both paths pairs a rename, so hunks are against the old file. git() makes pathspecs literal (REQ-GATE-5).
+    const paths = oldPath === file ? [file] : [oldPath, file];
+    const diff = git(['diff', '-M', '-U0', '--no-color', '--no-ext-diff', `${sha}^`, sha, '--', ...paths], repo);
     for (const h of diff.matchAll(/^@@ -(\d+)(?:,(\d+))? /gm)) {
       const start = Number(h[1]);
       const count = h[2] === undefined ? 1 : Number(h[2]);
@@ -110,12 +135,13 @@ function ownersOf(sha, repo) {
       if (from <= to) ranges.push('-L', `${from},${to}`);
     }
     if (!ranges.length) continue;
-    const blame = git(['blame', '--porcelain', ...ranges, `${sha}^`, '--', file], repo);
+    const blame = git(['blame', '--porcelain', ...ranges, `${sha}^`, '--', oldPath], repo);
     owners[file] = [...new Set([...blame.matchAll(/^([0-9a-f]{40}|[0-9a-f]{64}) \d+ \d+/gm)].map((m) => m[1]))];
   }
   return owners;
 }
 
+const OWNERS_RULE = 2;
 const ownersCache = new Map();
 const unwritable = new Set(); // state dirs already reported as unwritable
 /**
@@ -123,7 +149,12 @@ const unwritable = new Set(); // state dirs already reported as unwritable
  * so its answer holds for every later report, and the baseline re-reads the same fixes for every earlier commit.
  */
 function cachedOwners(sha, repo) {
-  const repoKey = createHash('sha256').update(realpathSync(repo)).digest('hex').slice(0, 16);
+  // The rule's version is in the key, so answers cached under an older rule (before renames and lockfile shapes,
+  // REQ-LED-10) are not reused.
+  const repoKey = createHash('sha256')
+    .update(`${OWNERS_RULE}\0${realpathSync(repo)}`)
+    .digest('hex')
+    .slice(0, 16);
   const key = `${repoKey}\0${sha}`;
   if (ownersCache.has(key)) return ownersCache.get(key);
   const dir = join(stateDir(), 'blame', repoKey);
@@ -156,8 +187,8 @@ export function laterFailures(commits, index, repo, windowDays = 30) {
   const change = commits[index];
   const until = Date.parse(change.at) + windowDays * DAY_MS;
   const later = commits.slice(index + 1).filter((c) => Date.parse(c.at) <= until);
-  // A change that wrote only docs or lockfiles owns no attributable line.
-  const candidates = !filesOf(change.sha, repo).some(attributable)
+  // A change that wrote only docs or lockfiles (by the path it wrote) owns no attributable line.
+  const candidates = !filesOf(change.sha, repo).some(({ path }) => attributable(path))
     ? []
     : later
         .filter((c) => FIX.test(c.subject))
