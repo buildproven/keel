@@ -107,20 +107,20 @@ const LOCKFILE =
 // Prose and requirements lists: an edit there is not a defect in the earlier change (REQ-LED-10).
 const DOC = /\.(md|txt|rst)$/i;
 const attributable = (f) => !LOCKFILE.test(f) && !DOC.test(f);
-const attributableEntry = ({ path, old }) => attributable(path) && attributable(old);
 
 const lineCount = (text) => (text === '' ? 0 : text.split('\n').length - (text.endsWith('\n') ? 1 : 0));
 
 /**
  * Per file a fix commit changed: the commits that wrote the old-side lines it modifies or deletes, by `git blame` at
  * its parent (REQ-LED-10). A pure insertion counts against the lines on either side of it, since it lands inside
- * their code. Files new in the fix have no old lines; doc, requirements, and lock files are not blamed at all. Blame
- * follows renames, so a line keeps its author's commit under a new path. A file the fix renames is diffed and blamed
- * from its old path, so a rename alone changes no line; it is reported under its new path.
+ * their code. Files new in the fix have no old lines; doc, requirements, and lock files (by their path at the parent)
+ * are not blamed at all. Blame follows renames, so a line keeps its author's commit under a new path. A file the fix
+ * renames is diffed and blamed from its old path, so a rename alone changes no line; it is reported under its new path.
  */
 function ownersOf(sha, repo) {
   const owners = {};
-  for (const { path: file, old: oldPath } of filesOf(sha, repo).filter(attributableEntry)) {
+  // Blamed lines are the parent's, so the old path decides: code renamed to a doc name still had code lines changed.
+  for (const { path: file, old: oldPath } of filesOf(sha, repo).filter(({ old }) => attributable(old))) {
     const old = exec('git', ['cat-file', 'blob', `${sha}^:${oldPath}`], repo);
     if (old.status !== 0) continue; // added by the fix
     const n = lineCount(old.stdout);
@@ -187,8 +187,8 @@ export function laterFailures(commits, index, repo, windowDays = 30) {
   const change = commits[index];
   const until = Date.parse(change.at) + windowDays * DAY_MS;
   const later = commits.slice(index + 1).filter((c) => Date.parse(c.at) <= until);
-  // A change that wrote only docs or lockfiles owns no attributable line.
-  const candidates = !filesOf(change.sha, repo).some(attributableEntry)
+  // A change that wrote only docs or lockfiles (by the path it wrote) owns no attributable line.
+  const candidates = !filesOf(change.sha, repo).some(({ path }) => attributable(path))
     ? []
     : later
         .filter((c) => FIX.test(c.subject))
