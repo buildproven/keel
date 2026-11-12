@@ -438,8 +438,9 @@ function baseRed(ctx, dir, proof, onBase, baseline) {
   const output = tail(baseline.out);
   // A timeout or a runner that cannot start is not a test failure; a targeted failure must name a file it ran.
   let fixed = !inconclusive(baseline) && (onBase ? named(onBase).length > 0 : false);
-  // A targeted run names a proof file, but a test file the card does not modify may fail in it too (REQ-GATE-52).
-  if (fixed && onBase && named(baseTests()).some((p) => !modified.includes(p))) fixed = false;
+  // A targeted run names a proof file, but a test file the card does not modify may fail in it too (REQ-GATE-52). Only
+  // runnable test files count (REQ-GATE-64): a helper the fixed test calls shows up in its stack frames, failing or not.
+  if (fixed && onBase && named(runnableFiles(baseTests())).some((p) => !modified.includes(p))) fixed = false;
   let flaky = false;
   if (!onBase && modified.length && !inconclusive(baseline)) {
     for (const p of modified) {

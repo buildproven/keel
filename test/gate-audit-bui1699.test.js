@@ -120,6 +120,18 @@ test('REQ-GATE-52 a targeted base baseline that also shows a test file the card 
   assert.deepEqual(proofOf(r).problems, [{ rule: 'baseline-not-green', files: ['test/a.test.js', 'test/b.test.js'] }]);
 });
 
+test('REQ-GATE-52 a targeted base baseline whose stack frames name a test helper is still base-red-fixed', () => {
+  // test/a.test.js fails on base inside test/helpers.js, so the output names test/helpers.js:<line>; it is no test file.
+  const helper = "import assert from 'node:assert';\nexport const same = (a, b) => assert.strictEqual(a, b);\n";
+  const red = "import { add } from '../src/add.js';\nimport { same } from './helpers.js';\nsame(add(1, 1), 2);\n";
+  const { dir, base } = fixtureRepo({ ...BUGGY, 'test/helpers.js': helper, 'test/a.test.js': red });
+  commit(dir, { ...FIXED_SRC, 'test/a.test.js': `${red}same(add(2, 3), 5);\n` });
+  const config = fixtureConfig({ testCommand: SUITE, checks: { test: SUITE }, testFilesCommand: FILES });
+  const r = gate({ repo: dir, base, card: card('kind: bug\nsize: S\nallowEdits: test/a.test.js'), config });
+  assert.equal(r.pass, true, JSON.stringify(r.results, null, 1));
+  assert.deepEqual([proofOf(r).targeted, proofOf(r).baseRedFixed], [true, ['test/a.test.js']]);
+});
+
 // ---------------------------------------------------------------------------------------------------------------------
 // The "may not run them" hint is for a runner that was not given the files.
 
