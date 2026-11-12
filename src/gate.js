@@ -284,7 +284,15 @@ const commandForFiles = (command, files) =>
 const filesCommand = (config, files) => commandForFiles(config.testFilesCommand, files);
 /** The held-out command, targeted only when heldOutCommand was omitted from keel.json (REQ-GATE-10, REQ-RUN-17). */
 export const heldOutTestCommand = (config, files) =>
-  config.heldOutFilesCommand ? commandForFiles(config.heldOutFilesCommand, files) : config.heldOutCommand;
+  config.heldOutFilesCommand ? commandForFiles(config.heldOutFilesCommand, runnableFiles(files)) : config.heldOutCommand;
+/**
+ * The files a runner should be given (REQ-GATE-64, REQ-GATE-66): the runnable test names, so a held-out helper such as
+ * `test/heldout-x/curl.mjs` is copied but never run as its own test; every file when none has a runnable name.
+ */
+function runnableFiles(files) {
+  const runnable = files.filter((p) => RUNNABLE_TEST.test(p));
+  return runnable.length ? runnable : files;
+}
 /** Added or changed files under a test glob (REQ-GATE-3): the new tests and the fixtures and helpers they read. */
 const testGlobFiles = ({ changed, config }) =>
   changed.filter((f) => f.status !== 'D' && matchesAny(f.path, config.testGlobs)).map((f) => f.path);
@@ -301,9 +309,7 @@ const RUNNABLE_TEST =
  * runner given a directory), every test-glob file stays, as before.
  */
 export function proofFiles(ctx) {
-  const files = testGlobFiles(ctx);
-  const runnable = files.filter((p) => RUNNABLE_TEST.test(p));
-  return runnable.length ? runnable : files;
+  return runnableFiles(testGlobFiles(ctx));
 }
 
 /**
