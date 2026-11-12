@@ -66,7 +66,8 @@ export const inconclusive = (r) => r.timedOut || r.code === null || NOT_A_TEST_R
  */
 const sharedRoots = (from) => {
   const dotGit = join(from, '.git');
-  return existsSync(dotGit) && !statSync(dotGit).isDirectory() ? [from, mainWorktree(from)] : [from];
+  // lstat, not stat: a `.git` symlink is not a main worktree's own directory, whatever it points to; git resolves it.
+  return existsSync(dotGit) && !lstatSync(dotGit).isDirectory() ? [from, mainWorktree(from)] : [from];
 };
 
 /** Symlink shared dependency dirs (node_modules, .venv) so temp checkouts can run tests. */
@@ -298,11 +299,12 @@ const testGlobFiles = ({ changed, config }) =>
   changed.filter((f) => f.status !== 'D' && matchesAny(f.path, config.testGlobs)).map((f) => f.path);
 /**
  * A file a runner picks up by its name (REQ-GATE-64): `*.test.*`, `*.spec.*`, `test_*.py`, `*_test.py`, `*_test.go`, `*_spec.rb`,
- * `*Test(s).java`, `*Test.kt`, `*Test.cs`, or a JS/TS source file in a `__tests__` directory. Fixtures, snapshots, and
- * helpers such as conftest.py are not.
+ * `*Test(s).java`, `*Test.kt`, `*Test.cs`, `*Test.php`, Node's `*-test.js`, `test-*.js`, and `test.js` (and the `.mjs`/`.cjs`
+ * forms), or a JS/TS source file in a `__tests__` directory. Fixtures, snapshots, and helpers such as conftest.py are not,
+ * nor is a bare file in a `test/` directory: Node runs those too, but a held-out helper lives there (REQ-GATE-66).
  */
 const RUNNABLE_TEST =
-  /\.(?:test|spec)\.[^./]+$|(?:^|\/)test_[^/]+\.py$|_test\.(?:go|py)$|_spec\.rb$|Tests?\.java$|Test\.(?:kt|cs)$|(?:^|\/)__tests__\/(?:[^/]+\/)*[^/]+\.[mc]?[jt]sx?$/;
+  /\.(?:test|spec)\.[^./]+$|(?:^|\/)test_[^/]+\.py$|_test\.(?:go|py)$|_spec\.rb$|Tests?\.java$|Test\.(?:kt|cs|php)$|[-_]test\.[cm]?js$|(?:^|\/)test(?:-[^/]+)?\.[cm]?js$|(?:^|\/)__tests__\/(?:[^/]+\/)*[^/]+\.[mc]?[jt]sx?$/;
 /**
  * The red-proof file set (REQ-GATE-64): the runnable test files among the test-glob files, so a fixture the suite output
  * never names cannot force the whole suite on base (REQ-GATE-65). When none has a runnable name (cargo's `tests/*.rs`, a
@@ -424,13 +426,20 @@ const failsIn = (out, path, dir) =>
  * one must pass with them removed from the base checkout. Never recorded (REQ-GATE-17). Otherwise `baseline-not-green`
  * names the base test files the runner output shows failing.
  */
-function baseRed({ repo, base, config }, dir, proof, onBase, baseline) {
+function baseRed(ctx, dir, proof, onBase, baseline) {
+  const { repo, base, config } = ctx;
+  const baseTests = () =>
+    git(['ls-tree', '-r', '-z', '--name-only', base], repo)
+      .split('\0')
+      .filter((p) => p && matchesAny(p, config.testGlobs));
   const modified = onBase ?? proof.filter((p) => fileMode(base, p, repo));
   const outs = [baseline.out];
   const named = (files) => files.filter((p) => outs.some((out) => failsIn(out, p, dir)));
   const output = tail(baseline.out);
   // A timeout or a runner that cannot start is not a test failure; a targeted failure must name a file it ran.
   let fixed = !inconclusive(baseline) && (onBase ? named(onBase).length > 0 : false);
+  // A targeted run names a proof file, but a test file the card does not modify may fail in it too (REQ-GATE-52).
+  if (fixed && onBase && named(baseTests()).some((p) => !modified.includes(p))) fixed = false;
   let flaky = false;
   if (!onBase && modified.length && !inconclusive(baseline)) {
     for (const p of modified) {
@@ -444,6 +453,18 @@ function baseRed({ repo, base, config }, dir, proof, onBase, baseline) {
   }
   if (fixed) {
     const files = named(modified);
+    // The modified files are red on base by themselves; a new proof file has no base version, so it is shown to fail on
+    // base here, overlaid alone (REQ-GATE-52, REQ-GATE-3).
+    const fresh = proof.filter((p) => !modified.includes(p));
+    if (fresh.length) {
+      const overlaid = overlayProof(
+        ctx,
+        dir,
+        testGlobFiles(ctx).filter((p) => !modified.includes(p)),
+        fresh,
+      );
+      if (!overlaid.pass) return overlaid;
+    }
     return {
       name: 'red-proof',
       pass: true,
@@ -455,11 +476,38 @@ function baseRed({ repo, base, config }, dir, proof, onBase, baseline) {
       ...(onBase ? { targeted: true } : {}),
     };
   }
-  const tests = git(['ls-tree', '-r', '-z', '--name-only', base], repo)
-    .split('\0')
-    .filter((p) => p && matchesAny(p, config.testGlobs));
-  const files = named(tests);
+  const files = named(baseTests());
   return { ...fail('red-proof', 'baseline-not-green', files.length ? { files } : {}), output };
+}
+
+/**
+ * Put `writes` (head versions) on the base checkout and run the proof files there (REQ-GATE-3): the run must fail with a
+ * real test failure that names one of them. The fixtures and helpers the new tests read go on base with them
+ * (REQ-GATE-64); only the proof files run when the overlay is targeted.
+ */
+function overlayProof(ctx, dir, writes, proof) {
+  const { repo, head, config } = ctx;
+  for (const p of writes) {
+    const err = writeInside(dir, p, (t) => {
+      const blob = showBlob(head, p, repo);
+      writeFileSync(t, blob.data);
+      chmodSync(t, blob.mode === '100755' ? 0o755 : 0o644);
+    });
+    if (err) return fail('red-proof', 'unsafe-path', { detail: err });
+  }
+  const r = shell(ctx.targeted ? filesCommand(config, proof) : config.testCommand, dir, config);
+  const output = tail(r.out);
+  if (inconclusive(r)) return { ...fail('red-proof', 'inconclusive', { code: r.code }), output };
+  if (r.code === 0) {
+    // A runner that lists its test files by name never runs a new file; say so instead of "passes on base" alone. A
+    // targeted run was given the files by name, so they ran.
+    const unseen = !ctx.targeted && proof.every((p) => !r.out.includes(basename(p)));
+    const hint = unseen ? { hint: 'no new test file appears in the test output: the test command may not run them' } : {};
+    return { ...fail('red-proof', 'test-passes-on-base', { files: proof, ...hint }), output };
+  }
+  if (!proof.some((p) => r.out.includes(basename(p))))
+    return { ...fail('red-proof', 'failure-not-in-new-tests', { files: proof }), output };
+  return { name: 'red-proof', pass: true, problems: [], files: proof, output, ...(ctx.targeted ? { targeted: true } : {}) };
 }
 
 /**
@@ -467,7 +515,7 @@ function baseRed({ repo, base, config }, dir, proof, onBase, baseline) {
  * must fail as a real test failure that names a new test file.
  */
 function redProof(ctx) {
-  const { repo, base, head, card, config } = ctx;
+  const { repo, base, card, config } = ctx;
   if (!needsProof(card)) return null;
   const proof = proofFiles(ctx);
   if (!proof.length) return fail('red-proof', 'no-test-changed');
@@ -489,35 +537,8 @@ function redProof(ctx) {
         writeFileSync(cached, `${new Date().toISOString()}\n`); // Only a green base is cached (REQ-GATE-17).
       }
     }
-    // The fixtures and helpers the new tests read go on base with them (REQ-GATE-64); only the proof files run.
-    for (const p of testGlobFiles(ctx)) {
-      const err = writeInside(dir, p, (t) => {
-        const blob = showBlob(head, p, repo);
-        writeFileSync(t, blob.data);
-        chmodSync(t, blob.mode === '100755' ? 0o755 : 0o644);
-      });
-      if (err) return fail('red-proof', 'unsafe-path', { detail: err });
-    }
-    const r = shell(ctx.targeted ? filesCommand(config, proof) : config.testCommand, dir, config);
-    const output = tail(r.out);
-    if (inconclusive(r)) return { ...fail('red-proof', 'inconclusive', { code: r.code }), output };
-    if (r.code === 0) {
-      // A runner that lists its test files by name never runs a new file; say so instead of "passes on base" alone.
-      const unseen = proof.every((p) => !r.out.includes(basename(p)));
-      const hint = unseen ? { hint: 'no new test file appears in the test output: the test command may not run them' } : {};
-      return { ...fail('red-proof', 'test-passes-on-base', { files: proof, ...hint }), output };
-    }
-    if (!proof.some((p) => r.out.includes(basename(p))))
-      return { ...fail('red-proof', 'failure-not-in-new-tests', { files: proof }), output };
-    return {
-      name: 'red-proof',
-      pass: true,
-      problems: [],
-      files: proof,
-      output,
-      ...(flaky ? { flaky: true } : {}),
-      ...(ctx.targeted ? { targeted: true } : {}),
-    };
+    const result = overlayProof(ctx, dir, testGlobFiles(ctx), proof);
+    return result.pass && flaky ? { ...result, flaky: true } : result;
   });
 }
 
@@ -534,43 +555,35 @@ function testEditProof(ctx) {
     ...fail('test-edit-proof', 'existing-test-changed', { path, why }),
     ...(output ? { output: tail(output) } : {}),
   });
-  const onHead = ctx.onHead((dir, { installed }) => {
-    if (installed) return { ...fail('test-edit-proof', 'install-failed'), output: tail(installed.out) };
-    for (const p of files) {
+  // Each file gets its own use of the shared checkouts, which resets them first (REQ-GATE-58, -62): an untracked file or
+  // other change that one file's run made must not decide another file's result.
+  for (const p of files) {
+    const onHead = ctx.onHead((dir, { installed }) => {
+      if (installed) return { ...fail('test-edit-proof', 'install-failed'), output: tail(installed.out) };
       const r = shell(filesCommand(config, [p]), dir, config);
-      if (r.code !== 0) return locked(p, 'fails alone on head with testFilesCommand', r.out);
-    }
-    return null;
-  });
-  if (onHead) return onHead;
-  // The shared base checkout, reset to base after red proof: none of its overlaid files are left (REQ-GATE-61, -62).
+      return r.code !== 0 ? locked(p, 'fails alone on head with testFilesCommand', r.out) : null;
+    });
+    if (onHead) return onHead;
+  }
   const passesOnBase = []; // edited tests that pass on base: needed only if their base version fails on head
-  const baseRun = ctx.onBase((dir, { installed }) => {
-    if (installed) return { ...fail('test-edit-proof', 'install-failed'), output: tail(installed.out) };
-    // One edited file at a time, the others as on base: an edit to one test must not be what makes another fail.
-    for (const p of files) {
-      let saved = null; // the base file, put back after the run
+  for (const p of files) {
+    // The shared base checkout, reset to base before each file: none of the files overlaid before is left (REQ-GATE-61, -62).
+    const baseRun = ctx.onBase((dir, { installed }) => {
+      if (installed) return { ...fail('test-edit-proof', 'install-failed'), output: tail(installed.out) };
+      // One edited file at a time, the others as on base: an edit to one test must not be what makes another fail.
       const err = writeInside(dir, p, (t) => {
-        saved = existsSync(t) ? { data: readFileSync(t), mode: statSync(t).mode & 0o777 } : null;
         const blob = showBlob(head, p, repo);
         writeFileSync(t, blob.data);
         chmodSync(t, blob.mode === '100755' ? 0o755 : 0o644);
       });
       if (err) return fail('test-edit-proof', 'unsafe-path', { detail: err });
       const r = shell(filesCommand(config, [p]), dir, config);
-      const restored = writeInside(dir, p, (t) => {
-        if (saved) {
-          writeFileSync(t, saved.data);
-          chmodSync(t, saved.mode);
-        } else unlinkSync(t);
-      });
-      if (restored) return fail('test-edit-proof', 'unsafe-path', { detail: restored });
       if (inconclusive(r)) return { ...fail('test-edit-proof', 'inconclusive', { path: p, code: r.code }), output: tail(r.out) };
       if (r.code === 0) passesOnBase.push({ p, out: r.out });
-    }
-    return null;
-  });
-  if (baseRun) return baseRun;
+      return null;
+    });
+    if (baseRun) return baseRun;
+  }
   // Outside the base callback, so the two shared checkouts are never held together.
   for (const { p, out } of passesOnBase) {
     if (!oldTestFailsOnHead(ctx, p)) return locked(p, 'passes alone on base, so the change does not need the edit', out);
@@ -629,14 +642,17 @@ const FAILED_TEST = [
   /^not ok \d+ - (.+?)(?: # .*)?$/,
   /^--- FAIL: (\S+)/,
   /^[✖✗✘×●] +(.+)$/u,
+  /^FAIL +(?:\S+ > )?(.+)$/, // vitest and jest summary: `FAIL  <file> > <suite> > <test>`, the test as the fail marks print it
 ];
-const DURATION = /\s*\(\d+(?:\.\d+)?\s*m?s\)$/;
+// A trailing timing: `(12ms)` as node:test prints it, or bare `6ms` / `1.2s` as vitest's verbose reporter does.
+const DURATION = /\s*\(\d+(?:\.\d+)?\s*m?s\)$|\s+\d+(?:\.\d+)?\s*m?s$/;
+const ANSI = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g');
 
 /** The failing test names in a test run's output (REQ-RUN-46), without timings; a header such as `failing tests:` is none. */
 export function failingTests(out) {
   const names = new Set();
   for (const raw of out.split('\n')) {
-    const line = raw.trim();
+    const line = raw.replace(ANSI, '').trim();
     const name = FAILED_TEST.map((re) => re.exec(line)?.[1])
       .find(Boolean)
       ?.replace(DURATION, '')
@@ -815,6 +831,7 @@ export function gate({
   // Every head stage runs in one checkout of head, prepared once and reset between stages (REQ-GATE-57, -58); red
   // proof and test-edit proof share one checkout of base the same way (REQ-GATE-61, -62).
   const improve = new Set();
+  const lostSignIn = new Set();
   const shared = (ref, which) =>
     sharedWorktree(repo, ref, {
       prepare: (dir) => {
@@ -859,7 +876,10 @@ export function gate({
     if (waitReviewHours > 0 && last?.name === 'review' && last.problems.some((p) => p.rule === 'review-unavailable')) {
       const ms = resetWaitMs(last.unavailable ?? [], now());
       if (ms !== null && ms <= waitReviewHours * 3600 * 1000) {
-        for (const line of signInFixes(last.unavailable)) log(line); // fixing a sign-in beats the wait (REQ-GATE-53)
+        for (const line of signInFixes(last.unavailable)) {
+          log(line); // fixing a sign-in beats the wait (REQ-GATE-53)
+          lostSignIn.add(line); // the retry replaces this result, but the lost fallback stays on the receipt
+        }
         log(`every reviewer is out; waiting ${Math.ceil(ms / 60000)} min for the reset, then the review runs again`);
         sleep(ms);
         results[results.length - 1] = timed(() => [review(ctx)])[0];
@@ -904,7 +924,7 @@ export function gate({
     }
   }
   // A reviewer that cannot sign in is a lost fallback, named even when another reviewer answered (REQ-GATE-53).
-  const signIn = signInFixes(results.find((r) => r.name === 'review')?.unavailable);
+  const signIn = [...new Set([...lostSignIn, ...signInFixes(results.find((r) => r.name === 'review')?.unavailable)])];
   if (signIn.length) receipt.improve = [...(receipt.improve ?? []), ...signIn];
   if (improve.size) receipt.improve = [...(receipt.improve ?? []), ...improve];
   return receipt;
