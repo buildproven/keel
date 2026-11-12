@@ -389,18 +389,32 @@ const heldOutFor = (heldDir, card) => {
   return existsSync(heldDir) && existsSync(file) && readFileSync(file, 'utf8').trim() === cardHash(card);
 };
 
+/**
+ * Whether a reused held-out set (REQ-RUN-63) still fails on the current base. When the base moved to a commit that
+ * already passes it, every attempt would end `held-out-not-executed`; the set is then not reused, so the author runs
+ * again and a base that already meets the card stops the run there, with its own message (REQ-RUN-17). A run that
+ * cannot tell (install failed, the runner did not start, a file already on base) keeps the set: the gate says why.
+ */
+function heldOutStillFails({ repo, baseSha, heldDir, config }) {
+  const files = listFiles(heldDir);
+  if (!files.length) return false;
+  return withTempWorktree(repo, baseSha, (dir) => {
+    if (prepareCheckout(repo, dir, config)) return true;
+    for (const rel of files) {
+      if (existsSync(join(dir, rel))) return true;
+      mkdirSync(dirname(join(dir, rel)), { recursive: true });
+      copyFileSync(join(heldDir, rel), join(dir, rel));
+    }
+    const r = shell(heldOutTestCommand(config, files), dir, config);
+    return inconclusive(r) || r.code !== 0;
+  });
+}
+
 /** The test names a held-out stage that failed on head names in its private output (REQ-RUN-46), or null. */
 function heldOutFailing(receipt) {
   const r = receipt?.results.find((x) => x.name === 'held-out' && x.problems.some((p) => p.rule === 'held-out-fails-on-head'));
-  // Colour is common in captured Vitest/Jest output. Remove terminal escapes before matching their FAIL markers;
-  // otherwise two identical failures look unnamed and the defect check never runs (REQ-RUN-46a).
-  const ansi = new RegExp(String.raw`\x1B\[[0-?]*[ -/]*[@-~]`, 'g');
-  const output = (r?.privateOutput ?? '').replace(ansi, '');
-  const vitest = output
-    .split('\n')
-    .map((line) => /^FAIL\s+(.+)$/.exec(line.trim())?.[1])
-    .filter(Boolean);
-  const names = [...new Set([...failingTests(output), ...vitest])];
+  // failingTests removes terminal colour and reads Vitest's and Jest's FAIL lines (REQ-RUN-46).
+  const names = failingTests(r?.privateOutput ?? '');
   return r && names.length ? names : null;
 }
 
@@ -998,7 +1012,9 @@ function runLocked({ repo, card, config, baseSha, baseBranch, branch, wt, pr, me
   }
   const heldDir = join(stateDir(), 'heldout', basename(wt)); // Keel's own per-card held-out dir (REQ-RUN-17, -46)
   // Held-out tests already authored for this card text are reused, so the author's provider is not needed (REQ-RUN-63).
-  const reuseHeldOut = heldOutFor(heldDir, card);
+  // A kept head is gated as it was built; a new build checks the set against the base it now starts from.
+  const reuseHeldOut =
+    needsAuthoring(card, config) && heldOutFor(heldDir, card) && (Boolean(kept) || heldOutStillFails({ repo, baseSha, heldDir, config }));
   if (!kept) {
     // Before a worktree or any worker call: nothing may use a window kept for the owner (REQ-PLAN-3).
     const author = needsAuthoring(card, config) && !reuseHeldOut ? config.tiers[config.heldOutAuthorTier] : null;
