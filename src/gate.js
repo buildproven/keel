@@ -301,10 +301,11 @@ const testGlobFiles = ({ changed, config }) =>
  * A file a runner picks up by its name (REQ-GATE-64): `*.test.*`, `*.spec.*`, `test_*.py`, `*_test.py`, `*_test.go`, `*_spec.rb`,
  * `*Test(s).java`, `*Test.kt`, `*Test.cs`, `*Test.php`, Node's `*-test.js`, `test-*.js`, and `test.js` (and the `.mjs`/`.cjs`
  * forms), or a JS/TS source file in a `__tests__` directory. Fixtures, snapshots, and helpers such as conftest.py are not,
- * nor is a bare file in a `test/` directory: Node runs those too, but a held-out helper lives there (REQ-GATE-66).
+ * nor is a bare file in a `test/` directory: Node runs those too, but a held-out helper lives there (REQ-GATE-66). For the
+ * same reason a `test-*.js` named for a helper (`test-utils.js`, `test-helpers.js`, `test-setup.js`, …) is not runnable.
  */
 const RUNNABLE_TEST =
-  /\.(?:test|spec)\.[^./]+$|(?:^|\/)test_[^/]+\.py$|_test\.(?:go|py)$|_spec\.rb$|Tests?\.java$|Test\.(?:kt|cs|php)$|[-_]test\.[cm]?js$|(?:^|\/)test(?:-[^/]+)?\.[cm]?js$|(?:^|\/)__tests__\/(?:[^/]+\/)*[^/]+\.[mc]?[jt]sx?$/;
+  /\.(?:test|spec)\.[^./]+$|(?:^|\/)test_[^/]+\.py$|_test\.(?:go|py)$|_spec\.rb$|Tests?\.java$|Test\.(?:kt|cs|php)$|[-_]test\.[cm]?js$|(?:^|\/)test(?:-(?!(?:utils?|helpers?|setup|support|common|shared|fixtures?|mocks?|data|lib)\.)[^/]+)?\.[cm]?js$|(?:^|\/)__tests__\/(?:[^/]+\/)*[^/]+\.[mc]?[jt]sx?$/;
 /**
  * The red-proof file set (REQ-GATE-64): the runnable test files among the test-glob files, so a fixture the suite output
  * never names cannot force the whole suite on base (REQ-GATE-65). When none has a runnable name (cargo's `tests/*.rs`, a
@@ -440,7 +441,9 @@ function baseRed(ctx, dir, proof, onBase, baseline) {
   let fixed = !inconclusive(baseline) && (onBase ? named(onBase).length > 0 : false);
   // A targeted run names a proof file, but a test file the card does not modify may fail in it too (REQ-GATE-52). Only
   // runnable test files count (REQ-GATE-64): a helper the fixed test calls shows up in its stack frames, failing or not.
-  if (fixed && onBase && named(runnableFiles(baseTests())).some((p) => !modified.includes(p))) fixed = false;
+  // With no runnable name on base (cargo's tests/*.rs), a test cannot be told from a helper, so the run alone decides.
+  const others = () => baseTests().filter((p) => RUNNABLE_TEST.test(p) && !modified.includes(p));
+  if (fixed && onBase && named(others()).length) fixed = false;
   let flaky = false;
   if (!onBase && modified.length && !inconclusive(baseline)) {
     for (const p of modified) {
