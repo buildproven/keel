@@ -235,13 +235,20 @@ function diffKeys(a, b, except) {
 const STEP_KEYS = new Set(['name', 'run', 'shell', 'working-directory', 'timeout-minutes']);
 
 /**
+ * Whether a parsed `run` value is command text: a scalar whose text is not blank and not a plain YAML null (`null`,
+ * `Null`, `NULL`, `~`), which GitHub reads as no command (REQ-GATE-43).
+ */
+const runsCommand = (run) =>
+  typeof run === 'string' && run.slice(run.indexOf(':') + 1).trim() !== '' && !/^p:(?:null|Null|NULL|~)$/.test(run);
+
+/**
  * Why an added step could do more than the candidate's own test code already does in a base step, or null: it must be a
  * `run` step with only STEP_KEYS and no `${{ }}` anywhere, so it cannot read secrets or tokens, call an action, set an
  * environment, or change permissions. Code it runs is candidate code, as a new test is.
  */
 function addedStepRisk(step, where) {
   if (!isMap(step)) return `${where} is not a mapping`;
-  if (typeof step.get('run') !== 'string') return `${where} is not a run step`;
+  if (!runsCommand(step.get('run'))) return `${where} is not a run step`;
   const extra = [...step.keys()].find((k) => !STEP_KEYS.has(k));
   if (extra) return `${where} sets ${extra}`;
   if ([...step.values()].some((v) => typeof v === 'string' && v.includes('${{'))) return `${where} has a \${{ }} expression`;
