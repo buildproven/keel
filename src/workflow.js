@@ -258,14 +258,65 @@ function addedStepRisk(step, where) {
 /** Every scalar in a parsed value, as written. */
 const scalars = (v) => (Array.isArray(v) ? v.flatMap(scalars) : isMap(v) ? [...v].flatMap(([k, x]) => [k, ...scalars(x)]) : v ? [v] : []);
 
+// A heredoc operator and its delimiter word, which may be quoted in parts (`<<'EOF'`, `<<-E"O"F`); not `<<<`.
+const HEREDOC = /^<<(-?)[ \t]*((?:'[^']*'|"(?:[^"\\]|\\.)*"|\\.|[^\s;&|<>()'"\\])+)/;
+
 /**
- * The command lines of a parsed `run` value: each line of its text, trimmed; a folded (`>`) block is one line, as YAML
- * joins it. A configured command counts as run only when a line starts with it (REQ-GATE-43), so text that merely
- * names it (`echo 'npm test is disabled'`, a `# npm test` comment) does not.
+ * The lines of shell text on which a command starts, trimmed: not a line inside a quoted string (`'…'`, `"…"`,
+ * `$'…'`) left open on an earlier line, a heredoc body or its closing delimiter, or a line after one that ends in a
+ * backslash (REQ-GATE-43). A `#` at a word start comments out the rest of its line, so a quote in a comment opens
+ * nothing. Any `<<` outside quotes opens a heredoc (also a `$((1<<2))` shift): reading too few lines as commands
+ * fails closed.
+ */
+function commandStarts(text) {
+  const out = [];
+  let quote = null; // the open quote: ', ", or $'
+  let continued = false;
+  const pending = []; // heredoc delimiters opened on the current command line, in order
+  let doc = null; // the heredoc whose body is being read: { word, tabs }
+  for (const line of text.split('\n')) {
+    if (doc) {
+      if ((doc.tabs ? line.replace(/^\t+/, '') : line) === doc.word) doc = pending.shift() ?? null;
+      continue;
+    }
+    if (!quote && !continued) out.push(line.trim());
+    continued = false;
+    for (let k = 0; k < line.length; k++) {
+      const c = line[k];
+      if (quote === "'") {
+        if (c === "'") quote = null;
+      } else if (c === '\\') {
+        if (k === line.length - 1) continued = true;
+        k++;
+      } else if (quote) {
+        if (c === (quote === '"' ? '"' : "'")) quote = null;
+      } else if (c === "'" || c === '"') quote = c;
+      else if (c === '$' && line[k + 1] === "'") {
+        quote = "$'";
+        k++;
+      } else if (c === '#' && (k === 0 || /[\s;&|()]/.test(line[k - 1]))) break;
+      else if (c === '<' && line[k + 1] === '<' && line[k + 2] === '<') k += 2;
+      else if (c === '<') {
+        const m = HEREDOC.exec(line.slice(k));
+        if (!m) continue;
+        pending.push({ word: m[2].replace(/\\(.)|['"]/g, '$1'), tabs: m[1] === '-' });
+        k += m[0].length - 1;
+      }
+    }
+    if (!quote && !continued && pending.length) doc = pending.shift();
+  }
+  return out;
+}
+
+/**
+ * The command lines of a parsed `run` value: the lines of its text on which a shell command starts (commandStarts); a
+ * folded (`>`) block is one line, as YAML joins it. A configured command counts as run only when such a line starts
+ * with it (REQ-GATE-43), so text that merely names it (`echo 'npm test is disabled'`, a `# npm test` comment, a
+ * heredoc body, a quoted multi-line argument) does not.
  */
 function commandLines(run) {
   const text = run.slice(run.indexOf(':') + 1);
-  return (run.startsWith('b>') ? [text.replace(/\n/g, ' ')] : text.split('\n')).map((l) => l.trim());
+  return commandStarts(run.startsWith('b>') ? text.replace(/\n/g, ' ') : text);
 }
 
 /**
