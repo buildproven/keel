@@ -264,14 +264,15 @@ const HEREDOC = /^<<(-?)[ \t]*((?:'[^']*'|"(?:[^"\\]|\\.)*"|\\.|[^\s;&|<>()'"\\]
 /**
  * The lines of shell text on which a command starts, trimmed: not a line inside a quoted string (`'…'`, `"…"`,
  * `$'…'`) left open on an earlier line, a heredoc body or its closing delimiter, or a line after one that ends in a
- * backslash (REQ-GATE-43). A `#` at a word start comments out the rest of its line, so a quote in a comment opens
- * nothing. Any `<<` outside quotes opens a heredoc (also a `$((1<<2))` shift): reading too few lines as commands
- * fails closed.
+ * backslash (REQ-GATE-43). A `#` at a shell word start comments out the rest of its line, so a quote in a comment
+ * opens nothing; an escaped separator keeps the current word open and makes a following `#` literal. Any `<<`
+ * outside quotes opens a heredoc (also a `$((1<<2))` shift): reading too few lines as commands fails closed.
  */
 function commandStarts(text) {
   const out = [];
   let quote = null; // the open quote: ', ", or $'
   let continued = false;
+  let word = false; // whether shell tokenization is inside a word; escaped separators do not end it
   const pending = []; // heredoc delimiters opened on the current command line, in order
   let doc = null; // the heredoc whose body is being read: { word, tabs }
   for (const line of text.split('\n')) {
@@ -279,29 +280,42 @@ function commandStarts(text) {
       if ((doc.tabs ? line.replace(/^\t+/, '') : line) === doc.word) doc = pending.shift() ?? null;
       continue;
     }
-    if (!quote && !continued) out.push(line.trim());
+    if (!quote && !continued) {
+      out.push(line.trim());
+      word = false;
+    }
     continued = false;
     for (let k = 0; k < line.length; k++) {
       const c = line[k];
       if (quote === "'") {
         if (c === "'") quote = null;
       } else if (c === '\\') {
+        word = true;
         if (k === line.length - 1) continued = true;
         k++;
       } else if (quote) {
         if (c === (quote === '"' ? '"' : "'")) quote = null;
-      } else if (c === "'" || c === '"') quote = c;
-      else if (c === '$' && line[k + 1] === "'") {
+      } else if (c === "'" || c === '"') {
+        quote = c;
+        word = true;
+      } else if (c === '$' && line[k + 1] === "'") {
         quote = "$'";
+        word = true;
         k++;
-      } else if (c === '#' && (k === 0 || /[\s;&|()]/.test(line[k - 1]))) break;
-      else if (c === '<' && line[k + 1] === '<' && line[k + 2] === '<') k += 2;
-      else if (c === '<') {
+      } else if (c === '#' && !word) break;
+      else if (/[ \t]/.test(c)) word = false;
+      else if (c === '<' && line[k + 1] === '<' && line[k + 2] === '<') {
+        word = false;
+        k += 2;
+      } else if (c === '<') {
         const m = HEREDOC.exec(line.slice(k));
-        if (!m) continue;
-        pending.push({ word: m[2].replace(/\\(.)|['"]/g, '$1'), tabs: m[1] === '-' });
-        k += m[0].length - 1;
-      }
+        if (m) {
+          pending.push({ word: m[2].replace(/\\(.)|['"]/g, '$1'), tabs: m[1] === '-' });
+          word = true;
+          k += m[0].length - 1;
+        } else word = false;
+      } else if (/[;&|>()]/.test(c)) word = false;
+      else word = true;
     }
     if (!quote && !continued && pending.length) doc = pending.shift();
   }
