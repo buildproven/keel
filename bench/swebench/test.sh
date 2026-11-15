@@ -30,6 +30,12 @@ esac
 install=":"
 [ "$REPO" = pytest-dev/pytest ] && install="python -m pip install -e . --no-deps -q >/dev/null 2>&1"
 name="keel-bench-$$-$(date +%s)"
+# The trap is set before the container or the watchdog starts: a signal between `docker run &` and a later trap ended
+# the script with the default action and left the new container running (REQ-BENCH-2, BUI-1704). `run` and `watchdog`
+# stay empty until their process starts, so the trap works under `set -u` at any point.
+run=
+watchdog=
+trap 'echo "keel-bench: terminated; killing container $name" >&2; for p in $watchdog $run; do kill "$p" 2>/dev/null || true; done; docker kill "$name" >/dev/null; exit 143' TERM INT HUP
 docker run --rm --name "$name" --platform linux/amd64 -e SETUPTOOLS_SCM_PRETEND_VERSION=99.0 -v "$here":/testbed "$IMAGE" \
   timeout "$limit" bash -c "source /opt/miniconda3/bin/activate && conda activate testbed && cd /testbed && $install; $RUNNER $targets" &
 run=$!
@@ -47,7 +53,6 @@ run=$!
   docker kill "$name" >/dev/null
 ) &
 watchdog=$!
-trap 'echo "keel-bench: terminated; killing container $name" >&2; kill "$watchdog" 2>/dev/null; docker kill "$name" >/dev/null; exit 143' TERM INT HUP
 status=0
 wait "$run" || status=$?
 trap - TERM INT HUP
