@@ -30,9 +30,35 @@ esac
 install=":"
 [ "$REPO" = pytest-dev/pytest ] && install="python -m pip install -e . --no-deps -q >/dev/null 2>&1"
 name="keel-bench-$$-$(date +%s)"
+# The trap is set before the container or the watchdog starts: a signal between `docker run &` and a later trap ended
+# the script with the default action and left the new container running (REQ-BENCH-2, BUI-1704).
+# The shell runs a trap only between commands, so an empty `run` in the trap means the client may be forked but
+# `run=$!` has not run yet: the trap then only sets `signal`, and the check right after `run=$!` stops the run.
+# `stop` removes the container whether it is running or only created: a client that has created its container forwards
+# TERM to it instead of exiting, and `docker kill` fails on a container that has not started. So the client gets KILL,
+# and the container is removed again after the client is gone, in case it created the container meanwhile.
+run=
+watchdog=
+signal=
+remove() {
+  if docker container inspect "$name" >/dev/null 2>&1; then docker rm -f "$name" >/dev/null; fi
+}
+stop() {
+  echo "keel-bench: terminated; killing container $name" >&2
+  for p in $watchdog; do kill "$p" 2>/dev/null || true; done
+  remove
+  for p in $run; do
+    kill -KILL "$p" 2>/dev/null || true
+    wait "$p" 2>/dev/null || true
+  done
+  remove
+  exit 143
+}
+trap 'signal=1; [ -z "$run" ] || stop' TERM INT HUP
 docker run --rm --name "$name" --platform linux/amd64 -e SETUPTOOLS_SCM_PRETEND_VERSION=99.0 -v "$here":/testbed "$IMAGE" \
   timeout "$limit" bash -c "source /opt/miniconda3/bin/activate && conda activate testbed && cd /testbed && $install; $RUNNER $targets" &
 run=$!
+[ -z "$signal" ] || stop
 # The watchdog kills the container from the host too, in case the client or the emulated timeout hangs. It polls the
 # client once a second instead of one long sleep: a missed TERM then leaves at most a 1 s sleep, never one that holds
 # the caller's output open for the whole limit (REQ-BENCH-3).
@@ -47,7 +73,6 @@ run=$!
   docker kill "$name" >/dev/null
 ) &
 watchdog=$!
-trap 'echo "keel-bench: terminated; killing container $name" >&2; kill "$watchdog" 2>/dev/null; docker kill "$name" >/dev/null; exit 143' TERM INT HUP
 status=0
 wait "$run" || status=$?
 trap - TERM INT HUP
