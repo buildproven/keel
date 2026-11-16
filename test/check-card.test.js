@@ -8,7 +8,7 @@ import { DEFAULTS } from '../src/config.js';
 import { cardFromIssue } from '../src/linear.js';
 import { poll } from '../src/poll.js';
 import { UsageError } from '../src/usage.js';
-import { fixtureRepo, tmp } from './helpers.js';
+import { commit, fixtureRepo, tmp } from './helpers.js';
 
 const BIN = new URL('../bin/keel.js', import.meta.url).pathname;
 
@@ -180,4 +180,26 @@ test('REQ-CARD-10 check-card and keel poll report the same missing paths for the
       lines.join('\n'),
     );
   assert.equal(lines.length, polled.detail.missing.length);
+});
+
+// retire-runway BUI-1939 (2026-11-16): a card without docs/traceability.json in paths built a new test and stopped as blocked.
+test('REQ-CARD-11 check-card fails a bug or feature card whose paths miss a traceability file on base', () => {
+  const { dir } = fixtureRepo();
+  commit(dir, { 'docs/traceability.json': '{}\n', 'docs/TRACEABILITY.md': '# T\n' }, 'traceability');
+  const miss = keel(['check-card', cardFile(card('src/add.js, docs/traceability.json')), '--repo', dir, '--base', 'HEAD']);
+  assert.equal(miss.status, 1, miss.stderr);
+  assert.ok(miss.stderr.includes('docs/TRACEABILITY.md is a traceability file'), miss.stderr);
+  assert.ok(!miss.stderr.includes('docs/traceability.json is a traceability file'), miss.stderr);
+  const ok = keel(['check-card', cardFile(card('src/add.js, docs/**')), '--repo', dir, '--base', 'HEAD']);
+  assert.equal(ok.status, 0, ok.stderr);
+  const docs = keel(['check-card', cardFile(card('src/add.js').replace('kind: bug', 'kind: chore')), '--repo', dir, '--base', 'HEAD']);
+  assert.equal(docs.status, 0, docs.stderr);
+  const open = keel(['check-card', cardFile(card('').replace('paths: \n', '')), '--repo', dir, '--base', 'HEAD']);
+  assert.equal(open.status, 0, `no paths leaves scope off, so the card can edit the file: ${open.stderr}`);
+});
+
+test('REQ-CARD-11 check-card ignores traceability files a repo does not have', () => {
+  const { dir } = fixtureRepo();
+  const r = keel(['check-card', cardFile(card('src/add.js')), '--repo', dir, '--base', 'HEAD']);
+  assert.equal(r.status, 0, r.stderr);
 });
