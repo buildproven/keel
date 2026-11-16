@@ -7,7 +7,8 @@
  * more at the end of the glob, zero or more elsewhere), `[...]` and `[!...]`/`[^...]` classes, `{a,b}` alternatives,
  * and `\` is a path separator. A wildcard never matches a leading dot: `*.js` is not `.eslintrc.js`, `**` does not enter
  * `.git/`, but a class of only a dot (`[.]env`) is a literal dot and does. `!` and `#` at the start are literal. An
- * empty brace alternative leaves no empty segment: `a/{,b}/c` is `a/c` or `a/b/c`.
+ * empty brace alternative leaves no empty segment: `a/{,b}/c` is `a/c` or `a/b/c`. A trailing `/` names a directory and
+ * matches every file under it (`fixtures/` is `fixtures/**`).
  */
 
 // Extglobs and brace ranges outside a class, and POSIX classes inside one: path.matchesGlob reads them, this matcher
@@ -23,7 +24,10 @@ export function globMatches(path, glob) {
 }
 
 function compile(glob) {
-  const globs = expand(glob.replaceAll('\\', '/')).map((alt) => alt.replace(/\/{2,}/g, '/'));
+  // A trailing `/` names a directory: it covers every file under it, as `dir/**` does (a path never ends in `/`).
+  const globs = expand(glob.replaceAll('\\', '/'))
+    .map((alt) => alt.replace(/\/{2,}/g, '/'))
+    .map((alt) => (alt.length > 1 && alt.endsWith('/') ? `${alt}**` : alt));
   if (globs.some(unsupported)) throw new Error(`unsupported glob syntax in "${glob}": use *, **, ?, [...], {a,b}`);
   return new RegExp(`^(?:${globs.map(pattern).join('|')})$`);
 }

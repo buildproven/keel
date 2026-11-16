@@ -99,3 +99,15 @@ test('REQ-PROJ-9 an edit to an existing file that only folds onto a test glob is
     [],
   );
 });
+
+// BUI-1939 (2026-11-15): a card's `paths: skills/x/fixtures/csv/` blocked its own new fixture as out of scope.
+test('REQ-PROJ-9 a glob ending in `/` names a directory and matches every file under it', () => {
+  assert.equal(globMatches('fixtures/csv/a.csv', 'fixtures/csv/'), true);
+  assert.equal(globMatches('fixtures/csv/deep/b.csv', 'fixtures/csv/'), true);
+  assert.equal(globMatches('fixtures/csv-old/a.csv', 'fixtures/csv/'), false);
+  assert.equal(globMatches('fixtures/csv', 'fixtures/csv/'), false);
+  assert.equal(globMatches('fixtures/csv/.hidden', 'fixtures/csv/'), false);
+  assert.equal(globMatches('fixtures/csv/a.csv', 'fixtures\\csv\\'), true);
+  assert.equal(globMatches('b/x.js', '{a,b}/'), true);
+  assert.deepEqual(outOfScope(['src/a.js', 'skills/f/csv/n.csv', 'docs/x.md'], ['src/a.js', 'skills/f/csv/']), ['docs/x.md']);
+});
