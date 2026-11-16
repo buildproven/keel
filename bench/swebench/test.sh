@@ -36,22 +36,41 @@ name="keel-bench-$$-$(date +%s)"
 # `run=$!` has not run yet: the trap then only sets `signal`, and the check right after `run=$!` stops the run.
 # `stop` removes the container whether it is running or only created: a client that has created its container forwards
 # TERM to it instead of exiting, and `docker kill` fails on a container that has not started. So the client gets KILL,
-# and the container is removed again after the client is gone, in case it created the container meanwhile.
+# and the container is removed again after the client is gone, in case it created the container meanwhile. A client
+# killed after it sent its create request leaves the daemon to finish it, so until a removal has worked, `stop` keeps
+# looking for the container for $grace seconds (BUI-1705).
+# `stop` turns off `set -e`: a failed `kill` or `docker rm` ended the handler before it killed the client and before
+# `exit 143` (BUI-1705). A failed removal is reported, and the next removal tries again.
 run=
 watchdog=
 signal=
+removed=
+grace=5
 remove() {
-  if docker container inspect "$name" >/dev/null 2>&1; then docker rm -f "$name" >/dev/null; fi
+  docker container inspect "$name" >/dev/null 2>&1 || return 0
+  # A container that `--rm` removed after the inspect makes `docker rm` fail, but it is gone, so it counts as removed.
+  if docker rm -f "$name" >/dev/null || ! docker container inspect "$name" >/dev/null 2>&1; then
+    removed=1
+  else
+    echo "keel-bench: could not remove container $name" >&2
+  fi
 }
 stop() {
+  set +e
   echo "keel-bench: terminated; killing container $name" >&2
-  for p in $watchdog; do kill "$p" 2>/dev/null || true; done
+  for p in $watchdog; do kill "$p" 2>/dev/null; done
   remove
   for p in $run; do
-    kill -KILL "$p" 2>/dev/null || true
-    wait "$p" 2>/dev/null || true
+    kill -KILL "$p" 2>/dev/null
+    wait "$p" 2>/dev/null
   done
   remove
+  waited=0
+  while [ -z "$removed" ] && [ "$waited" -lt "$grace" ]; do
+    sleep 1
+    remove
+    waited=$((waited + 1))
+  done
   exit 143
 }
 trap 'signal=1; [ -z "$run" ] || stop' TERM INT HUP
