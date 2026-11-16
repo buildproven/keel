@@ -34,7 +34,7 @@ const latestOutcomes = (repo) => new Map([...latestRows(repo)].map(([id, r]) => 
 export const latestPollRow = (repo, id) => latestRows(repo).get(id) ?? null;
 
 /** A `paths` item with a glob character names no one file (REQ-LINEAR-44). */
-const GLOB_CHAR = /[*?[\]{}]/;
+export const GLOB_CHAR = /[*?[\]{}]/;
 
 /** The card's `paths` items that name one file exactly, without a leading `./` or trailing `/` (REQ-LINEAR-44). */
 const exactPath = (p) => p.replace(/^(?:\.\/)+/, '').replace(/\/+$/, '');

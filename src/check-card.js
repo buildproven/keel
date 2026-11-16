@@ -1,7 +1,7 @@
-import { CardError, readCard } from './config.js';
-import { exec, revParse } from './git.js';
+import { CardError, DEFAULTS, readCard } from './config.js';
+import { exec, revParse, showFile } from './git.js';
 import { matchesAny } from './scan.js';
-import { cardFromIssue, exactPaths, markedNew } from './linear.js';
+import { GLOB_CHAR, cardFromIssue, exactPaths, markedNew } from './linear.js';
 import { UsageError } from './usage.js';
 
 /** An argument that looks like a Linear issue ID (REQ-CLI-8, REQ-CARD-7). */
@@ -32,6 +32,30 @@ export function uncoveredTraceability(repo, sha, card) {
   if (!['bug', 'feature'].includes(card.kind) || !card.paths.length) return [];
   const scope = [...card.paths, ...(card.allowEdits ?? [])];
   return TRACEABILITY.filter((p) => exec('git', ['cat-file', '-e', `${sha}:${p}`], repo).status === 0 && !matchesAny(p, scope));
+}
+
+/**
+ * The test files a bug or feature card names in `paths` when none of its scope can take a new test (REQ-CARD-12): every
+ * named test file is on base and locked (the repo lacks `testFilesCommand` or turns `approveAllowEdits` off, so the gate
+ * cannot prove an edit of it, REQ-GATE-44), no `paths` item is marked new or a glob, and no `allowEdits` item is a test. The build then writes its regression test, finds no place for it, and stops as blocked (jobrecon
+ * BUI-1942, 2026-11-16). Empty when the card names no test file, or can add one.
+ */
+export function lockedTestsOnly(repo, sha, card) {
+  if (!['bug', 'feature'].includes(card.kind) || !card.paths.length) return [];
+  // Only these keys are read: a repo whose keel.json is incomplete still gets its cards checked.
+  const text = showFile(sha, 'keel.json', repo);
+  const user = text === null ? {} : JSON.parse(text);
+  const pick = (k) => (Object.hasOwn(user, k) ? user[k] : DEFAULTS[k]);
+  // The gate can prove an edit of an existing test there (REQ-GATE-44), so an existing test file is a home.
+  if (pick('approveAllowEdits') && pick('testFilesCommand')) return [];
+  const testGlobs = pick('testGlobs');
+  const named = exactPaths(card).filter((p) => matchesAny(p, testGlobs));
+  if (!named.length) return [];
+  const home =
+    card.paths.some((p) => GLOB_CHAR.test(p) || p.endsWith('/')) ||
+    named.some((p) => markedNew(card, p)) ||
+    (card.allowEdits ?? []).some((p) => matchesAny(p, testGlobs));
+  return home ? [] : named.filter((p) => exec('git', ['cat-file', '-e', `${sha}:${p}`], repo).status === 0);
 }
 
 /** The card of an open issue, as `keel poll` maps it (REQ-LINEAR-2); a mapping error is a CardError (REQ-CARD-9). */
@@ -70,7 +94,12 @@ export async function checkCard({ repo, base, target, issues, log, isFile = () =
   const trace = uncoveredTraceability(repo, sha, card);
   for (const p of trace)
     log(`check-card ${card.id}: ${p} is a traceability file on base ${at}; add it to paths: a new test must be mapped in it`);
-  if (!missing.length && !trace.length) {
+  const locked = lockedTestsOnly(repo, sha, card);
+  if (locked.length)
+    log(
+      `check-card ${card.id}: every test file in paths is on base ${at} and locked (${locked.join(', ')}); add a new test file marked \`(new)\` to paths for the regression test`,
+    );
+  if (!missing.length && !trace.length && !locked.length) {
     log(`check-card ${card.id}: pass (every exact path is on base ${at} or marked new)`);
     return 0;
   }

@@ -203,3 +203,25 @@ test('REQ-CARD-11 check-card ignores traceability files a repo does not have', (
   const r = keel(['check-card', cardFile(card('src/add.js')), '--repo', dir, '--base', 'HEAD']);
   assert.equal(r.status, 0, r.stderr);
 });
+
+// jobrecon BUI-1942 (2026-11-16): a bug card whose only test path was an existing, locked test file built a fix and a
+// new test file, failed scope on the new file, and stopped as blocked.
+test('REQ-CARD-12 check-card fails a bug or feature card whose test paths are all locked files on base', () => {
+  const { dir } = fixtureRepo();
+  commit(dir, { 'test/add.test.js': 'export {};\n' }, 'test');
+  const locked = keel(['check-card', cardFile(card('src/add.js, test/add.test.js')), '--repo', dir, '--base', 'HEAD']);
+  assert.equal(locked.status, 1, locked.stderr);
+  assert.ok(locked.stderr.includes('locked (test/add.test.js)'), locked.stderr);
+  assert.ok(locked.stderr.includes('(new)'), locked.stderr);
+  for (const paths of ['src/add.js, test/add.test.js, test/fix.test.js (new)', 'src/add.js, test/**', 'src/add.js, test/', 'src/add.js'])
+    assert.equal(keel(['check-card', cardFile(card(paths)), '--repo', dir, '--base', 'HEAD']).status, 0, paths);
+  const allowed = card('src/add.js, test/add.test.js').replace('paths:', 'allowEdits: test/add.test.js\npaths:');
+  assert.equal(keel(['check-card', cardFile(allowed), '--repo', dir, '--base', 'HEAD']).status, 0, 'allowEdits opens the file');
+  const chore = card('src/add.js, test/add.test.js').replace('kind: bug', 'kind: chore');
+  assert.equal(keel(['check-card', cardFile(chore), '--repo', dir, '--base', 'HEAD']).status, 0, 'chore cards need no regression test');
+  commit(dir, { 'keel.json': JSON.stringify({ testFilesCommand: 'node --test {files}' }) }, 'provable');
+  const provable = keel(['check-card', cardFile(card('src/add.js, test/add.test.js')), '--repo', dir, '--base', 'HEAD']);
+  assert.equal(provable.status, 0, `the gate can prove an edit of the existing test (REQ-GATE-44): ${provable.stderr}`);
+  commit(dir, { 'keel.json': JSON.stringify({ testFilesCommand: 'node --test {files}', approveAllowEdits: false }) }, 'off');
+  assert.equal(keel(['check-card', cardFile(card('src/add.js, test/add.test.js')), '--repo', dir, '--base', 'HEAD']).status, 1);
+});
