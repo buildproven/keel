@@ -28,7 +28,8 @@ const TRACEABILITY = ['docs/traceability.json', 'docs/TRACEABILITY.md'];
  * blocked (retire-runway BUI-1939, 2026-11-16).
  */
 export function uncoveredTraceability(repo, sha, card) {
-  if (!['bug', 'feature'].includes(card.kind)) return [];
+  // An empty paths turns the gate's scope check off (src/gate.js), so the card can already edit the file.
+  if (!['bug', 'feature'].includes(card.kind) || !card.paths.length) return [];
   const scope = [...card.paths, ...(card.allowEdits ?? [])];
   return TRACEABILITY.filter((p) => exec('git', ['cat-file', '-e', `${sha}:${p}`], repo).status === 0 && !matchesAny(p, scope));
 }

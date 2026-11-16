@@ -194,6 +194,8 @@ test('REQ-CARD-11 check-card fails a bug or feature card whose paths miss a trac
   assert.equal(ok.status, 0, ok.stderr);
   const docs = keel(['check-card', cardFile(card('src/add.js').replace('kind: bug', 'kind: chore')), '--repo', dir, '--base', 'HEAD']);
   assert.equal(docs.status, 0, docs.stderr);
+  const open = keel(['check-card', cardFile(card('').replace('paths: \n', '')), '--repo', dir, '--base', 'HEAD']);
+  assert.equal(open.status, 0, `no paths leaves scope off, so the card can edit the file: ${open.stderr}`);
 });
 
 test('REQ-CARD-11 check-card ignores traceability files a repo does not have', () => {
