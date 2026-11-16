@@ -1,5 +1,6 @@
 import { CardError, readCard } from './config.js';
 import { exec, revParse } from './git.js';
+import { matchesAny } from './scan.js';
 import { cardFromIssue, exactPaths, markedNew } from './linear.js';
 import { UsageError } from './usage.js';
 
@@ -16,6 +17,20 @@ export function missingOnBase(repo, base, card) {
   if (!wanted.length) return { missing: [] };
   const sha = revParse(base, repo);
   return { sha, missing: wanted.filter((p) => exec('git', ['cat-file', '-e', `${sha}:${p}`], repo).status !== 0) };
+}
+
+/** Generated traceability files a test keeps in step with the test files (REQ-CARD-11). */
+const TRACEABILITY = ['docs/traceability.json', 'docs/TRACEABILITY.md'];
+
+/**
+ * The traceability files on `base` that a bug or feature card's `paths` and `allowEdits` do not cover (REQ-CARD-11): the
+ * build adds a test, the repo's traceability test then fails until the file is regenerated, and the build stops as
+ * blocked (retire-runway BUI-1939, 2026-11-16).
+ */
+export function uncoveredTraceability(repo, sha, card) {
+  if (!['bug', 'feature'].includes(card.kind)) return [];
+  const scope = [...card.paths, ...(card.allowEdits ?? [])];
+  return TRACEABILITY.filter((p) => exec('git', ['cat-file', '-e', `${sha}:${p}`], repo).status === 0 && !matchesAny(p, scope));
 }
 
 /** The card of an open issue, as `keel poll` maps it (REQ-LINEAR-2); a mapping error is a CardError (REQ-CARD-9). */
@@ -49,8 +64,12 @@ export async function checkCard({ repo, base, target, issues, log, isFile = () =
   if (exec('git', ['rev-parse', '--verify', '--quiet', '--end-of-options', `${base}^{commit}`], repo).status !== 0)
     throw new UsageError(`check-card: --base ${base} is not a commit in ${repo}`);
   const { missing } = missingOnBase(repo, base, card);
-  const at = revParse(base, repo).slice(0, 12);
-  if (!missing.length) {
+  const sha = revParse(base, repo);
+  const at = sha.slice(0, 12);
+  const trace = uncoveredTraceability(repo, sha, card);
+  for (const p of trace)
+    log(`check-card ${card.id}: ${p} is a traceability file on base ${at}; add it to paths: a new test must be mapped in it`);
+  if (!missing.length && !trace.length) {
     log(`check-card ${card.id}: pass (every exact path is on base ${at} or marked new)`);
     return 0;
   }
