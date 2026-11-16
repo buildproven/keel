@@ -219,4 +219,9 @@ test('REQ-CARD-12 check-card fails a bug or feature card whose test paths are al
   assert.equal(keel(['check-card', cardFile(allowed), '--repo', dir, '--base', 'HEAD']).status, 0, 'allowEdits opens the file');
   const chore = card('src/add.js, test/add.test.js').replace('kind: bug', 'kind: chore');
   assert.equal(keel(['check-card', cardFile(chore), '--repo', dir, '--base', 'HEAD']).status, 0, 'chore cards need no regression test');
+  commit(dir, { 'keel.json': JSON.stringify({ testFilesCommand: 'node --test {files}' }) }, 'provable');
+  const provable = keel(['check-card', cardFile(card('src/add.js, test/add.test.js')), '--repo', dir, '--base', 'HEAD']);
+  assert.equal(provable.status, 0, `the gate can prove an edit of the existing test (REQ-GATE-44): ${provable.stderr}`);
+  commit(dir, { 'keel.json': JSON.stringify({ testFilesCommand: 'node --test {files}', approveAllowEdits: false }) }, 'off');
+  assert.equal(keel(['check-card', cardFile(card('src/add.js, test/add.test.js')), '--repo', dir, '--base', 'HEAD']).status, 1);
 });

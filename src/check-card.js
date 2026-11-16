@@ -36,15 +36,19 @@ export function uncoveredTraceability(repo, sha, card) {
 
 /**
  * The test files a bug or feature card names in `paths` when none of its scope can take a new test (REQ-CARD-12): every
- * named test file is on base, test files are locked, and no `paths` item is marked new or a glob, and no `allowEdits`
- * item is a test. The build then writes its regression test, finds no place for it, and stops as blocked (jobrecon
+ * named test file is on base and locked (the repo lacks `testFilesCommand` or turns `approveAllowEdits` off, so the gate
+ * cannot prove an edit of it, REQ-GATE-44), no `paths` item is marked new or a glob, and no `allowEdits` item is a test. The build then writes its regression test, finds no place for it, and stops as blocked (jobrecon
  * BUI-1942, 2026-11-16). Empty when the card names no test file, or can add one.
  */
 export function lockedTestsOnly(repo, sha, card) {
   if (!['bug', 'feature'].includes(card.kind) || !card.paths.length) return [];
-  // Only testGlobs is read: a repo whose keel.json is incomplete still gets its cards checked.
+  // Only these keys are read: a repo whose keel.json is incomplete still gets its cards checked.
   const text = showFile(sha, 'keel.json', repo);
-  const testGlobs = (text === null ? undefined : JSON.parse(text).testGlobs) ?? DEFAULTS.testGlobs;
+  const user = text === null ? {} : JSON.parse(text);
+  const pick = (k) => (Object.hasOwn(user, k) ? user[k] : DEFAULTS[k]);
+  // The gate can prove an edit of an existing test there (REQ-GATE-44), so an existing test file is a home.
+  if (pick('approveAllowEdits') && pick('testFilesCommand')) return [];
+  const testGlobs = pick('testGlobs');
   const named = exactPaths(card).filter((p) => matchesAny(p, testGlobs));
   if (!named.length) return [];
   const home =

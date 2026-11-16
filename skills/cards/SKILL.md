@@ -91,9 +91,9 @@ issues; `keel poll` (nightly, or `keel poll --issue <ID> --merge`) builds them.
   locked, and `allowEdits` would open them.
 - When the repo has a generated traceability file (such as `docs/TRACEABILITY.md`) that a test keeps in step with
   the tests, add it to `paths`: a card that adds a test must regenerate it, or the build stops as blocked.
-- Name a new test file, marked `(new)`, for the bug or feature's regression tests. Existing test files are locked,
-  so a card whose only test path already exists has nowhere to put a test and stops as blocked (`keel check-card`,
-  REQ-CARD-12).
+- Name a new test file, marked `(new)`, for the bug or feature's regression tests. Without `testFilesCommand` in
+  keel.json, an existing test file stays locked, so a card whose only test path already exists stops as blocked
+  (`keel check-card`, REQ-CARD-12).
 - Every requirement has an acceptance line a test can check. If you cannot write one,
   the card is not ready: ask, or mark it `no-keel`.
 - Protected paths (auth, payments, migrations, infra) need a held-out-test-friendly
