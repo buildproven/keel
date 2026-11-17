@@ -43,11 +43,49 @@ function parseNote(raw) {
   return Object.assign({}, ...lines.map((l) => JSON.parse(l)));
 }
 
-/** The watchdog process: run the command with this process's stdio, kill it with SIGTERM after `timeoutMs` awake. */
+/**
+ * The watchdog process: run the command, kill it with SIGTERM after `timeoutMs` awake. The command's stdin, stdout, and
+ * stderr go through this process, never straight to the caller, so that on a timeout (or a signal from the caller, such
+ * as `spawnSync`'s ENOBUFS kill) the watchdog can drop them and exit as `spawnSync`'s own timeout does: a process the
+ * command left behind may hold the command's pipes, but never the caller's, so the caller is not kept waiting.
+ */
 function watch(timeoutMs, cmd, args) {
   const tickMs = tickFor(timeoutMs);
-  const child = spawn(cmd, args, { stdio: 'inherit' });
-  const forward = Object.fromEntries(FORWARD.map((s) => [s, () => child.kill(s)]));
+  const child = spawn(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+  const note = (value) => writeSync(3, `${JSON.stringify(value)}\n`);
+  let stopped = false;
+  const stop = () => {
+    stopped = true;
+    process.stdin.destroy();
+    child.stdout.destroy();
+    child.stderr.destroy();
+  };
+  // The caller stopped reading (it hit maxBuffer and killed this process): copying more output is pointless.
+  const copy = (fd) => (chunk) => {
+    if (stopped) return;
+    try {
+      writeSync(fd, chunk);
+    } catch (e) {
+      if (e.code !== 'EPIPE') throw e; // only a closed reader is expected; anything else is a harness fault
+      stop();
+    }
+  };
+  child.stdout.on('data', copy(1));
+  child.stderr.on('data', copy(2));
+  // A command that exits before it reads all its input breaks its stdin pipe; its exit says what happened (REQ-RUN-29).
+  child.stdin.on('error', (e) => {
+    if (e.code !== 'EPIPE') throw e;
+  });
+  process.stdin.pipe(child.stdin);
+  const forward = Object.fromEntries(
+    FORWARD.map((s) => [
+      s,
+      () => {
+        child.kill(s);
+        stop();
+      },
+    ]),
+  );
   for (const s of FORWARD) process.on(s, forward[s]);
   let awake = 0;
   let last = performance.now();
@@ -58,20 +96,22 @@ function watch(timeoutMs, cmd, args) {
     last = now;
     if (awake >= timeoutMs && !fired) {
       fired = true;
-      writeSync(3, `${JSON.stringify({ timedOut: true })}\n`);
-      child.kill('SIGTERM');
+      note({ timedOut: true });
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
+      stop();
     }
   }, tickMs);
   child.on('error', (e) => {
     if (child.pid !== undefined) throw e; // a failure after start (a kill that failed) is a harness fault, shown as a crash
     clearInterval(timer);
-    writeSync(3, `${JSON.stringify({ error: e.code })}\n`);
+    note({ error: e.code });
     process.exit(127);
   });
-  child.on('exit', (code, signal) => {
+  // `close` comes once the command has exited and its output pipes are closed, or dropped by stop().
+  child.on('close', (code, signal) => {
     clearInterval(timer);
     for (const s of FORWARD) process.off(s, forward[s]);
-    writeSync(3, `${JSON.stringify({ exit: { code, signal } })}\n`);
+    note({ exit: { code, signal } });
     process.exit(signal ? 128 + constants.signals[signal] : code); // as a shell reports it; the caller reads the note
   });
 }
