@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { spawnAwake } from './awake.js';
 import { missingSignIn, workerEnv } from './env.js';
 
 /** Build the provider command for one tier. `exec` runs any CLI; the prompt goes to its stdin. */
@@ -189,14 +189,8 @@ export function runWorker(tier, prompt, cwd, config, resume = null) {
   delete env.KEEL_RESUME; // only Keel decides what a worker continues; an inherited value would resume a stranger's session
   if (resume && tier.provider === 'exec') env.KEEL_RESUME = resume;
   const started = Date.now();
-  const r = spawnSync(cmd, args, {
-    cwd,
-    input,
-    env,
-    encoding: 'utf8',
-    maxBuffer: 256 * 1024 * 1024,
-    timeout: config.workerTimeoutSec * 1000,
-  });
+  // REQ-GATE-67: `workerTimeoutSec` counts only time the machine is awake.
+  const r = spawnAwake(cmd, args, { cwd, input, env, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 }, config.workerTimeoutSec * 1000);
   const parsed = parseUsage(tier.provider, r.stdout ?? '');
   let output = `${r.stdout ?? ''}${r.stderr ?? ''}`.slice(-4000);
   let status = 'ok';

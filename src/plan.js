@@ -1,7 +1,7 @@
-import { spawnSync } from 'node:child_process';
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { spawnAwake } from './awake.js';
 import { workerEnv } from './env.js';
 
 /**
@@ -83,16 +83,16 @@ function newestCodexLog(home) {
 
 /** A one-line Claude call whose stream carries the plan windows; it costs a few cents of window at most. */
 function probeClaude(tier, config) {
-  const r = spawnSync(
+  const r = spawnAwake(
     'claude',
     ['-p', '--output-format', 'stream-json', '--verbose', '--model', tier.model, '--effort', 'low', ...(config.workerArgs?.claude ?? [])],
     {
       input: 'Reply with the word ok.',
       env: workerEnv('claude', process.env, config.workerEnvAllow), // REQ-RUN-50: the probe is the Claude CLI
       encoding: 'utf8',
-      timeout: 60_000,
       maxBuffer: 16 * 1024 * 1024,
     },
+    60_000, // REQ-GATE-67: awake time
   );
   return r.stdout ?? '';
 }
