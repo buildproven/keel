@@ -52,6 +52,7 @@ function parseNote(raw) {
 function watch(timeoutMs, cmd, args) {
   const tickMs = tickFor(timeoutMs);
   const child = spawn(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+  // At most three short lines in all, far under the 4096 bytes a pipe always holds, so this write never waits.
   const note = (value) => writeSync(3, `${JSON.stringify(value)}\n`);
   let stopped = false;
   const stop = () => {
@@ -60,18 +61,31 @@ function watch(timeoutMs, cmd, args) {
     child.stdout.destroy();
     child.stderr.destroy();
   };
-  // The caller stopped reading (it hit maxBuffer and killed this process): copying more output is pointless.
-  const copy = (fd) => (chunk) => {
-    if (stopped) return;
-    try {
-      writeSync(fd, chunk);
-    } catch (e) {
-      if (e.code !== 'EPIPE') throw e; // only a closed reader is expected; anything else is a harness fault
+  // Output goes through stream writes, which wait for a full pipe; `pending` counts the writes not yet done, and the
+  // child's stream pauses while the caller's pipe is full. A closed reader (the caller hit maxBuffer and killed this
+  // process) ends the copying; any other write error is a harness fault and crashes the watchdog visibly.
+  let pending = 0;
+  let closed = null;
+  const copy = (from, to) => {
+    to.on('error', (e) => {
+      if (e.code !== 'EPIPE') throw e;
       stop();
-    }
+    });
+    from.on('data', (chunk) => {
+      if (stopped) return;
+      pending += 1;
+      const room = to.write(chunk, () => {
+        pending -= 1;
+        finish();
+      });
+      if (!room) {
+        from.pause();
+        to.once('drain', () => from.resume());
+      }
+    });
   };
-  child.stdout.on('data', copy(1));
-  child.stderr.on('data', copy(2));
+  copy(child.stdout, process.stdout);
+  copy(child.stderr, process.stderr);
   // A command that exits before it reads all its input breaks its stdin pipe; its exit says what happened (REQ-RUN-29).
   child.stdin.on('error', (e) => {
     if (e.code !== 'EPIPE') throw e;
@@ -107,12 +121,19 @@ function watch(timeoutMs, cmd, args) {
     note({ error: e.code });
     process.exit(127);
   });
-  // `close` comes once the command has exited and its output pipes are closed, or dropped by stop().
+  // `close` comes once the command has exited and its output pipes are closed, or dropped by stop(). The watchdog exits
+  // when every write of the output it read is done, so none is lost.
+  const finish = () => {
+    if (!closed || pending > 0) return;
+    const { code, signal } = closed;
+    note({ exit: { code, signal } });
+    process.exit(signal ? 128 + constants.signals[signal] : code); // as a shell reports it; the caller reads the note
+  };
   child.on('close', (code, signal) => {
     clearInterval(timer);
     for (const s of FORWARD) process.off(s, forward[s]);
-    note({ exit: { code, signal } });
-    process.exit(signal ? 128 + constants.signals[signal] : code); // as a shell reports it; the caller reads the note
+    closed = { code, signal };
+    finish();
   });
 }
 
