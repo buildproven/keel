@@ -2,12 +2,16 @@ import { spawnSync } from 'node:child_process';
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { spawnAwake } from './awake.js';
 
 const MAX_BUFFER = 64 * 1024 * 1024;
 
-/** Run a configured shell command (repo checks). Never throws on a non-zero exit; the caller decides. */
+/**
+ * Run a configured shell command (repo checks). Never throws on a non-zero exit; the caller decides. The timeout counts
+ * only time the machine is awake (REQ-GATE-67).
+ */
 export function sh(command, cwd, { timeoutSec = 900, env = process.env } = {}) {
-  const r = spawnSync(command, { cwd, env, shell: true, encoding: 'utf8', maxBuffer: MAX_BUFFER, timeout: timeoutSec * 1000 });
+  const r = spawnAwake('/bin/sh', ['-c', command], { cwd, env, encoding: 'utf8', maxBuffer: MAX_BUFFER }, timeoutSec * 1000);
   return { code: r.status, signal: r.signal, out: `${r.stdout ?? ''}${r.stderr ?? ''}`, timedOut: r.error?.code === 'ETIMEDOUT' };
 }
 
