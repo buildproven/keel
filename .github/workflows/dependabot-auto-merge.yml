@@ -1,0 +1,39 @@
+# Dependabot auto-merge (machine-setup REQ-DEPS-4). Copy this file unchanged to .github/workflows/.
+# It turns on GitHub auto-merge (squash) for a Dependabot PR whose update type is patch or minor;
+# branch protection and required CI then decide when it merges. Majors stay open for a card.
+# pull_request_target gives the write token auto-merge needs. It never checks out or runs PR code,
+# so the token never meets dependency code. The runner image has curl and jq, not gh.
+name: Dependabot auto-merge
+
+on: pull_request_target
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    timeout-minutes: 5
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    steps:
+      - name: Dependabot metadata
+        id: meta
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+      - name: Turn on auto-merge for a patch or minor update
+        if: steps.meta.outputs.update-type == 'version-update:semver-patch' || steps.meta.outputs.update-type == 'version-update:semver-minor'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_ID: ${{ github.event.pull_request.node_id }}
+        run: |
+          set -euo pipefail
+          body=$(jq -n --arg id "$PR_ID" '{
+            query: "mutation($id: ID!) { enablePullRequestAutoMerge(input: {pullRequestId: $id, mergeMethod: SQUASH}) { pullRequest { number } } }",
+            variables: {id: $id}}')
+          resp=$(curl -fsS -X POST https://api.github.com/graphql \
+            -H "Authorization: bearer $GH_TOKEN" -H 'Content-Type: application/json' -d "$body")
+          if ! jq -e '.errors == null' <<<"$resp" >/dev/null; then
+            echo "::error::auto-merge not turned on: $(jq -c '.errors' <<<"$resp")"
+            exit 1
+          fi
+          echo "auto-merge (squash) on for PR $(jq -r '.data.enablePullRequestAutoMerge.pullRequest.number' <<<"$resp")"
