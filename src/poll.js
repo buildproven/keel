@@ -415,8 +415,22 @@ async function fileFollowUps({ repo, project, config, client, log, base = 'HEAD'
   if (!pending.length || !(config.followUpsPerDay > 0)) return {};
   const filed = new Map(); // source → new issue IDs
   const sourceOpen = new Map(); // source → still open, so its follow-up waits for it (REQ-LINEAR-28)
+  // A source Linear no longer finds (archived or deleted) is not open: its follow-ups wait for nothing, are filed in the
+  // polled project with no source, and send it no notice (REQ-LINEAR-52). Any other error is the item's filing error.
+  const gone = new Set();
   const isOpen = async (id) => {
-    if (!sourceOpen.has(id)) sourceOpen.set(id, !['completed', 'canceled'].includes(await client.stateType(id)));
+    if (!sourceOpen.has(id)) {
+      let open;
+      try {
+        open = !['completed', 'canceled'].includes(await client.stateType(id));
+      } catch (e) {
+        if (networkFailure(e) || !ARCHIVED.test(e.message)) throw e;
+        gone.add(id);
+        open = false;
+        log(`follow-up source ${id} not found in Linear; filing its follow-ups in ${project}`);
+      }
+      sourceOpen.set(id, open);
+    }
     return sourceOpen.get(id);
   };
   const errors = [];
@@ -425,6 +439,7 @@ async function fileFollowUps({ repo, project, config, client, log, base = 'HEAD'
   // `Entity not found`: its notice is skipped and logged, not an error (REQ-LINEAR-49); any other error stays one
   // (REQ-LINEAR-50).
   const notify = async (id, body) => {
+    if (gone.has(id)) return; // REQ-LINEAR-52
     try {
       await client.comment(id, body);
     } catch (e) {
@@ -528,7 +543,9 @@ async function fileFollowUps({ repo, project, config, client, log, base = 'HEAD'
         );
         // A card takes the finding only when its kind is the finding's (a bug never runs as a chore without red proof),
         // and when the finding's open source already blocks it, so the card still waits for that source (REQ-LINEAR-28).
+        current = f; // a Linear error on the item's source counts the item a try (REQ-LINEAR-52)
         const waits = f.source && (await isOpen(f.source));
+        current = null;
         let into = null;
         let text = null;
         for (const c of cards)
@@ -592,7 +609,11 @@ async function fileFollowUps({ repo, project, config, client, log, base = 'HEAD'
       const description = home
         ? followUpText(f.source, { ...f, cite: undefined }, home.config, home.repo, 'HEAD', basename(resolve(repo)))
         : followUpText(f.source, f, config, repo, base);
-      const id = await client.createIssue(home ? null : f.source, { title: f.title.trim(), description, priority: 4, ...blockedBy }, dest);
+      const id = await client.createIssue(
+        home || gone.has(f.source) ? null : f.source,
+        { title: f.title.trim(), description, priority: 4, ...blockedBy },
+        dest,
+      );
       current = null;
       if (unarchived !== null) unarchived++;
       if (unbuilt.has(dest)) unbuilt.set(dest, unbuilt.get(dest) + 1);
