@@ -180,7 +180,8 @@ export function packageToolConfigChanged(before, after) {
 
 /** True when package.json "scripts" differ between two versions (null = file absent). */
 export function scriptsChanged(before, after) {
-  const scripts = (text) => JSON.stringify(text === null ? null : (JSON.parse(text).scripts ?? {}));
+  // A missing file has no scripts, so adding or removing a package.json without scripts changes none (REQ-GATE-4).
+  const scripts = (text) => JSON.stringify(text === null ? {} : (JSON.parse(text).scripts ?? {}));
   return scripts(before) !== scripts(after);
 }
 

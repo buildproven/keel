@@ -47,6 +47,13 @@ test('REQ-GATE-4 detects package.json script changes, ignores other fields', () 
   assert.equal(scriptsChanged(null, pkg({ test: 'x' })), true);
 });
 
+// machine-setup 2026-11-16: a new mcp-servers/raindrop/package.json with no scripts failed package-scripts-changed.
+test('REQ-GATE-4 a package.json added or removed without scripts changes no scripts', () => {
+  assert.equal(scriptsChanged(null, JSON.stringify({ name: 'x', dependencies: { a: '1' } })), false);
+  assert.equal(scriptsChanged(JSON.stringify({ name: 'x' }), null), false);
+  assert.equal(scriptsChanged(JSON.stringify({ name: 'x', scripts: { test: 'x' } }), null), true);
+});
+
 test('REQ-GATE-4 locks only files called by the scripts the checks run', () => {
   const pkg = JSON.stringify({
     scripts: { test: 'node scripts/check.mjs', pretest: 'sh ./tools/prep.sh', gate: 'node bin/keel.js gate', lint: 'eslint .' },
