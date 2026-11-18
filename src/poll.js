@@ -1,5 +1,5 @@
 import { holdsUncommitted, removeParkedWorktree } from './clean.js';
-import { exec, isDirty, revParse, showFile } from './git.js';
+import { exec, isDirty, revParse, showFile, withTempWorktree } from './git.js';
 import { ALREADY_SATISFIED, verifyDone } from './done.js';
 import { missingOnBase } from './check-card.js';
 import {
@@ -17,10 +17,12 @@ import {
   textPrerequisites,
   titleKey,
 } from './linear.js';
-import { realpathSync } from 'node:fs';
-import { basename, resolve } from 'node:path';
+import { mkdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from './config.js';
+import { branchCard } from './defaults.js';
+import { keelGateRequired } from './doctor.js';
 import { cardLease, describeConflicts } from './lease.js';
 import { readLedger, spentToday, stateDir } from './ledger.js';
 import { finishSelfMerges, recordSelfMerge } from './merge.js';
@@ -29,6 +31,7 @@ import { networkFailure } from './network.js';
 import { nextReset, planLine, readPlan, reservedProviders, savePlan } from './plan.js';
 import { run } from './run.js';
 import { locksAny, matchesAny } from './scan.js';
+import { GATE_CONTEXT, gateDescription, gateState, postGateStatus } from './status.js';
 import { UsageError } from './usage.js';
 
 // Stops caused by a provider, not by the card or the code (REQ-LINEAR-19).
@@ -38,15 +41,17 @@ const DEFERRED_STOPS = new Set([...TRANSIENT_STOPS, 'reserved']);
 
 /**
  * Exit code of `keel poll` and `keel run <ISSUE-ID>` (REQ-RUN-20): 1 when a run failed, was blocked,
- * lost its PR, or its auto-merge call or a self-merge (REQ-MERGE-3) failed; 3 when budget, a provider, a path lease
+ * lost its PR, or its auto-merge call or a self-merge (REQ-MERGE-3) failed, or a Dependabot gate could not run or
+ * report (REQ-LINEAR-53, REQ-LINEAR-54); 3 when budget, a provider, a path lease
  * (REQ-LEASE-3), or a path missing on base (REQ-LINEAR-44) deferred work; else 0.
  */
 export function pollExitCode(results) {
   if (
     results.some(
       (r) =>
-        ['failed', 'blocked', 'needsHuman', 'prFailed', 'followUpsFailed', 'mergeFailed', 'closeFailed'].includes(r.outcome) ||
-        r.result?.merge?.state === 'failed',
+        ['failed', 'blocked', 'needsHuman', 'prFailed', 'followUpsFailed', 'mergeFailed', 'closeFailed', 'dependabotFailed'].includes(
+          r.outcome,
+        ) || r.result?.merge?.state === 'failed',
     )
   )
     return 1;
@@ -746,6 +751,138 @@ async function rebuildConflicts({ repo, client, log }) {
   }
 }
 
+const DEPENDABOT = 'dependabot[bot]';
+
+/**
+ * Gate one head with `keel gate --json` (REQ-LINEAR-53), the same gate a person runs by hand: `repo` is a checkout at
+ * the head, `card` the card derived from its commit types. The card file goes in the state dir, outside the checkout,
+ * so the tree stays clean. Returns `{ receipt }`, or `{ error }` when the gate did not run to a receipt.
+ */
+export function gateHead({ repo, base, card }) {
+  const dir = join(stateDir(), 'dependabot');
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, `${card.id}.md`);
+  writeFileSync(file, `# ${card.id}\nkind: ${card.kind}\nsize: ${card.size}\n`);
+  const r = exec(
+    process.execPath,
+    [join(KEEL_ROOT, 'bin', 'keel.js'), 'gate', '--json', '--base', base, '--card', file, '--repo', repo],
+    repo,
+  );
+  // Exit 0 or 1 with the receipt on stdout is a gate result; anything else (a usage error, a crash) is not.
+  if ((r.status === 0 || r.status === 1) && r.stdout.trim().startsWith('{')) return { receipt: JSON.parse(r.stdout) };
+  return { error: `keel gate exited ${r.status ?? r.signal}: ${`${r.stderr ?? ''}${r.error?.message ?? ''}`.trim().slice(-1500)}` };
+}
+
+/** Open PRs by Dependabot, a page of 100 at a time: number, base branch, and head SHA (REQ-LINEAR-53). */
+function dependabotPrs(repo, log) {
+  const r = exec(
+    'gh',
+    [
+      'api',
+      '--paginate',
+      'repos/{owner}/{repo}/pulls?state=open&per_page=100',
+      '--jq',
+      '.[] | {number, login: .user.login, base: .base.ref, head: .head.sha}',
+    ],
+    repo,
+  );
+  if (r.status !== 0) {
+    log(`dependabot check skipped: gh api pulls failed: ${`${r.stdout}${r.stderr}`.trim().slice(0, 300)}`);
+    return [];
+  }
+  return r.stdout
+    .split('\n')
+    .filter((l) => l.trim())
+    .map((l) => JSON.parse(l))
+    .filter((p) => p.login === DEPENDABOT);
+}
+
+/** Whether `sha` has a `keel/gate` status (REQ-LINEAR-55); null when GitHub could not say. */
+function hasGateStatus(repo, sha) {
+  const r = exec('gh', ['api', '--paginate', `repos/{owner}/{repo}/commits/${sha}/statuses`, '--jq', '.[].context'], repo);
+  if (r.status !== 0) return null;
+  return r.stdout.split('\n').some((l) => l.trim() === GATE_CONTEXT);
+}
+
+/** The PR comment for a head that failed the gate (REQ-LINEAR-54): the failing stage and each failed stage's rules. */
+function dependabotFailedComment(receipt, config) {
+  const stages = receipt.results
+    .filter((r) => !r.pass)
+    .map((r) => `- ${r.name}: ${[...new Set((r.problems ?? []).map((p) => p.rule))].join(', ') || '(no rule)'}`);
+  return `keel: the gate ${gateState(receipt) === 'error' ? 'could not judge' : 'failed on'} ${receipt.head.slice(0, 12)}: ${gateDescription(receipt, config)}.\n\n${stages.join('\n')}\n\nThe PR stays open. Keel never pushes to a Dependabot branch: fix the cause on the base branch, then have Dependabot rebase this PR; its new head is gated by the next poll.`;
+}
+
+/**
+ * Gate each open Dependabot PR whose base branch requires `keel/gate` and whose head has no `keel/gate` status yet
+ * (REQ-LINEAR-53, REQ-LINEAR-55): nothing else posts that status, so without it the PR never merges. The head is
+ * gated in a temporary detached checkout against the PR's base on origin, and its status posted on that SHA. A failing
+ * gate is commented on the PR, which stays open; Keel never pushes to the Dependabot branch (REQ-LINEAR-54). Without
+ * an origin remote, or with `gateFn` null (a test fake of other behavior), nothing is checked.
+ */
+function gateDependabot({ repo, config, log, gateFn }) {
+  if (!gateFn || exec('git', ['remote', 'get-url', 'origin'], repo).status !== 0) return [];
+  const results = [];
+  const required = new Map(); // base branch → whether it requires keel/gate
+  for (const pr of dependabotPrs(repo, log)) {
+    const label = `PR #${pr.number}`;
+    if (!required.has(pr.base)) required.set(pr.base, keelGateRequired(repo, pr.base));
+    if (!required.get(pr.base)) continue;
+    const gated = hasGateStatus(repo, pr.head);
+    if (gated === null) {
+      log(`${label}: could not read the statuses of ${pr.head}; not gated this poll`);
+      continue;
+    }
+    if (gated) continue;
+    const fetched = exec('git', ['fetch', '--quiet', 'origin', pr.base, `refs/pull/${pr.number}/head`], repo);
+    if (fetched.status !== 0) {
+      log(`${label}: git fetch failed: ${fetched.stderr.trim().slice(0, 300)}; not gated this poll`);
+      continue;
+    }
+    // A head pushed since the list was read is not the one fetched; the next poll gates the new head.
+    if (exec('git', ['cat-file', '-e', `${pr.head}^{commit}`], repo).status !== 0) {
+      log(`${label}: head ${pr.head} moved before it was fetched; the next poll gates the new head`);
+      continue;
+    }
+    const base = `origin/${pr.base}`;
+    log(`${label}: gating Dependabot head ${pr.head} against ${base}`);
+    const outcome = withTempWorktree(repo, pr.head, (wt) => {
+      const card = { ...dependabotCard(wt, base), id: `dependabot-${pr.number}-${pr.head.slice(0, 12)}` };
+      const gate = gateFn({ repo: wt, base, card, log });
+      if (gate.error) return { outcome: 'dependabotFailed', detail: gate.error };
+      const { receipt } = gate;
+      if (receipt.head !== pr.head) return { outcome: 'dependabotFailed', detail: `the gate ran on ${receipt.head}, not ${pr.head}` };
+      const status = postGateStatus(wt, receipt, config);
+      if (!status.ok) return { outcome: 'dependabotFailed', detail: `${GATE_CONTEXT} status not posted: ${status.out.slice(-500)}` };
+      log(`${label}: status ${GATE_CONTEXT} ${gateState(receipt)} on ${receipt.head}`);
+      if (receipt.pass) return { outcome: 'dependabotGated', detail: { state: gateState(receipt) } };
+      const commented = exec('gh', ['pr', 'comment', String(pr.number), '--body', dependabotFailedComment(receipt, config)], wt);
+      if (commented.status !== 0)
+        return {
+          outcome: 'dependabotFailed',
+          detail: `gate failed; PR comment failed: ${`${commented.stdout}${commented.stderr}`.trim().slice(0, 300)}`,
+        };
+      return { outcome: 'dependabotGated', detail: { state: gateState(receipt) } };
+    });
+    if (outcome.outcome === 'dependabotFailed') log(`${label}: ${outcome.detail}`);
+    results.push({ issue: label, ...outcome });
+  }
+  return results;
+}
+
+/**
+ * The card of a Dependabot head (REQ-LINEAR-53): kind from its commit types, as `keel gate` without `--card` derives
+ * it; a head with no conventional commit type, as Dependabot writes by default ("Bump x from 1 to 2"), is a chore.
+ */
+function dependabotCard(wt, base) {
+  try {
+    return branchCard(wt, base);
+  } catch (e) {
+    // REQ-LINEAR-53: only the "no conventional commit type" usage error means kind chore; any other error goes on.
+    if (!(e instanceof UsageError)) throw e;
+    return { kind: 'chore', size: 'S', paths: [], allowEdits: [], acceptance: [], heldOut: null };
+  }
+}
+
 /** The worktree that has `branch` checked out, or null. */
 function worktreeOf(repo, branch) {
   const out = exec('git', ['worktree', 'list', '--porcelain'], repo).stdout;
@@ -1131,6 +1268,8 @@ export async function poll({
   refineFn = runFn === run ? refineIssue : null,
   // Plan windows are read for a real run only: a test that injects `runFn` injects `planFn` too (REQ-PLAN-3).
   planFn = runFn === run ? readPlan : null,
+  // Dependabot heads are gated for a real run only: a test that injects `runFn` injects `gateFn` too (REQ-LINEAR-53).
+  gateFn = runFn === run ? gateHead : null,
   // The workspace's issue count is read for a real run only: a test that injects `runFn` injects `capacityFn` too
   // (REQ-LINEAR-37).
   capacityFn = runFn === run ? () => client.capacity() : null,
@@ -1158,6 +1297,8 @@ export async function poll({
   if (merge) results.push(...(await finishSelfMerges({ repo, config, client, log })));
   results.push(...filingFailed(await fileFollowUps({ repo, project, config, client, log, base, capacityFn, keelRoot }))); // what an earlier poll could not file
   await rebuildConflicts({ repo, client, log });
+  // Dependabot PRs where keel/gate is required get it, so their auto-merge can go through (REQ-LINEAR-53).
+  results.push(...gateDependabot({ repo, config, log, gateFn }));
   if (only) {
     const budget = overBudget({ repo, config, log });
     const plan = budget ? {} : planCheck({ config, log, planFn });
