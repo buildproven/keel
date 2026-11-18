@@ -845,24 +845,29 @@ function gateDependabot({ repo, config, log, gateFn }) {
     }
     const base = `origin/${pr.base}`;
     log(`${label}: gating Dependabot head ${pr.head} against ${base}`);
-    const outcome = withTempWorktree(repo, pr.head, (wt) => {
-      const card = { ...dependabotCard(wt, base), id: `dependabot-${pr.number}-${pr.head.slice(0, 12)}` };
-      const gate = gateFn({ repo: wt, base, card, log });
-      if (gate.error) return { outcome: 'dependabotFailed', detail: gate.error };
-      const { receipt } = gate;
-      if (receipt.head !== pr.head) return { outcome: 'dependabotFailed', detail: `the gate ran on ${receipt.head}, not ${pr.head}` };
-      const status = postGateStatus(wt, receipt, config);
-      if (!status.ok) return { outcome: 'dependabotFailed', detail: `${GATE_CONTEXT} status not posted: ${status.out.slice(-500)}` };
-      log(`${label}: status ${GATE_CONTEXT} ${gateState(receipt)} on ${receipt.head}`);
-      if (receipt.pass) return { outcome: 'dependabotGated', detail: { state: gateState(receipt) } };
-      const commented = exec('gh', ['pr', 'comment', String(pr.number), '--body', dependabotFailedComment(receipt, config)], wt);
-      if (commented.status !== 0)
-        return {
-          outcome: 'dependabotFailed',
-          detail: `gate failed; PR comment failed: ${`${commented.stdout}${commented.stderr}`.trim().slice(0, 300)}`,
-        };
-      return { outcome: 'dependabotGated', detail: { state: gateState(receipt) } };
-    });
+    let outcome;
+    try {
+      outcome = withTempWorktree(repo, pr.head, (wt) => {
+        const card = { ...dependabotCard(wt, base), id: `dependabot-${pr.number}-${pr.head.slice(0, 12)}` };
+        const gate = gateFn({ repo: wt, base, card, log });
+        if (gate.error) return { outcome: 'dependabotFailed', detail: gate.error };
+        const { receipt } = gate;
+        if (receipt.head !== pr.head) return { outcome: 'dependabotFailed', detail: `the gate ran on ${receipt.head}, not ${pr.head}` };
+        const status = postGateStatus(wt, receipt, config);
+        if (!status.ok) return { outcome: 'dependabotFailed', detail: `${GATE_CONTEXT} status not posted: ${status.out.slice(-500)}` };
+        log(`${label}: status ${GATE_CONTEXT} ${gateState(receipt)} on ${receipt.head}`);
+        if (receipt.pass) return { outcome: 'dependabotGated', detail: { state: gateState(receipt) } };
+        const commented = exec('gh', ['pr', 'comment', String(pr.number), '--body', dependabotFailedComment(receipt, config)], wt);
+        if (commented.status !== 0)
+          return {
+            outcome: 'dependabotFailed',
+            detail: `gate failed; PR comment failed: ${`${commented.stdout}${commented.stderr}`.trim().slice(0, 300)}`,
+          };
+        return { outcome: 'dependabotGated', detail: { state: gateState(receipt) } };
+      });
+    } catch (e) {
+      outcome = { outcome: 'dependabotFailed', detail: `gate could not run: ${e.message}` };
+    }
     if (outcome.outcome === 'dependabotFailed') log(`${label}: ${outcome.detail}`);
     results.push({ issue: label, ...outcome });
   }
@@ -1268,8 +1273,9 @@ export async function poll({
   refineFn = runFn === run ? refineIssue : null,
   // Plan windows are read for a real run only: a test that injects `runFn` injects `planFn` too (REQ-PLAN-3).
   planFn = runFn === run ? readPlan : null,
-  // Dependabot heads are gated for a real run only: a test that injects `runFn` injects `gateFn` too (REQ-LINEAR-53).
-  gateFn = runFn === run ? gateHead : null,
+  // Dependabot gating is independent of Linear issue building; tests may inject either function separately
+  // (REQ-LINEAR-53).
+  gateFn = gateHead,
   // The workspace's issue count is read for a real run only: a test that injects `runFn` injects `capacityFn` too
   // (REQ-LINEAR-37).
   capacityFn = runFn === run ? () => client.capacity() : null,

@@ -225,11 +225,16 @@ async function dependabotSetup({
 } = {}) {
   const { chmodSync, existsSync, readFileSync, writeFileSync } = await import('node:fs');
   const { join } = await import('node:path');
-  const { commit, g } = await import('./helpers.js');
+  const { commit, g, FIXTURE_TEST } = await import('./helpers.js');
   const { dir } = fixtureRepo();
   const remote = tmp('keel-remote-');
   g(remote, 'init', '-q', '--bare');
   g(dir, 'remote', 'add', 'origin', remote);
+  commit(
+    dir,
+    { 'keel.json': JSON.stringify({ checks: { test: FIXTURE_TEST }, testCommand: FIXTURE_TEST, review: false }) },
+    'chore: configure keel',
+  );
   g(dir, 'push', '-q', 'origin', 'main');
   g(dir, 'checkout', '-q', '-b', 'dependabot/npm_and_yarn/next-16.4.5');
   const head = commit(dir, { 'package.json': '{"type":"module","dependencies":{"next":"16.4.5"}}\n' }, msg);
@@ -323,6 +328,15 @@ test('REQ-LINEAR-53 an ungated Dependabot head is gated in a checkout of that he
   assert.equal(pollExitCode(results), 0);
 });
 
+test('REQ-LINEAR-53 Dependabot gating stays enabled when the Linear issue builder is injected', async () => {
+  const setup = await dependabotSetup();
+  const { results } = await pollWith(setup);
+  const posts = setup.calls().filter((a) => a.includes('POST'));
+  assert.equal(posts.length, 1);
+  assert.ok(posts[0].includes(`repos/{owner}/{repo}/statuses/${setup.head}`));
+  assert.equal(results.find((r) => r.issue === 'PR #30')?.outcome, 'dependabotGated');
+});
+
 test('REQ-LINEAR-53 a Dependabot head with no conventional commit type gets a chore card; "build(deps)" keeps its own kind', async () => {
   for (const [msg, kind] of [
     ['Bump next from 16.4.3 to 16.4.5', 'chore'],
@@ -353,6 +367,14 @@ test('REQ-LINEAR-53 no gate when the base does not require keel/gate, and a stat
   const crashed = await pollWith(broken, () => ({ error: 'keel gate exited 2: boom' }));
   assert.equal(crashed.results.find((r) => r.issue === 'PR #30').outcome, 'dependabotFailed');
   assert.ok(!broken.calls().some((a) => a.includes('POST')), 'no gate result, no status');
+
+  const threw = await dependabotSetup();
+  const thrown = await pollWith(threw, () => {
+    throw new Error('receipt was malformed');
+  });
+  assert.equal(thrown.results.find((r) => r.issue === 'PR #30').outcome, 'dependabotFailed');
+  assert.ok(thrown.lines.some((l) => /PR #30: gate could not run: receipt was malformed/.test(l)));
+  assert.ok(!threw.calls().some((a) => a.includes('POST')), 'a thrown gate posts no status');
 });
 
 test('REQ-LINEAR-54 a failing Dependabot gate posts failure, comments the failing stage, and pushes nothing', async () => {
