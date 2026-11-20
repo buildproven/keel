@@ -156,6 +156,26 @@ function testEditBlocker(f, ctx) {
   return shapeBlocker(f, ctx, true);
 }
 
+const NEW_VERIFICATION = 'card paths mark it (new) and neither the merge base nor the base holds its name in any letter case';
+
+/**
+ * Why an added verification file the card marks `(new)` stays locked (REQ-GATE-68), or null: a workflow could report a
+ * required check name (REQ-GATE-43) and `keel.json` is the gate's own policy, so both stay locked; so does a name the
+ * merge base or the base already holds in any letter case, since the add then replaces a file that defines passing.
+ */
+function newVerificationBlocker(path, { repo, base, from }) {
+  if (WORKFLOW.test(path)) return 'a new workflow can report a required check name; only an edit to an existing one can be proved';
+  if (fold(path) === 'keel.json') return 'keel.json is the gate policy; a card cannot add it';
+  for (const ref of new Set([from, base]))
+    if (
+      git(['ls-tree', '-r', '-z', '--name-only', ref], repo)
+        .split('\0')
+        .some((p) => fold(p) === fold(path))
+    )
+      return `${ref === from ? 'the merge base' : 'the base'} already holds ${path} in some letter case; only a file new to both may be added`;
+  return null;
+}
+
 const APPROVED_SHAPE = 'approved allowEdits (REQ-RUN-30) keeps every test name, assertion, and skip marker count';
 
 function staticChecks(ctx) {
@@ -198,17 +218,21 @@ function staticChecks(ctx) {
       }
     }
     if (locksAny(f.path, config.verificationPaths)) {
-      // A workflow the card names may change when it only adds (REQ-GATE-43); any other verification file stays locked.
+      // A workflow the card names may change when it only adds (REQ-GATE-43); a file the card marks new may be added
+      // (REQ-GATE-68); any other verification file stays locked.
+      const added = f.status === 'A' && (card.newPaths ?? []).includes(f.path);
       const named = WORKFLOW.test(f.path) && names(card, f.path);
-      const why = !named
-        ? undefined
-        : f.status !== 'M'
-          ? 'only an edit to an existing workflow can be proved'
-          : workflowWeakened(showFile(from, f.path, repo), showFile(head, f.path, repo), commands);
+      const why = added
+        ? newVerificationBlocker(f.path, ctx)
+        : !named
+          ? undefined
+          : f.status !== 'M'
+            ? 'only an edit to an existing workflow can be proved'
+            : workflowWeakened(showFile(from, f.path, repo), showFile(head, f.path, repo), commands);
       lockUnless(
         { rule: 'verification-file-changed', path: f.path, status: f.status },
         why,
-        'workflow keeps every base job, step, needs, if, and check name',
+        added ? NEW_VERIFICATION : 'workflow keeps every base job, step, needs, if, and check name',
       );
     }
     if (runners.has(fold(f.path))) locked.push({ rule: 'runner-script-changed', path: f.path, status: f.status });
