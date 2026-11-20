@@ -19,6 +19,16 @@ export const tickFor = (timeoutMs) => Math.min(1000, Math.max(20, Math.floor(tim
 /** The awake time one tick interval adds: all of it, or one tick when the gap shows the machine was suspended. */
 export const awakeMs = (gapMs, tickMs) => (gapMs > 10 * tickMs ? tickMs : gapMs);
 
+/** The time every watchdog of this process counted as suspended (REQ-GATE-69), so far. */
+let suspendedTotal = 0;
+
+/**
+ * A clock in ms that leaves out the time a watchdog saw the machine suspended (REQ-GATE-69): `performance.now()`, which on
+ * macOS goes on while the machine sleeps, less every suspended gap the watchdogs of this process counted. The gate times
+ * its stages with it, so a stage that ran across a sleep shows the time it worked, not the time the lid was shut.
+ */
+export const awakeNow = () => performance.now() - suspendedTotal;
+
 /** `spawnSync(cmd, args, options)` with `timeoutMs` of awake time instead of `options.timeout`. */
 export function spawnAwake(cmd, args, options, timeoutMs) {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error(`awake timeout must be a positive number, not ${timeoutMs}`);
@@ -28,6 +38,7 @@ export function spawnAwake(cmd, args, options, timeoutMs) {
   delete opts.timeout; // the watchdog keeps the time
   const r = spawnSync(process.execPath, [WATCHDOG, String(timeoutMs), cmd, ...args], opts);
   const note = parseNote(r.output?.[3]);
+  suspendedTotal += note.suspendedMs ?? 0;
   const { output, ...result } = r;
   const out = { ...result, output: output ? output.slice(0, 3) : output };
   const fault = (code) => Object.assign(new Error(`spawnSync ${cmd} ${code}`), { code });
@@ -37,7 +48,10 @@ export function spawnAwake(cmd, args, options, timeoutMs) {
   return { ...out, ...exit, ...(note.timedOut ? { error: fault('ETIMEDOUT') } : {}) };
 }
 
-/** The watchdog's lines on fd 3, merged: `{ timedOut }`, `{ error }` (a code), `{ exit: { code, signal } }`. */
+/**
+ * The watchdog's lines on fd 3, merged: `{ timedOut, suspendedMs }`, `{ error }` (a code), `{ exit: { code, signal },
+ * suspendedMs }`. A later `suspendedMs` holds all of an earlier one.
+ */
 function parseNote(raw) {
   const lines = raw ? String(raw).split('\n').filter(Boolean) : [];
   return Object.assign({}, ...lines.map((l) => JSON.parse(l)));
@@ -51,6 +65,11 @@ function parseNote(raw) {
  */
 function watch(timeoutMs, cmd, args) {
   const tickMs = tickFor(timeoutMs);
+  // The clock starts before the command does: a command that stops this watchdog at once (as a sleep can, or the
+  // REQ-GATE-69 test does) must still have that gap counted, which it is not if `last` is read after the stop.
+  let awake = 0;
+  let suspended = 0; // the gaps not counted as awake (REQ-GATE-69)
+  let last = performance.now();
   const child = spawn(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'] });
   // At most three short lines in all, far under the 4096 bytes a pipe always holds, so this write never waits.
   const note = (value) => writeSync(3, `${JSON.stringify(value)}\n`);
@@ -101,16 +120,20 @@ function watch(timeoutMs, cmd, args) {
     ]),
   );
   for (const s of FORWARD) process.on(s, forward[s]);
-  let awake = 0;
-  let last = performance.now();
   let fired = false;
-  const timer = setInterval(() => {
+  /** Count the time since the last count: awake, or one tick of it and the rest suspended. */
+  const count = () => {
     const now = performance.now();
-    awake += awakeMs(now - last, tickMs);
+    const add = awakeMs(now - last, tickMs);
+    awake += add;
+    suspended += now - last - add;
     last = now;
+  };
+  const timer = setInterval(() => {
+    count();
     if (awake >= timeoutMs && !fired) {
       fired = true;
-      note({ timedOut: true });
+      note({ timedOut: true, suspendedMs: suspended });
       if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
       stop();
     }
@@ -126,11 +149,12 @@ function watch(timeoutMs, cmd, args) {
   const finish = () => {
     if (!closed || pending > 0) return;
     const { code, signal } = closed;
-    note({ exit: { code, signal } });
+    note({ exit: { code, signal }, suspendedMs: suspended });
     process.exit(signal ? 128 + constants.signals[signal] : code); // as a shell reports it; the caller reads the note
   };
   child.on('close', (code, signal) => {
     clearInterval(timer);
+    count(); // a command that ends at wake-up, before the next tick, still has its last gap counted
     for (const s of FORWARD) process.off(s, forward[s]);
     closed = { code, signal };
     finish();

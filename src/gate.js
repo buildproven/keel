@@ -14,12 +14,14 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { awakeNow } from './awake.js';
 import { checkEnv } from './env.js';
 import { linkedDirs } from './config.js';
 import { outLine, reviewStage, signInFixes, testEditStage } from './review.js';
 import { fixedSlots, withGateSlot } from './slots.js';
 import { recordGateTimes, timingLine } from './timing.js';
 import {
+  COMMAND_TIMEOUT_SEC,
   addedLines,
   changedFiles,
   exec,
@@ -58,6 +60,16 @@ const NOT_A_TEST_RESULT = new Set([126, 127]); // command not executable / not f
 const tail = (s, n = 2000) => (s.length > n ? `…${s.slice(-n)}` : s);
 const fail = (name, rule, extra = {}) => ({ name, pass: false, problems: [{ rule, ...extra }] });
 export const inconclusive = (r) => r.timedOut || r.code === null || NOT_A_TEST_RESULT.has(r.code);
+/** Why an install (REQ-GATE-16) failed, as `{ rule, detail? }`: a timeout is `install-timeout`, not a failed install (REQ-GATE-68). */
+export const installProblem = (r) =>
+  r.timedOut
+    ? { rule: 'install-timeout', detail: `install ran past its ${COMMAND_TIMEOUT_SEC} s limit of awake time and was stopped (REQ-GATE-67)` }
+    : { rule: 'install-failed' };
+/** A stage that failed because its checkout's install failed (REQ-GATE-16, -68), with the install's output. */
+function installFailed(name, r) {
+  const { rule, ...extra } = installProblem(r);
+  return { ...fail(name, rule, extra), output: tail(r.out) };
+}
 
 /**
  * Where shared dirs come from: the repo, then its main worktree when the repo is a linked worktree (REQ-GATE-48). Only a
@@ -84,6 +96,29 @@ function missingShared(repo, config) {
   if (!config.shareDirsRequired) return [];
   const roots = sharedRoots(repo);
   return linkedDirs(config).filter((d) => !roots.some((r) => existsSync(resolve(r, d))));
+}
+
+/**
+ * The lockfiles that say what a linked dependency dir holds (REQ-GATE-70), by the dir's name; each sits beside the dir.
+ * Language knowledge, as defaults are: the core only compares paths.
+ */
+const DEPENDENCY_LOCKS = {
+  node_modules: ['package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock', 'pnpm-lock.yaml', 'bun.lock', 'bun.lockb'],
+  '.venv': ['uv.lock', 'poetry.lock', 'Pipfile.lock', 'pdm.lock', 'requirements.txt'],
+  venv: ['uv.lock', 'poetry.lock', 'Pipfile.lock', 'pdm.lock', 'requirements.txt'],
+};
+
+/**
+ * Lockfiles the candidate changed whose dependency dir the gate would link from the repo (REQ-GATE-70): without
+ * `install`, the checks would run on the packages installed for the old lockfile, so the change goes untested.
+ */
+function changedDependencies(repo, config, changed) {
+  const roots = sharedRoots(repo);
+  const paths = changed.map((f) => f.path);
+  return linkedDirs(config)
+    .filter((d) => roots.some((r) => existsSync(resolve(r, d))))
+    .flatMap((d) => (DEPENDENCY_LOCKS[basename(d)] ?? []).map((lock) => ({ dir: d, path: join(dirname(d), lock) })))
+    .filter(({ path }) => paths.includes(path));
 }
 
 /**
@@ -319,11 +354,12 @@ export function proofFiles(ctx) {
  * Run a head command; on failure run it once more on the same checkout (REQ-GATE-18). A pass on the retry is
  * reported as flaky with the first failure kept, so a load-induced timeout neither escalates the model nor hides.
  */
-function runHead(command, dir, config) {
-  const start = Date.now();
+function runHead(command, dir, { config, clock }) {
+  const start = clock();
   const first = shell(command, dir, config);
-  // The time of the first run: a flaky retry doubles the wall time but says nothing about the command's speed (REQ-GATE-45).
-  const ms = Date.now() - start;
+  // The time of the first run: a flaky retry doubles the wall time but says nothing about the command's speed (REQ-GATE-45),
+  // on the awake clock, so a sleep in the middle is not counted (REQ-GATE-69).
+  const ms = Math.round(clock() - start);
   if (first.code === 0) return { code: 0, out: first.out, ms };
   const again = shell(command, dir, config);
   return again.code === 0 ? { code: 0, out: first.out, flaky: true, ms } : { ...again, ms };
@@ -347,18 +383,18 @@ function candidateStages(ctx) {
   const unknown = card.acceptance.filter((name) => !Object.hasOwn(config.acceptance, name));
   if (unknown.length) return [fail('acceptance', 'unknown-acceptance', { names: unknown })];
   return ctx.onHead((dir, { installed, ms }) => {
-    if (installed) return [{ ...fail('install', 'install-failed'), output: tail(installed.out) }];
+    if (installed) return [installFailed('install', installed)];
     const results = config.install ? [{ name: 'install', pass: true, problems: [], ms }] : [];
     let suiteOut = ''; // what the whole suite printed on head (REQ-GATE-33)
     for (const [name, command] of Object.entries(config.checks)) {
-      const r = runHead(command, dir, config);
+      const r = runHead(command, dir, ctx);
       if (command === config.testCommand) suiteOut = r.out;
       results.push(headResult(name, r));
       if (r.code !== 0) break;
     }
     const testedByChecks = Object.values(config.checks).includes(config.testCommand);
     if (results.every((r) => r.pass) && needsProof(card) && !testedByChecks) {
-      const r = runHead(config.testCommand, dir, config);
+      const r = runHead(config.testCommand, dir, ctx);
       suiteOut = r.out;
       results.push(headResult('regression-on-head', r, 'regression-fails-on-head'));
     }
@@ -383,7 +419,7 @@ function candidateStages(ctx) {
       });
     }
     for (const name of results.every((r) => r.pass) ? card.acceptance : []) {
-      const r = runHead(config.acceptance[name], dir, config);
+      const r = runHead(config.acceptance[name], dir, ctx);
       results.push(headResult(`acceptance:${name}`, r));
       if (r.code !== 0) break;
     }
@@ -450,7 +486,7 @@ function baseRed(ctx, dir, proof, onBase, baseline) {
       const err = writeInside(dir, p, (t) => unlinkSync(t));
       if (err) return fail('red-proof', 'unsafe-path', { detail: err });
     }
-    const without = runHead(config.testCommand, dir, config);
+    const without = runHead(config.testCommand, dir, ctx);
     fixed = without.code === 0;
     flaky = Boolean(without.flaky);
     if (!fixed) outs.push(without.out);
@@ -525,7 +561,7 @@ function redProof(ctx) {
   if (!proof.length) return fail('red-proof', 'no-test-changed');
   // In the gate's shared base checkout, which test-edit proof gets back reset to base (REQ-GATE-61, -62).
   return ctx.onBase((dir, { installed }) => {
-    if (installed) return { ...fail('red-proof', 'install-failed'), output: tail(installed.out) };
+    if (installed) return installFailed('red-proof', installed);
     const cached = baseGreenFile(ctx);
     let flaky = false;
     // A targeted overlay runs only the proof files, so only their base versions need a green baseline; a new file has
@@ -533,7 +569,7 @@ function redProof(ctx) {
     const onBase = ctx.targeted ? proof.filter((p) => fileMode(base, p, repo)) : null;
     if ((!cached || !existsSync(cached)) && onBase?.length !== 0) {
       const command = onBase ? filesCommand(config, onBase) : config.testCommand;
-      const baseline = runHead(command, dir, config); // A load-induced base failure gets one retry too (REQ-GATE-18).
+      const baseline = runHead(command, dir, ctx); // A load-induced base failure gets one retry too (REQ-GATE-18).
       flaky = Boolean(baseline.flaky);
       if (baseline.code !== 0) return baseRed(ctx, dir, proof, onBase, baseline);
       if (cached && !onBase) {
@@ -563,7 +599,7 @@ function testEditProof(ctx) {
   // other change that one file's run made must not decide another file's result.
   for (const p of files) {
     const onHead = ctx.onHead((dir, { installed }) => {
-      if (installed) return { ...fail('test-edit-proof', 'install-failed'), output: tail(installed.out) };
+      if (installed) return installFailed('test-edit-proof', installed);
       const r = shell(filesCommand(config, [p]), dir, config);
       return r.code !== 0 ? locked(p, 'fails alone on head with testFilesCommand', r.out) : null;
     });
@@ -573,7 +609,7 @@ function testEditProof(ctx) {
   for (const p of files) {
     // The shared base checkout, reset to base before each file: none of the files overlaid before is left (REQ-GATE-61, -62).
     const baseRun = ctx.onBase((dir, { installed }) => {
-      if (installed) return { ...fail('test-edit-proof', 'install-failed'), output: tail(installed.out) };
+      if (installed) return installFailed('test-edit-proof', installed);
       // One edited file at a time, the others as on base: an edit to one test must not be what makes another fail.
       const err = writeInside(dir, p, (t) => {
         const blob = showBlob(head, p, repo);
@@ -676,7 +712,10 @@ function runHeldOut({ repo, head, card, config, onHead }, ref, files) {
       ? onHead
       : (fn) => withTempWorktree(repo, ref, (dir) => fn(dir, { installed: prepareCheckout(repo, dir, config) }));
   return checkout((dir, { installed }) => {
-    if (installed) return { error: 'install-failed' };
+    if (installed) {
+      const { rule, ...extra } = installProblem(installed);
+      return { error: rule, extra };
+    }
     for (const rel of files) {
       if (existsSync(join(dir, rel))) return { error: 'held-out-overwrite' };
       if (writeInside(dir, rel, (t) => copyFileSync(join(card.heldOut, rel), t))) return { error: 'unsafe-path' };
@@ -697,11 +736,11 @@ function heldOut(ctx) {
   const files = listFiles(card.heldOut);
   if (!files.length) return fail('held-out', 'held-out-empty');
   const onHead = runHeldOut(ctx, head, files);
-  if (onHead.error) return fail('held-out', onHead.error);
+  if (onHead.error) return fail('held-out', onHead.error, onHead.extra);
   if (onHead.code !== 0) return { ...fail('held-out', 'held-out-fails-on-head'), privateOutput: tail(onHead.out) };
   if (needsProof(card)) {
     const onBase = runHeldOut(ctx, base, files);
-    if (onBase.error) return fail('held-out', onBase.error);
+    if (onBase.error) return fail('held-out', onBase.error, onBase.extra);
     if (onBase.code === 0 || inconclusive(onBase)) return { ...fail('held-out', 'held-out-not-executed'), privateOutput: tail(onBase.out) };
   }
   return { name: 'held-out', pass: true, problems: [], privateOutput: tail(onHead.out) };
@@ -718,7 +757,7 @@ function mutation(ctx) {
   const files = changed.filter((f) => f.status !== 'D' && !matchesAny(f.path, config.testGlobs)).map((f) => f.path);
   if (!files.length) return null;
   return ctx.onHead((dir, { installed }) => {
-    if (installed) return { ...fail('mutation', 'install-failed'), output: tail(installed.out) };
+    if (installed) return installFailed('mutation', installed);
     const env = { ...checkEnv(process.env, config.workerEnvAllow), KEEL_CHANGED_FILES: files.join('\n') };
     return headResult('mutation', sh(config.mutation, dir, { env }), 'mutants-survived');
   });
@@ -777,10 +816,10 @@ function previousReview(receiptDir, card, head, repo) {
  * Time a stage (REQ-GATE-45): a stage that yields one result untimed gets the stage's wall time. Stages with several
  * results (static, candidate checks) time their own commands; the slot wait is outside, since `run` starts after it.
  */
-function timed(fn) {
-  const start = Date.now();
+function timed(fn, clock) {
+  const start = clock();
   const out = fn();
-  if (out.length === 1 && out[0] && typeof out[0].ms !== 'number') out[0].ms = Date.now() - start;
+  if (out.length === 1 && out[0] && typeof out[0].ms !== 'number') out[0].ms = Math.round(clock() - start);
   return out;
 }
 
@@ -800,6 +839,7 @@ export function gate({
   waitReviewHours = 0,
   sleep = sleepMs,
   now = () => new Date(), // the clock a reviewer's reset time is read against (REQ-GATE-28); a test sets its own
+  clock = awakeNow, // the clock stage times are read on: awake time, not wall time (REQ-GATE-69); a test sets its own
   log = () => {},
   slotDir = null,
   flaky = [],
@@ -829,9 +869,21 @@ export function gate({
     cacheDir,
     reviewer,
     spendFile,
+    clock,
     previous: previousReview(receiptDir, card, head, repo),
     changed: failed() ? [] : changedFiles(from, head, repo),
   };
+  // A changed lockfile needs its own install; a linked dir would test the old packages (REQ-GATE-70).
+  const deps = failed() ? [] : changedDependencies(repo, config, ctx.changed);
+  if (deps.length) {
+    const why = ({ dir, path }) =>
+      `${path} changed, but keel.json sets no "install", so the checks would run on the ${dir} installed in ${repo}: set "install" in keel.json`;
+    results.push({
+      name: 'prepare',
+      pass: false,
+      problems: deps.map((d) => ({ rule: 'dependencies-changed', path: d.path, detail: why(d) })),
+    });
+  }
   // Every head stage runs in one checkout of head, prepared once and reset between stages (REQ-GATE-57, -58); red
   // proof and test-edit proof share one checkout of base the same way (REQ-GATE-61, -62).
   const improve = new Set();
@@ -839,9 +891,9 @@ export function gate({
   const shared = (ref, which) =>
     sharedWorktree(repo, ref, {
       prepare: (dir) => {
-        const start = Date.now();
+        const start = clock();
         const installed = prepareCheckout(repo, dir, config);
-        return { installed, ms: Date.now() - start };
+        return { installed, ms: Math.round(clock() - start) };
       },
       // Dependency dirs stay in place; other install outputs are restored to their post-install contents after each reset.
       keep: config.shareDirs,
@@ -867,7 +919,7 @@ export function gate({
   try {
     for (const stage of [staticChecks, candidateStages, redProof, testEditProof, heldOut, mutation, testEdits, review]) {
       if (failed()) break;
-      const run = () => timed(() => [stage(ctx)].flat().filter(Boolean));
+      const run = () => timed(() => [stage(ctx)].flat().filter(Boolean), clock);
       const asked = Date.now();
       const slotted = () => {
         waitMs += Date.now() - asked; // time queued for a gate slot (REQ-GATE-47)
@@ -886,7 +938,7 @@ export function gate({
         }
         log(`every reviewer is out; waiting ${Math.ceil(ms / 60000)} min for the reset, then the review runs again`);
         sleep(ms);
-        results[results.length - 1] = timed(() => [review(ctx)])[0];
+        results[results.length - 1] = timed(() => [review(ctx)], clock)[0];
       }
     }
   } finally {
