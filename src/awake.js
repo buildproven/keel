@@ -65,6 +65,11 @@ function parseNote(raw) {
  */
 function watch(timeoutMs, cmd, args) {
   const tickMs = tickFor(timeoutMs);
+  // The clock starts before the command does: a command that stops this watchdog at once (as a sleep can, or the
+  // REQ-GATE-69 test does) must still have that gap counted, which it is not if `last` is read after the stop.
+  let awake = 0;
+  let suspended = 0; // the gaps not counted as awake (REQ-GATE-69)
+  let last = performance.now();
   const child = spawn(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'] });
   // At most three short lines in all, far under the 4096 bytes a pipe always holds, so this write never waits.
   const note = (value) => writeSync(3, `${JSON.stringify(value)}\n`);
@@ -115,9 +120,6 @@ function watch(timeoutMs, cmd, args) {
     ]),
   );
   for (const s of FORWARD) process.on(s, forward[s]);
-  let awake = 0;
-  let suspended = 0; // the gaps not counted as awake (REQ-GATE-69)
-  let last = performance.now();
   let fired = false;
   /** Count the time since the last count: awake, or one tick of it and the rest suspended. */
   const count = () => {
