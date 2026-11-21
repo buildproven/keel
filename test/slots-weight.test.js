@@ -90,3 +90,16 @@ test('REQ-SLOT-4 keel doctor prints the gate weight when keel.json sets gateCore
   );
   assert.equal(weight({ checks: { test: 'true' }, testCommand: 'true' }), undefined, 'no line while the default applies');
 });
+
+test('REQ-SLOT-4 with no hold (holdMs 0) a slot whose mtime reads after now does not block a new slot', () => {
+  const dir = tmp();
+  const now = 1_800_000_000_000;
+  heldSlot(dir, 0, now + 0.5); // mtime a fraction of a millisecond after Date.now(), as a fresh mkdir can read
+  let waits = 0;
+  const ran = withGateSlot(
+    { dir, log: () => {}, idle: () => 1, memLow: () => false, cpus: 8, now: () => now, sleep: () => waits++ },
+    () => 'ran',
+  );
+  assert.equal(ran, 'ran');
+  assert.equal(waits, 0, 'opened at once: no hold applies');
+});

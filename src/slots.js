@@ -221,7 +221,8 @@ export function withGateSlot(
       const before = ahead(dir, basename(ticket));
       const running = slotsInUse(dir);
       // A slot opened in the last holdMs: its gate's load is not in the idle reading yet, so open no other (REQ-SLOT-4).
-      const fresh = running && newestSlotAgeMs(dir, now()) < holdMs;
+      // holdMs 0 means no hold: a just-made slot's mtime can read a fraction of a millisecond after Date.now().
+      const fresh = holdMs > 0 && running && newestSlotAgeMs(dir, now()) < holdMs;
       const n = size ?? (!running ? 1 : fresh ? running : idleSlots({ idle: idle(), running, cpus, memLow: memLow(), coresPerGate }));
       if (before < n - running) slot = take(dir, n);
       if (slot) break;
