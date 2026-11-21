@@ -23,7 +23,7 @@ import { GATE_CONTEXT, postGateStatus } from './status.js';
 import { appendAttempt, readLedger, stateDir } from './ledger.js';
 import { approveEdits, judgeHeldOut, reviewerFor } from './review.js';
 import { spendFile } from './window.js';
-import { matchesAny } from './scan.js';
+import { matchesAny, outOfScope } from './scan.js';
 import { addUsage, runWorker } from './workers.js';
 import { acquireRunLock, runLockHeld } from './run-lock.js';
 
@@ -125,13 +125,15 @@ const KIND_RULES = {
   chore: 'Keep behavior identical unless the card says otherwise.',
 };
 
-export function buildPrompt(card, config, failure, commits = '') {
+export function buildPrompt(card, config, failure, commits = '', carried = '') {
   const scope = card.paths.length ? `Change only files matching: ${card.paths.join(', ')}.` : 'Change only files the card needs.';
   return [
     `You are the builder for card ${card.id} in this git worktree. Work autonomously; do not ask questions.`,
     KIND_RULES[card.kind],
     scope,
     'Never delete, skip, or weaken existing tests. Never add lint, type, or hook bypasses. No TODO placeholders.',
+    // A secret scan over history rejects such a literal for good, whatever a later edit does (REQ-RUN-71).
+    'Test fixtures must not assign string literals to names containing `token`, `secret`, `password` or `api_key`: build the value from parts, read it from the environment, or give the name another word. A secret scan reads every commit.',
     `If the card is already satisfied by the current code, change nothing: write to the file ${DONE_FILE} in the worktree root one short paragraph naming the commit ("commit <sha>") or PR ("PR #<n>") that satisfied it, and stop. If the card is impossible as written, or a test or check is defective, do not work around it: write the reason in one short paragraph to the file ${BLOCKED_FILE} in the worktree root and stop. If an existing test asserts behavior the card changes, so it must change too, add one line per such file to ${BLOCKED_FILE}: allowEdits: <path>; another model may approve it and you continue.`,
     // Found work is filed for the loop, not done here or lost (REQ-RUN-26).
     `For real work outside this card (a defect, a missing test, a needed change), do not do it: append one line per item to the file ${FOLLOWUP_FILE} in the worktree root, as <bug|feature|chore>: <title> — <why, with path:line>.`,
@@ -146,6 +148,14 @@ export function buildPrompt(card, config, failure, commits = '') {
     builderText(card),
     // A fresh session on a kept branch must know the work is there (REQ-RUN-33).
     ...(commits ? ['', `# Your branch already has these commits:\n${commits}`, 'Build on them; do not redo their work.'] : []),
+    // The failed attempt's diff is carried uncommitted (REQ-RUN-69): a fresh session must know it is in the tree.
+    ...(carried
+      ? [
+          '',
+          `# Your working tree already holds these uncommitted changes from the previous attempt:\n${carried}`,
+          'Build on them; do not redo their work.',
+        ]
+      : []),
     ...(failure ? ['', '# The previous attempt failed the gate. Fix the root cause:', failure] : []),
   ].join('\n');
 }
@@ -153,7 +163,7 @@ export function buildPrompt(card, config, failure, commits = '') {
 /** The prompt for a continued session (REQ-RUN-33): it already has the card and the rules, so only the failure. */
 export const resumePrompt = (failure) =>
   [
-    'Keel committed your changes and gated them.',
+    'Keel gated your changes. They are still in the working tree, uncommitted.',
     '',
     '# The previous attempt failed the gate. Fix the root cause:',
     failure,
@@ -526,6 +536,64 @@ function parkLeftovers(wt, card, attempt, branch, log) {
   return error;
 }
 
+/** The most files the prompt lists as carried over from the previous attempt (REQ-RUN-69). */
+const CARRIED_LINES = 100;
+
+/** The uncommitted changes of the worktree, one `git status` line each, for the next worker's prompt (REQ-RUN-69). */
+const carriedChanges = (wt) =>
+  git(['status', '--porcelain', '--untracked-files=all'], wt).trim().split('\n').filter(Boolean).slice(0, CARRIED_LINES).join('\n');
+
+/**
+ * Take the attempt's commits off the branch and keep their changes in the worktree, uncommitted (REQ-RUN-69): the branch
+ * goes back to `baseSha`, so a check that reads history never sees what the final tree no longer holds. Returns the
+ * commit the branch pointed at, or null when it already was at the base or the worker left the branch.
+ */
+function uncommit(wt, branch, baseSha) {
+  if (!onBranch(wt, branch)) return null;
+  const was = revParse('HEAD', wt);
+  if (was === baseSha) return null;
+  git(['reset', '-q', '--mixed', baseSha], wt);
+  return was;
+}
+
+/**
+ * Every path the worktree differs in from `baseSha`: committed, staged, unstaged, or untracked (not ignored). The worker's
+ * work may sit in any of these: a leftovers commit a hook rejected keeps it staged on the base (REQ-RUN-65).
+ */
+const changedSinceBase = (wt, baseSha) =>
+  [
+    ...new Set([
+      ...git(['diff', '--name-only', '-z', '--no-renames', baseSha], wt).split('\0'),
+      ...git(['ls-files', '-z', '--others', '--exclude-standard'], wt).split('\0'),
+    ]),
+  ].filter(Boolean);
+
+/**
+ * Start the next attempt from the base (REQ-RUN-69): the failed attempt's commits come off the branch, its diff stays as
+ * uncommitted changes, so only the final attempt's single commit reaches history. Each changed file outside the card's
+ * paths, committed or not (a rejected leftovers commit leaves it staged), is dropped (restored to the base, or removed
+ * when the attempt added it) and logged, so the next tier never sees it (REQ-RUN-70). Returns the failed commit (null
+ * when the branch was already at the base) and the dropped paths, or null when there was nothing to do.
+ */
+function restartFromBase(wt, branch, baseSha, card, attempt, log) {
+  if (!onBranch(wt, branch)) return null;
+  const was = uncommit(wt, branch, baseSha);
+  const dropped = outOfScope(changedSinceBase(wt, baseSha), card.paths.length ? [...card.paths, ...card.allowEdits] : []);
+  if (!was && !dropped.length) return null;
+  for (const path of dropped) {
+    if (exec('git', ['cat-file', '-e', `${baseSha}:${path}`], wt).status === 0) git(['checkout', '-q', baseSha, '--', path], wt);
+    else {
+      git(['rm', '-q', '--cached', '--ignore-unmatch', '--', path], wt); // a staged add would stay in the index
+      rmSync(join(wt, path), { force: true }); // a file the attempt added; `path` is a repo-relative name from git
+    }
+  }
+  const what = was ? `failed on ${was}: the next attempt starts on the base with its diff uncommitted` : 'failed';
+  log(
+    `attempt ${attempt} ${what}${dropped.length ? `; dropped ${dropped.length} file(s) outside the card paths: ${dropped.join(', ')}` : ''}`,
+  );
+  return { from: was, dropped };
+}
+
 /**
  * Work the worker found outside the card (REQ-RUN-26): read and remove FOLLOWUP_FILE so it is never committed.
  * Lines are `<kind>: <title> — <detail>`; a line without a known kind is a chore.
@@ -678,11 +746,12 @@ function enableAutoMerge(wt, prResult, head) {
 }
 
 /** Gate the worktree's HEAD for this card with the builder's cross-family reviewer. */
-const gateWorktree = ({ wt, baseSha, card, config, t, log, flaky = [] }) => {
+const gateWorktree = ({ wt, baseSha, card, config, t, log, flaky = [], continues = [] }) => {
   let receipt;
   try {
     receipt = gate({
       flaky,
+      continues,
       repo: wt,
       base: baseSha,
       card,
@@ -1096,6 +1165,8 @@ function runLocked({ repo, card, config, baseSha, baseBranch, branch, wt, pr, me
   let session = null; // the last CLI session and its tier, continued when the next call is the same CLI (REQ-RUN-33)
   let heldOutFailed = null; // the held-out tests the last attempt failed on head (REQ-RUN-46)
   let heldOutChecked = false; // one defect check per held-out set (REQ-RUN-46)
+  let restartedFrom = null; // the failed attempt's commit the next attempt's diff came from (REQ-RUN-69)
+  const carriedFrom = []; // every failed commit whose work the branch carries, so the review re-gate finds its receipt (REQ-GATE-23)
   for (let attempt = 1; attempt <= config.maxAttempts; attempt++) {
     const t = config.tiers[tier];
     log(`attempt ${attempt}: tier ${tier} ${t.provider}/${t.model}/${t.effort}`);
@@ -1116,7 +1187,9 @@ function runLocked({ repo, card, config, baseSha, baseBranch, branch, wt, pr, me
       builderHash: hashOf(t),
       gatePass: false,
       head: null,
+      ...(restartedFrom ? { restartedFrom } : {}), // the failed commit this attempt's diff came from (REQ-RUN-69)
     };
+    restartedFrom = null;
     let w;
     let receipt = null;
     let commitError = null;
@@ -1128,7 +1201,7 @@ function runLocked({ repo, card, config, baseSha, baseBranch, branch, wt, pr, me
       const resume = session && sameCli(session.tier, t) ? session.id : null;
       const prompt = resume
         ? resumePrompt(text)
-        : buildPrompt(card, config, text, git(['log', '--oneline', `${baseSha}..HEAD`], wt).trim());
+        : buildPrompt(card, config, text, git(['log', '--oneline', `${baseSha}..HEAD`], wt).trim(), text ? carriedChanges(wt) : '');
       const r = runWorker(t, prompt, wt, config, resume);
       if (resume) row.continued = true;
       session = r.session ? { tier: t, id: r.session } : null;
@@ -1154,6 +1227,8 @@ function runLocked({ repo, card, config, baseSha, baseBranch, branch, wt, pr, me
           log(
             `attempt ${attempt}: ${row.corrective.rules.join(', ')} on ${row.corrective.paths.join(', ')}; one corrective turn on tier ${tier}`,
           );
+          // The commit that holds the offending edits must not stay in history after the fix (REQ-RUN-69).
+          uncommit(wt, branch, baseSha);
           w = combine(w, turn(correctiveText(failed, baseSha)));
           blocked = takeBlockedReason(wt);
           addFollowUps(followUps, takeFollowUps(wt));
@@ -1195,7 +1270,7 @@ function runLocked({ repo, card, config, baseSha, baseBranch, branch, wt, pr, me
           log(`attempt ${attempt}: ${commitError.split('\n')[0]}; the next attempt gets its output`);
         }
         const gateStart = Date.now();
-        const gateHead = (flaky = []) => gateWorktree({ wt, baseSha, card, config, t, log, flaky });
+        const gateHead = (flaky = []) => gateWorktree({ wt, baseSha, card, config, t, log, flaky, continues: carriedFrom });
         receipt = commitError ? null : gateHead();
         // A check that failed twice in one gate may still be the machine, not the work: gate the same head once more
         // before a stronger tier is paid to change nothing (REQ-RUN-34, extends REQ-GATE-18).
@@ -1381,6 +1456,8 @@ function runLocked({ repo, card, config, baseSha, baseBranch, branch, wt, pr, me
     if (heldOutReplaced) {
       // The tests were the defect, not the build: the same tier builds again against the new set (REQ-RUN-46).
       failure = HELD_OUT_REPLACED;
+      if (attempt < config.maxAttempts) restartedFrom = restartFromBase(wt, branch, baseSha, card, attempt, log)?.from ?? null;
+      if (restartedFrom) carriedFrom.push(restartedFrom);
       log(`attempt ${attempt + 1} stays on tier ${tier} with new held-out tests`);
       continue;
     }
@@ -1400,6 +1477,9 @@ function runLocked({ repo, card, config, baseSha, baseBranch, branch, wt, pr, me
       return { pass: false, stopped: 'reserved', branch, worktree: wt, failure: `${why}\n\n${failure}`, followUps };
     }
     networkRetries = next === tier && w.status === 'network' ? networkRetries + 1 : 0;
+    // The last attempt keeps its commit: the parked worktree must stay clean (REQ-RUN-44).
+    if (attempt < config.maxAttempts) restartedFrom = restartFromBase(wt, branch, baseSha, card, attempt, log)?.from ?? null;
+    if (restartedFrom) carriedFrom.push(restartedFrom);
     tier = next;
   }
   return { pass: false, stopped: 'max-attempts', branch, worktree: wt, failure, followUps };

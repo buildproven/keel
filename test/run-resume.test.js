@@ -78,7 +78,9 @@ test('REQ-RUN-33 another provider starts fresh, told which commits its branch al
   const [, second] = calls();
   assert.equal(second.env.resume, undefined);
   assert.match(second.prompt, /# Card/);
-  assert.match(second.prompt, /your branch already has these commits:\n[0-9a-f]{7,} fix\(T-41\): fix add/i);
+  // REQ-RUN-69: the failed attempt's commit is off the branch; its diff is in the working tree, uncommitted.
+  assert.match(second.prompt, /your working tree already holds these uncommitted changes from the previous attempt:\nM src\/add\.js/i);
+  assert.doesNotMatch(second.prompt, /already has these commits/i);
 });
 
 test('REQ-RUN-33 claude resumes with --resume; codex with `exec resume <id> -`, the sandbox set by config', () => {
