@@ -21,7 +21,7 @@ import { tmpdir } from 'node:os';
 import { checkEnv } from './env.js';
 import { linkedDirs } from './config.js';
 import { outLine, reviewStage, signInFixes, testEditStage } from './review.js';
-import { fixedSlots, withGateSlot } from './slots.js';
+import { OPEN_HOLD_MS, fixedSlots, withGateSlot } from './slots.js';
 import { recordGateTimes, timingLine } from './timing.js';
 import {
   COMMAND_TIMEOUT_SEC,
@@ -1010,7 +1010,16 @@ export function gate({
   // Stages that run the project's commands queue for a machine-wide slot (REQ-GATE-29).
   const heavy = new Set([candidateStages, redProof, testEditProof, heldOut, mutation]);
   // One start time for every stage, so a started gate keeps its place in the queue (REQ-SLOT-3).
-  const slots = slotDir ? { dir: slotDir, size: fixedSlots(), since: Date.now(), log } : null;
+  const slots = slotDir
+    ? {
+        dir: slotDir,
+        size: fixedSlots(),
+        since: Date.now(),
+        log,
+        holdMs: OPEN_HOLD_MS,
+        ...(config.gateCores ? { coresPerGate: config.gateCores } : {}),
+      }
+    : null;
   // The reviewer reads the candidate's own diff (REQ-GATE-40), in the shared head checkout (REQ-GATE-57).
   const review = (c) => reviewStage({ ...c, base: c.from, checkout: (fn) => c.onHead((dir) => fn(dir)) });
   let waitMs = 0;
