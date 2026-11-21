@@ -21,7 +21,7 @@ import { tmpdir } from 'node:os';
 import { checkEnv } from './env.js';
 import { linkedDirs } from './config.js';
 import { outLine, reviewStage, signInFixes, testEditStage } from './review.js';
-import { fixedSlots, withGateSlot } from './slots.js';
+import { OPEN_HOLD_MS, fixedSlots, withGateSlot } from './slots.js';
 import { recordGateTimes, timingLine } from './timing.js';
 import {
   COMMAND_TIMEOUT_SEC,
@@ -1010,10 +1010,20 @@ export function gate({
   // Stages that run the project's commands queue for a machine-wide slot (REQ-GATE-29).
   const heavy = new Set([candidateStages, redProof, testEditProof, heldOut, mutation]);
   // One start time for every stage, so a started gate keeps its place in the queue (REQ-SLOT-3).
-  const slots = slotDir ? { dir: slotDir, size: fixedSlots(), since: Date.now(), log } : null;
+  const slots = slotDir
+    ? {
+        dir: slotDir,
+        size: fixedSlots(),
+        since: Date.now(),
+        log,
+        holdMs: OPEN_HOLD_MS,
+        ...(config.gateCores ? { coresPerGate: config.gateCores } : {}),
+      }
+    : null;
   // The reviewer reads the candidate's own diff (REQ-GATE-40), in the shared head checkout (REQ-GATE-57).
   const review = (c) => reviewStage({ ...c, base: c.from, checkout: (fn) => c.onHead((dir) => fn(dir)) });
   let waitMs = 0;
+  let slotsTaken = 0;
   try {
     for (const stage of [staticChecks, secretsStage, candidateStages, redProof, testEditProof, heldOut, mutation, testEdits, review]) {
       if (failed()) break;
@@ -1023,7 +1033,8 @@ export function gate({
         waitMs += Date.now() - asked; // time queued for a gate slot (REQ-GATE-47)
         return run();
       };
-      results.push(...(slots && heavy.has(stage) ? withGateSlot(slots, slotted) : run()));
+      // Only the gate's first slot adds load; later stages take a slot back without the 30 s hold (REQ-SLOT-4).
+      results.push(...(slots && heavy.has(stage) ? withGateSlot({ ...slots, first: !slotsTaken++ }, slotted) : run()));
     }
     // Same process, same head: only the review runs again, so no stored receipt is trusted (REQ-GATE-28).
     const last = results.at(-1);
