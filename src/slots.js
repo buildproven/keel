@@ -73,7 +73,11 @@ export function idleSlots({ idle, running, cpus, memLow, coresPerGate = CORES_PE
   return Math.min(cap, Math.max(1, running + Math.floor((idle * cpus) / coresPerGate)));
 }
 
-/** Milliseconds since the newest held slot opened, or Infinity with none held (REQ-SLOT-4). */
+/**
+ * Milliseconds since the newest held slot that added load opened: a gate's first slot, marked with a `first` file
+ * (REQ-SLOT-4). A started gate taking a slot back for a later stage adds no load, so its slot is not counted. Infinity
+ * with none.
+ */
 export function newestSlotAgeMs(dir, now = Date.now()) {
   if (!existsSync(dir)) return Infinity;
   let newest = -Infinity;
@@ -81,9 +85,9 @@ export function newestSlotAgeMs(dir, now = Date.now()) {
     const slot = join(dir, s);
     if (slotState(slot) !== 'held') continue;
     try {
-      newest = Math.max(newest, statSync(slot).mtimeMs);
+      newest = Math.max(newest, statSync(join(slot, 'first')).mtimeMs);
     } catch (e) {
-      if (e.code !== 'ENOENT') throw e; // released while read
+      if (e.code !== 'ENOENT') throw e; // a refill (no marker), or released while read
     }
   }
   return newest === -Infinity ? Infinity : now - newest;
@@ -154,7 +158,7 @@ export function reclaim(slot) {
 }
 
 /** Take a free slot: mkdir is atomic, so two gates never get the same one. A slot whose holder is gone is freed. */
-function take(dir, size) {
+function take(dir, size, first = false) {
   for (let i = 0; i < size; i++) {
     const slot = join(dir, `slot-${i}`);
     try {
@@ -167,6 +171,7 @@ function take(dir, size) {
       continue;
     }
     writeFileSync(join(slot, 'pid'), String(process.pid));
+    if (first) writeFileSync(join(slot, 'first'), ''); // this slot adds load (REQ-SLOT-4)
     return slot;
   }
   return null;
@@ -207,6 +212,7 @@ export function withGateSlot(
     cpus = availableParallelism(),
     coresPerGate = CORES_PER_GATE,
     holdMs = 0, // the gate and `keel test` pass OPEN_HOLD_MS (REQ-SLOT-4)
+    first = true, // false when a started gate takes a slot back for a later stage: never held, never marked
     now = () => Date.now(),
   },
   fn,
@@ -222,9 +228,9 @@ export function withGateSlot(
       const running = slotsInUse(dir);
       // A slot opened in the last holdMs: its gate's load is not in the idle reading yet, so open no other (REQ-SLOT-4).
       // holdMs 0 means no hold: a just-made slot's mtime can read a fraction of a millisecond after Date.now().
-      const fresh = holdMs > 0 && running && newestSlotAgeMs(dir, now()) < holdMs;
+      const fresh = first && holdMs > 0 && running && newestSlotAgeMs(dir, now()) < holdMs;
       const n = size ?? (!running ? 1 : fresh ? running : idleSlots({ idle: idle(), running, cpus, memLow: memLow(), coresPerGate }));
-      if (before < n - running) slot = take(dir, n);
+      if (before < n - running) slot = take(dir, n, first && holdMs > 0);
       if (slot) break;
       const line = `waiting for gate slot (${running} running of ${n}${before ? `, ${before} ahead` : ''})`;
       if (line !== said) log(line);

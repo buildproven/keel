@@ -18,11 +18,15 @@ test('REQ-SLOT-4 idleSlots divides idle cores by the repo gate weight', () => {
   assert.equal(idleSlots({ idle: 0.1, running: 3, cpus: 18, memLow: false, coresPerGate: 8 }), 3);
 });
 
-function heldSlot(dir, i, mtimeMs) {
+// A held slot; `first` marks it as a gate's first slot (it added load), dated mtimeMs.
+function heldSlot(dir, i, mtimeMs, first = true) {
   const slot = join(dir, `slot-${i}`);
   mkdirSync(slot, { recursive: true });
   writeFileSync(join(slot, 'pid'), String(process.pid));
-  utimesSync(slot, mtimeMs / 1000, mtimeMs / 1000);
+  if (first) {
+    writeFileSync(join(slot, 'first'), '');
+    utimesSync(join(slot, 'first'), mtimeMs / 1000, mtimeMs / 1000);
+  }
   return slot;
 }
 
@@ -102,4 +106,22 @@ test('REQ-SLOT-4 with no hold (holdMs 0) a slot whose mtime reads after now does
   );
   assert.equal(ran, 'ran');
   assert.equal(waits, 0, 'opened at once: no hold applies');
+});
+
+test('REQ-SLOT-4 a started gate taking its slot back for a later stage is never held, and a refill does not start a hold', () => {
+  const dir = tmp();
+  const t0 = 1_800_000_000_000;
+  heldSlot(dir, 0, t0); // another gate's first slot, 1 s old
+  let waits = 0;
+  const base = { dir, log: () => {}, idle: () => 1, memLow: () => false, cpus: 18, now: () => t0 + 1_000, holdMs: OPEN_HOLD_MS };
+  // A later stage of a started gate: no hold.
+  assert.equal(
+    withGateSlot({ ...base, first: false, sleep: () => waits++ }, () => 'ran'),
+    'ran',
+  );
+  assert.equal(waits, 0);
+  // A refill slot carries no `first` marker, so it cannot hold a new gate: only slot-0's marker counts.
+  const dir2 = tmp();
+  heldSlot(dir2, 0, t0, false);
+  assert.equal(newestSlotAgeMs(dir2, t0 + 1_000), Infinity);
 });

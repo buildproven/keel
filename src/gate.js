@@ -1023,6 +1023,7 @@ export function gate({
   // The reviewer reads the candidate's own diff (REQ-GATE-40), in the shared head checkout (REQ-GATE-57).
   const review = (c) => reviewStage({ ...c, base: c.from, checkout: (fn) => c.onHead((dir) => fn(dir)) });
   let waitMs = 0;
+  let slotsTaken = 0;
   try {
     for (const stage of [staticChecks, secretsStage, candidateStages, redProof, testEditProof, heldOut, mutation, testEdits, review]) {
       if (failed()) break;
@@ -1032,7 +1033,8 @@ export function gate({
         waitMs += Date.now() - asked; // time queued for a gate slot (REQ-GATE-47)
         return run();
       };
-      results.push(...(slots && heavy.has(stage) ? withGateSlot(slots, slotted) : run()));
+      // Only the gate's first slot adds load; later stages take a slot back without the 30 s hold (REQ-SLOT-4).
+      results.push(...(slots && heavy.has(stage) ? withGateSlot({ ...slots, first: !slotsTaken++ }, slotted) : run()));
     }
     // Same process, same head: only the review runs again, so no stored receipt is trusted (REQ-GATE-28).
     const last = results.at(-1);
