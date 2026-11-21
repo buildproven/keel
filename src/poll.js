@@ -1,7 +1,7 @@
 import { holdsUncommitted, removeParkedWorktree } from './clean.js';
 import { exec, isDirty, revParse, showFile, withTempWorktree } from './git.js';
 import { ALREADY_SATISFIED, verifyDone } from './done.js';
-import { missingOnBase } from './check-card.js';
+import { missingOnBase, uncoveredTraceability } from './check-card.js';
 import {
   attemptedIssueIds,
   cardFromIssue,
@@ -224,18 +224,28 @@ function followUpText(source, f, config, repo, base, origin = null) {
       : 'A new test that fails before the change and passes after it proves the requirement.';
   const dir = path?.includes('/') ? `${path.slice(0, path.lastIndexOf('/'))}/**` : path;
   const paths = path ? [dir, ...testPathsAt(repo, base, config).filter((g) => g !== dir), '**/*.md'] : [];
+  // A fix may change any file the finding names, not only the cited one (REQ-LINEAR-56).
+  const named = path ? namedPathsAt(f, filesAt(repo, base)).filter((p) => !matchesAny(p, paths)) : [];
+  paths.push(...named);
   // A follow-up proves its fix with a new test, so it may change what every test-adding card changed (REQ-LINEAR-43).
   const companions = paths.length ? testCompanionsAt(repo, base, config).filter((p) => !matchesAny(p, paths)) : [];
   paths.push(...companions);
-  const allowEdits = [locked, ...companions.filter((p) => locksAny(p, config.verificationPaths))].filter(Boolean);
+  // A new test must be mapped in the repo's traceability file, which the build then regenerates (REQ-LINEAR-56).
+  const trace = paths.length ? uncoveredTraceability(repo, revParse(base, repo), { kind: f.kind, paths, allowEdits: [] }) : [];
+  paths.push(...trace);
+  const allowEdits = [
+    ...new Set([locked, ...[...named, ...companions, ...trace].filter((p) => locksAny(p, config.verificationPaths))].filter(Boolean)),
+  ];
   const block = [
     `kind: ${f.kind}`,
     'size: S',
     ...(paths.length ? [`paths: ${paths.join(', ')}`] : []),
     ...(allowEdits.length ? [`allowEdits: ${allowEdits.join(', ')}`] : []),
   ];
-  const lockNote = locked
-    ? `\n\nThe fix edits \`${locked}\`, a file the gate locks because it defines what passing means; \`allowEdits\` allows that edit. The edit must not remove or weaken any check, job, or test step.`
+  // Every locked file a finding unlocks carries the guard, a named one as much as the cited one (REQ-LINEAR-29, -56).
+  const unlocked = [...new Set([locked, ...named.filter((p) => locksAny(p, config.verificationPaths))].filter(Boolean))];
+  const lockNote = unlocked.length
+    ? `\n\nThe fix edits ${unlocked.map((p) => `\`${p}\``).join(', ')}, ${unlocked.length > 1 ? 'files' : 'a file'} the gate locks because ${unlocked.length > 1 ? 'they define' : 'it defines'} what passing means; \`allowEdits\` allows ${unlocked.length > 1 ? 'those edits' : 'that edit'}. The edit must not remove or weaken any check, job, or test step.`
     : '';
   return (
     [
@@ -246,6 +256,20 @@ function followUpText(source, f, config, repo, base, origin = null) {
       `\`\`\`keel\n${block.join('\n')}\n\`\`\``,
     ].join('\n\n') + '\n'
   );
+}
+
+// A token in a finding's text that may name a repo file: path segments, with a `/` or an extension (REQ-LINEAR-56).
+const PATH_TOKEN = /(?<![\w./@-])(?:[\w@.-]+\/)*[\w@-][\w@.-]*(?![\w@/-])/g;
+
+/** The files in `files` that the finding's title and detail name, in order of first mention (REQ-LINEAR-56). */
+function namedPathsAt(f, files) {
+  const found = new Set();
+  for (const text of [f.detail, f.title])
+    for (const m of (text ?? '').matchAll(PATH_TOKEN)) {
+      const token = m[0].replace(/\.+$/, '');
+      if (/[./]/.test(token) && files.has(token)) found.add(token);
+    }
+  return [...found];
 }
 
 // A `path:line` citation in a finding (REQ-LINEAR-27): a path with a `/` or `.`, not inside a longer token, and a line
