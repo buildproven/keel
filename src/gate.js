@@ -5,9 +5,11 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   readdirSync,
   realpathSync,
+  rmSync,
   statSync,
   symlinkSync,
   unlinkSync,
@@ -15,6 +17,7 @@ import {
 } from 'node:fs';
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { awakeNow } from './awake.js';
+import { tmpdir } from 'node:os';
 import { checkEnv } from './env.js';
 import { linkedDirs } from './config.js';
 import { outLine, reviewStage, signInFixes, testEditStage } from './review.js';
@@ -309,6 +312,73 @@ function staticChecks(ctx) {
     { name: 'bypass', problems: findBypassMarkers(code) },
     { name: 'scope', problems: scope.map((path) => ({ rule: 'out-of-scope', path })) },
   ].map((r) => ({ ...r, pass: r.problems.length === 0 }));
+}
+
+/** Where a repo says its pushes or CI run gitleaks (REQ-GATE-72): the hooks, workflows, and scripts that may name it. */
+const SECRET_SCAN_PLACES = [
+  '.husky',
+  '.githooks',
+  '.github/workflows',
+  'lefthook.yml',
+  '.pre-commit-config.yaml',
+  'scripts',
+  'package.json',
+];
+
+/** Whether the repo at `ref` runs gitleaks in a hook, in CI, or by a script; `.gitleaks.toml` alone says so (REQ-GATE-72). */
+function runsGitleaks(ref, repo) {
+  if (showFile(ref, '.gitleaks.toml', repo) !== null) return true;
+  return exec('git', ['grep', '-q', '-i', '-I', 'gitleaks', ref, '--', ...SECRET_SCAN_PLACES], repo).status === 0;
+}
+
+/** `{ rule, path, line, detail }` for each leak in gitleaks' JSON report; the secret itself is redacted (REQ-GATE-72). */
+const leakProblems = (report) =>
+  report.map((l) => ({
+    rule: 'secret-detected',
+    path: l.File,
+    line: l.StartLine,
+    detail: `${l.RuleID} in commit ${String(l.Commit).slice(0, 8)}`,
+  }));
+
+/**
+ * The secret scan a repo's push hook or CI runs (REQ-GATE-72): `gitleaks detect` over `from..head` (the candidate's own
+ * commits), with the config the base holds, so a candidate cannot loosen it. A secret-shaped value then fails the gate,
+ * where the builder can fix it, not the push. A repo that never mentions gitleaks has no such stage.
+ */
+function secretsStage(ctx) {
+  const { repo, base, from, head } = ctx;
+  if (!runsGitleaks(base, repo) && showFile(head, '.gitleaks.toml', repo) === null) return null;
+  const dir = mkdtempSync(join(tmpdir(), 'keel-secrets-'));
+  try {
+    const configRef = showFile(base, '.gitleaks.toml', repo) !== null ? base : head;
+    const config = showFile(configRef, '.gitleaks.toml', repo);
+    const reportPath = join(dir, 'report.json');
+    if (config !== null) writeFileSync(join(dir, 'gitleaks.toml'), config);
+    const args = [
+      'detect',
+      '--source',
+      repo,
+      ...(config !== null ? ['--config', join(dir, 'gitleaks.toml')] : []),
+      `--log-opts=${from}..${head}`,
+      '--no-banner',
+      '--redact',
+      '--report-format',
+      'json',
+      '--report-path',
+      reportPath,
+    ];
+    const r = exec('gitleaks', args, repo);
+    if (r.error?.code === 'ENOENT')
+      return fail('secrets', 'gitleaks-unavailable', {
+        detail: 'this repo runs gitleaks, but it is not installed here: install it (brew install gitleaks)',
+      });
+    if (r.status === 0) return { name: 'secrets', pass: true, problems: [] };
+    const found = existsSync(reportPath) ? JSON.parse(readFileSync(reportPath, 'utf8')) : [];
+    if (r.status === 1 && found.length) return { name: 'secrets', pass: false, problems: leakProblems(found) };
+    return fail('secrets', 'gitleaks-failed', { detail: tail(`${r.stdout}${r.stderr}`) });
+  } finally {
+    rmSync(dir, { recursive: true, force: true }); // the mkdtemp directory made above, nothing else
+  }
 }
 
 /** Where the candidate left the base (REQ-GATE-40); the base itself when they share no history. */
@@ -941,7 +1011,7 @@ export function gate({
   const review = (c) => reviewStage({ ...c, base: c.from, checkout: (fn) => c.onHead((dir) => fn(dir)) });
   let waitMs = 0;
   try {
-    for (const stage of [staticChecks, candidateStages, redProof, testEditProof, heldOut, mutation, testEdits, review]) {
+    for (const stage of [staticChecks, secretsStage, candidateStages, redProof, testEditProof, heldOut, mutation, testEdits, review]) {
       if (failed()) break;
       const run = () => timed(() => [stage(ctx)].flat().filter(Boolean), clock);
       const asked = Date.now();
@@ -1030,6 +1100,8 @@ const REPAIR = {
   'skip-marker': (p) => `Fix: remove the skip or focus marker at ${p.path}:${p.line}; every test must run.`,
   'out-of-scope': (p, base) =>
     `Fix: undo the change to ${p.path} (\`git checkout ${base} -- ${p.path}\`, or delete it if new); the card allows only its paths.`,
+  'secret-detected': (p) =>
+    `Fix: remove the secret-shaped value at ${p.path}:${p.line} (${p.detail}). A fixture must not assign a string literal to a name that holds token, secret, password or api_key: build the value from parts, read it from the environment, or rename it; the scan reads every commit.`,
   'no-test-changed': () => 'Fix: add a new test file with a test that fails on the current code and passes with your change.',
   'test-passes-on-base': () => 'Fix: the new test passes on the old code too, so it proves nothing; assert the behavior the card changes.',
   'failure-not-in-new-tests': () =>

@@ -52,7 +52,9 @@ test('REQ-RUN-32 an out-of-scope change gets one corrective turn that names the 
   const t = scripted(['out-of-scope', 'good']);
   const header = 'kind: bug\nsize: S\npaths: src/**, test/**';
   const r = run({ repo: dir, card: card(header), config: fixtureConfig({ tiers: [t, scripted(['good'], 'strong')], learnStart: false }) });
-  assert.equal(r.pass, false, 'good does not delete docs/notes.md, so the full gate still fails on scope');
+  // REQ-RUN-70: docs/notes.md is dropped from the diff carried to tier 1, so its build passes scope.
+  assert.equal(r.pass, true, r.failure);
+  assert.equal(r.tier, 1);
   const [, fix] = calls();
   assert.match(fix.prompt, /docs\/notes\.md/);
   assert.match(fix.prompt, /out-of-scope/);
