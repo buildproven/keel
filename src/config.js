@@ -379,35 +379,56 @@ function allowEditsList(where, v) {
   return items;
 }
 
+// The same fenced block `src/linear.js` reads from an issue description (REQ-LINEAR-12).
+const KEEL_BLOCK = /```keel[ \t]*\n([\s\S]*?)```[ \t]*\n?/;
+
 /**
- * Parse a card: `key: value` header lines before the first `## ` heading; the whole file is the task text. Every
- * rejection is a CardError naming the file (or, for a card built from an issue, its id) and what is allowed (REQ-CARD-2).
+ * Parse a card: `key: value` header lines before the first `## ` heading, and the lines of a ```keel block anywhere
+ * (REQ-LINEAR-12); the whole file is the task text. Every rejection is a CardError naming the file (or, for a card built
+ * from an issue, its id) and what is allowed (REQ-CARD-2).
  */
 export function parseCard(text, file) {
   const title = /^#\s+(.+)$/m.exec(text)?.[1].trim() ?? basename(file ?? 'card.md', '.md');
   const id = /^([A-Z]+-\d+)/.exec(title)?.[1] ?? basename(file ?? 'card.md', '.md');
   const where = `card ${file ?? id}`;
   const fields = {};
-  for (const line of text.split(/^## /m)[0].split('\n')) {
+  const add = (key, value, from) => {
+    if (!FIELDS.includes(key)) throw new CardError(`${where}: unknown header "${key}"${from} (allowed: ${FIELDS.join(', ')})`);
+    if (own(fields, key)) throw new CardError(`${where}: header "${key}" is given twice${from}`);
+    fields[key] = value.trim();
+  };
+  const block = KEEL_BLOCK.exec(text);
+  const rest = block ? text.replace(KEEL_BLOCK, '') : text;
+  for (const line of rest.split(/^## /m)[0].split('\n')) {
     const m = /^([A-Za-z]+):\s*(.*)$/.exec(line.trim());
-    if (!m) continue;
-    if (!FIELDS.includes(m[1])) throw new CardError(`${where}: unknown header "${m[1]}" (allowed: ${FIELDS.join(', ')})`);
-    if (own(fields, m[1])) throw new CardError(`${where}: header "${m[1]}" is given twice`);
-    fields[m[1]] = m[2].trim();
+    if (m) add(m[1], m[2], '');
+  }
+  // REQ-LINEAR-12: the block's rules are linear.js's: `key: value` per line, a YAML list is not read; a key also in the header is an error.
+  for (const line of (block?.[1] ?? '').split('\n').filter((l) => l.trim())) {
+    const kv = /^([A-Za-z]+):\s*(.*)$/.exec(line);
+    if (!kv) {
+      const hint = /^\s*-\s/.test(line) ? ' (a YAML list is not read: write `paths: a, b` on one line)' : '';
+      throw new CardError(`${where}: malformed line in its keel block: "${line.trim()}"${hint}`);
+    }
+    add(kv[1], kv[2], ' (in the keel block or the header)');
   }
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(id)) throw new CardError(`${where}: id "${id}" must match [A-Za-z0-9._-], max 64 chars`);
   if (!Object.keys(fields).length)
     throw new CardError(
       `${where}: no header lines; start the card with "kind: <kind>" and "size: <S|M>" lines before the first "## " heading (kind: ${KINDS.join(', ')}; size: ${SIZES.join(', ')})`,
     );
+  // REQ-CARD-2: every bad or missing header is named in one message, so a script need not rerun to find the next.
+  const problems = [];
   const header = (key, allowed) => {
     const value = fields[key];
     if (allowed.includes(value)) return value;
     const why = value === undefined ? 'is missing' : 'is invalid';
-    throw new CardError(`${where}: header "${key}:" ${why}; ${key} "${value}" is not one of ${allowed.join(', ')}`);
+    problems.push(`header "${key}:" ${why}; ${key} "${value}" is not one of ${allowed.join(', ')}`);
+    return undefined;
   };
   const kind = header('kind', KINDS);
   const size = header('size', SIZES);
+  if (problems.length) throw new CardError(`${where}: ${problems.join('; ')}`);
   const acceptance = list(fields.acceptance);
   for (const a of acceptance) if (!NAME.test(a)) throw new CardError(`${where}: acceptance name "${a}" must match [A-Za-z0-9_-]+`);
   const { paths, newPaths } = markedPaths(where, fields.paths);
