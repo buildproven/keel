@@ -66,7 +66,7 @@ test('REQ-RUN-33 a fresh exec worker never inherits a KEEL_RESUME from the envir
   assert.equal(calls()[0].env.resume, undefined);
 });
 
-test('REQ-RUN-33 another provider starts fresh, told which uncommitted changes its working tree already holds', () => {
+test('REQ-RUN-33 another provider starts fresh, told which commits its branch already has', () => {
   const { dir } = fixtureRepo();
   const other = { provider: 'exec', model: 'other', effort: 'high', command: ['node', FAKE, 'good'] };
   const r = run({
