@@ -242,8 +242,10 @@ function followUpText(source, f, config, repo, base, origin = null) {
     ...(paths.length ? [`paths: ${paths.join(', ')}`] : []),
     ...(allowEdits.length ? [`allowEdits: ${allowEdits.join(', ')}`] : []),
   ];
-  const lockNote = locked
-    ? `\n\nThe fix edits \`${locked}\`, a file the gate locks because it defines what passing means; \`allowEdits\` allows that edit. The edit must not remove or weaken any check, job, or test step.`
+  // Every locked file a finding unlocks carries the guard, a named one as much as the cited one (REQ-LINEAR-29, -56).
+  const unlocked = [...new Set([locked, ...named.filter((p) => locksAny(p, config.verificationPaths))].filter(Boolean))];
+  const lockNote = unlocked.length
+    ? `\n\nThe fix edits ${unlocked.map((p) => `\`${p}\``).join(', ')}, ${unlocked.length > 1 ? 'files' : 'a file'} the gate locks because ${unlocked.length > 1 ? 'they define' : 'it defines'} what passing means; \`allowEdits\` allows ${unlocked.length > 1 ? 'those edits' : 'that edit'}. The edit must not remove or weaken any check, job, or test step.`
     : '';
   return (
     [

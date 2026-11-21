@@ -501,13 +501,17 @@ test('REQ-LINEAR-56 a follow-up allows every existing file its finding names, no
 
 test('REQ-LINEAR-56 a named file the gate locks is also an allowed edit; one a glob covers is not repeated', async () => {
   const { dir } = fixtureRepo({ ...CITED_BASE, '.github/workflows/ci.yml': 'name: ci\n', 'docs/guide.md': 'guide\n' });
-  const { card } = await fileFollowUp(dir, {
+  const { card, description } = await fileFollowUp(dir, {
     kind: 'bug',
     title: 'the publish job skips a step',
     detail: 'lib/automation/publish-tools.ts:3 must match `.github/workflows/ci.yml` and docs/guide.md.',
   });
   assert.ok(card.paths.includes('.github/workflows/ci.yml'));
   assert.deepEqual(card.allowEdits, ['.github/workflows/ci.yml']);
+  assert.match(
+    description,
+    /The fix edits `\.github\/workflows\/ci\.yml`, a file the gate locks[^\n]*must not remove or weaken any check, job, or test step/,
+  );
   assert.ok(!card.paths.includes('docs/guide.md'), '**/*.md already covers it');
 });
 
