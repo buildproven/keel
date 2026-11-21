@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { delimiter, join } from 'node:path';
 import { afterEach, test } from 'node:test';
 import { parseCard } from '../src/config.js';
@@ -696,3 +696,44 @@ if (glReal) {
     assert.ok(!JSON.stringify(r).includes('abcdefghijkl'), 'the value is redacted');
   });
 }
+
+const prevReviewer = (script) => ({
+  provider: 'exec',
+  family: 'codex',
+  model: 'exec-review',
+  effort: 'high',
+  command: ['node', '-e', `const p = require('fs').readFileSync(0, 'utf8'); ${script}`],
+});
+
+test('REQ-GATE-23 a head that carries a failed head uncommitted (continues) gets that head review, though it is no descendant', () => {
+  const { dir, base } = fixtureRepo();
+  commit(dir, { ...REGRESSION_TEST, ...FIXED_SRC }, 'fix: add');
+  const receiptDir = tmp('keel-receipts-');
+  const config = fixtureConfig({ review: true });
+  const blocker = prevReviewer("console.log('FINDING medium src/add.js:1 add ignores NaN'); console.log('VERDICT: block')");
+  const first = gate({ repo: dir, base, card: card(), config, receiptDir, reviewer: blocker });
+  assert.equal(first.pass, false);
+  // What `keel run` does before the next attempt (REQ-RUN-69): the branch goes back to base, the diff stays, one new commit.
+  g(dir, 'reset', '-q', '--mixed', base);
+  commit(dir, { 'src/add.js': 'export const add = (a, b) => Number(a) + Number(b);\n' }, 'fix: add, attempt 2');
+  assert.notEqual(g(dir, 'merge-base', base, 'HEAD'), first.head);
+  const promptFile = join(tmp('keel-prompt-'), 'prompt.txt');
+  const recorder = prevReviewer(`require('fs').writeFileSync(${JSON.stringify(promptFile)}, p); console.log('VERDICT: pass')`);
+  // Each check reads a copy holding only the first receipt: a gate writes its own, and the newest one counts.
+  const onlyFirst = () => {
+    const copy = tmp('keel-receipts-');
+    cpSync(receiptDir, copy, { recursive: true });
+    return copy;
+  };
+  const plain = gate({ repo: dir, base, card: card(), config, receiptDir: onlyFirst(), reviewer: recorder });
+  assert.equal(plain.pass, true, JSON.stringify(plain.results));
+  assert.doesNotMatch(readFileSync(promptFile, 'utf8'), /Previous review/, 'no ancestry and no continues: plain prompt');
+  const forged = ['--output=/tmp/x', 'HEAD', first.head.slice(0, 12)];
+  gate({ repo: dir, base, card: card(), config, receiptDir: onlyFirst(), reviewer: recorder, continues: forged });
+  assert.doesNotMatch(readFileSync(promptFile, 'utf8'), /Previous review/, 'only full commit SHAs count as continues');
+  gate({ repo: dir, base, card: card(), config, receiptDir: onlyFirst(), reviewer: recorder, continues: [first.head] });
+  const prompt = readFileSync(promptFile, 'utf8');
+  assert.match(prompt, new RegExp(`# Previous review \\(at ${first.head.slice(0, 12)}\\)`));
+  assert.match(prompt, /- medium src\/add\.js:1 add ignores NaN/);
+  assert.match(prompt, /# Change since the previous review\n[\s\S]*Number\(a\) \+ Number\(b\)/);
+});

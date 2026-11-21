@@ -887,3 +887,19 @@ test('REQ-RUN-70 an out-of-scope file the attempt deleted is restored from the b
   assert.equal(r.pass, true, r.failure);
   assert.equal(rsSeen(t[1])[0].readme, 'base\n');
 });
+
+test('REQ-RUN-69 the review of the attempt after a restart gets the failed attempt review (REQ-GATE-23), so reviews converge', () => {
+  const { dir } = fixtureRepo();
+  const promptFile = join(tmp('keel-prompt-'), 'prompt.txt');
+  const counter = join(tmp('keel-review-'), 'n');
+  const reviewScript = `const fs = require('fs'); const p = fs.readFileSync(0, 'utf8'); const n = fs.existsSync(${JSON.stringify(counter)}) ? 1 : 0; fs.writeFileSync(${JSON.stringify(counter)}, '1');
+if (n === 0) { console.log('FINDING medium src/add.js:1 add ignores NaN'); console.log('VERDICT: block'); } else { fs.writeFileSync(${JSON.stringify(promptFile)}, p); console.log('VERDICT: pass'); }`;
+  const builders = rsTiers(['fix'], ['fix']).map((t) => ({ ...t, family: 'claude' }));
+  const reviewerTier = { provider: 'exec', family: 'codex', model: 'r', effort: 'high', command: ['node', '-e', reviewScript] };
+  const r = run({ repo: dir, card: rsCard(), config: rsConfig([...builders, reviewerTier], { review: true }) });
+  assert.equal(r.pass, true, r.failure);
+  assert.equal(r.attempt, 2);
+  const [first, second] = readLedger().filter((x) => x.card === 'T-69' && !x.role);
+  assert.equal(second.restartedFrom, first.head);
+  assert.match(readFileSync(promptFile, 'utf8'), new RegExp(`# Previous review \\(at ${first.head.slice(0, 12)}\\)`));
+});

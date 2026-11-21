@@ -730,11 +730,12 @@ function enableAutoMerge(wt, prResult, head) {
 }
 
 /** Gate the worktree's HEAD for this card with the builder's cross-family reviewer. */
-const gateWorktree = ({ wt, baseSha, card, config, t, log, flaky = [] }) => {
+const gateWorktree = ({ wt, baseSha, card, config, t, log, flaky = [], continues = [] }) => {
   let receipt;
   try {
     receipt = gate({
       flaky,
+      continues,
       repo: wt,
       base: baseSha,
       card,
@@ -1149,6 +1150,7 @@ function runLocked({ repo, card, config, baseSha, baseBranch, branch, wt, pr, me
   let heldOutFailed = null; // the held-out tests the last attempt failed on head (REQ-RUN-46)
   let heldOutChecked = false; // one defect check per held-out set (REQ-RUN-46)
   let restartedFrom = null; // the failed attempt's commit the next attempt's diff came from (REQ-RUN-69)
+  const carriedFrom = []; // every failed commit whose work the branch carries, so the review re-gate finds its receipt (REQ-GATE-23)
   for (let attempt = 1; attempt <= config.maxAttempts; attempt++) {
     const t = config.tiers[tier];
     log(`attempt ${attempt}: tier ${tier} ${t.provider}/${t.model}/${t.effort}`);
@@ -1252,7 +1254,7 @@ function runLocked({ repo, card, config, baseSha, baseBranch, branch, wt, pr, me
           log(`attempt ${attempt}: ${commitError.split('\n')[0]}; the next attempt gets its output`);
         }
         const gateStart = Date.now();
-        const gateHead = (flaky = []) => gateWorktree({ wt, baseSha, card, config, t, log, flaky });
+        const gateHead = (flaky = []) => gateWorktree({ wt, baseSha, card, config, t, log, flaky, continues: carriedFrom });
         receipt = commitError ? null : gateHead();
         // A check that failed twice in one gate may still be the machine, not the work: gate the same head once more
         // before a stronger tier is paid to change nothing (REQ-RUN-34, extends REQ-GATE-18).
@@ -1439,6 +1441,7 @@ function runLocked({ repo, card, config, baseSha, baseBranch, branch, wt, pr, me
       // The tests were the defect, not the build: the same tier builds again against the new set (REQ-RUN-46).
       failure = HELD_OUT_REPLACED;
       if (attempt < config.maxAttempts) restartedFrom = restartFromBase(wt, branch, baseSha, card, attempt, log)?.from ?? null;
+      if (restartedFrom) carriedFrom.push(restartedFrom);
       log(`attempt ${attempt + 1} stays on tier ${tier} with new held-out tests`);
       continue;
     }
@@ -1460,6 +1463,7 @@ function runLocked({ repo, card, config, baseSha, baseBranch, branch, wt, pr, me
     networkRetries = next === tier && w.status === 'network' ? networkRetries + 1 : 0;
     // The last attempt keeps its commit: the parked worktree must stay clean (REQ-RUN-44).
     if (attempt < config.maxAttempts) restartedFrom = restartFromBase(wt, branch, baseSha, card, attempt, log)?.from ?? null;
+    if (restartedFrom) carriedFrom.push(restartedFrom);
     tier = next;
   }
   return { pass: false, stopped: 'max-attempts', branch, worktree: wt, failure, followUps };

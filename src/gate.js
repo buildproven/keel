@@ -881,12 +881,13 @@ export function readReceipt(file) {
 }
 
 /**
- * The newest earlier review of this card whose head is an ancestor of `head` (REQ-GATE-23): its blocking findings, its
- * low and info notes, and the diff since. A commit is its own ancestor, so a re-gate of an unchanged head gets that head's findings. The file prefix only narrows the read: `feature-` also matches `feature-fix-…`, so the receipt's
+ * The newest earlier review of this card whose head is an ancestor of `head` (REQ-GATE-23), or of a commit `continues`
+ * names (the failed attempts whose work `head` carries uncommitted, REQ-RUN-69): its blocking findings, its low and info
+ * notes, and the diff since. A commit is its own ancestor, so a re-gate of an unchanged head gets that head's findings. The file prefix only narrows the read: `feature-` also matches `feature-fix-…`, so the receipt's
  * own card id decides. Receipts are written by Keel but sit where candidate code could write; a forged one only changes the
  * reviewer's prompt, which the candidate's diff can already do, and a malformed one is skipped (readReceipt).
  */
-function previousReview(receiptDir, card, head, repo) {
+function previousReview(receiptDir, card, head, repo, continues = []) {
   if (!receiptDir || !existsSync(receiptDir)) return null;
   const receipts = readdirSync(receiptDir)
     .filter((f) => f.startsWith(`${card.id}-`) && f.endsWith('.json'))
@@ -899,7 +900,9 @@ function previousReview(receiptDir, card, head, repo) {
     if (review.problems.some((p) => p.rule === 'review-unavailable')) continue;
     // Low and info notes travel with the blocking findings (REQ-GATE-23); a receipt written before notes existed has none.
     if (review.notes !== undefined && !(Array.isArray(review.notes) && review.notes.every(isObject))) continue;
-    if (exec('git', ['merge-base', '--is-ancestor', r.head, head], repo).status !== 0) continue;
+    // A missing commit (garbage-collected) fails the ancestry check too, so `git diff` below never sees it.
+    const leads = [head, ...continues.filter((c) => SHA.test(c))];
+    if (!leads.some((to) => exec('git', ['merge-base', '--is-ancestor', r.head, to], repo).status === 0)) continue;
     const findings = [...review.problems.filter((p) => p.rule === 'review-finding'), ...(review.notes ?? [])];
     return { head: r.head, findings, delta: git(['diff', '--text', '--no-textconv', r.head, head], repo) };
   }
@@ -937,6 +940,7 @@ export function gate({
   log = () => {},
   slotDir = null,
   flaky = [],
+  continues = [], // commits whose work this head carries uncommitted, set by `keel run` only (REQ-RUN-69, REQ-GATE-23)
 }) {
   const head = revParse('HEAD', repo);
   const baseSha = revParse(base, repo);
@@ -964,7 +968,7 @@ export function gate({
     reviewer,
     spendFile,
     clock,
-    previous: previousReview(receiptDir, card, head, repo),
+    previous: previousReview(receiptDir, card, head, repo, continues),
     changed: failed() ? [] : changedFiles(from, head, repo),
   };
   // A changed lockfile needs its own install; a linked dir would test the old packages (REQ-GATE-70).
