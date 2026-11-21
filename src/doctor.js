@@ -1,3 +1,4 @@
+import { CORES_PER_GATE } from './slots.js';
 import { linearKey } from './env.js';
 import { prepareCheckout, shell } from './gate.js';
 import { exec, revParse, withTempWorktree } from './git.js';
@@ -52,7 +53,11 @@ function advice(rows, config, dir, testInChecks, slowSuiteMs) {
   }
   const commands = { ...config.checks, ...(testInChecks ? {} : { test: config.testCommand }) };
   for (const d of duplicateWork(commands, dir)) out.push(`${d.names.join(' and ')} both run "${d.part}"; run it in one check only`);
-  return out.map((output) => ({ name: 'speed', kind: 'advice', pass: true, output }));
+  const rowsOut = out.map((output) => ({ name: 'speed', kind: 'advice', pass: true, output }));
+  // The weight the gate slots use for this repo (REQ-SLOT-4).
+  if (!config.gateCores) return rowsOut;
+  const weight = `gate weight: ${config.gateCores} cores (keel.json gateCores; default ${CORES_PER_GATE})`;
+  return [...rowsOut, { name: 'slots', kind: 'advice', pass: true, output: weight }];
 }
 
 /**

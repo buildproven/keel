@@ -161,6 +161,8 @@ export const DEFAULTS = {
   ],
   startTier: { L: 1, protected: 0 },
   maxAttempts: 4,
+  // Cores one gate of this repo uses (REQ-SLOT-4); null keeps the default of 2.
+  gateCores: null,
   workerTimeoutSec: 1800,
   failureTailChars: 4000,
   claudePermissionMode: 'auto',
@@ -189,6 +191,7 @@ function validate(c) {
     (t.provider === 'exec' ? Array.isArray(t.command) : typeof t.model === 'string' && typeof t.effort === 'string');
   if (!Array.isArray(c.tiers) || !c.tiers.length || !c.tiers.every(tierOk)) bad('"tiers" needs ≥ 1 tier with a provider');
   if (!Number.isInteger(c.maxAttempts) || c.maxAttempts < 1) bad('"maxAttempts" must be an integer ≥ 1');
+  if (c.gateCores !== null && !(Number.isInteger(c.gateCores) && c.gateCores >= 1)) bad('"gateCores" must be null or an integer ≥ 1');
   if (
     c.heldOutAuthorTier !== null &&
     !(Number.isInteger(c.heldOutAuthorTier) && c.heldOutAuthorTier >= 0 && c.heldOutAuthorTier < c.tiers.length)
