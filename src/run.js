@@ -557,23 +557,39 @@ function uncommit(wt, branch, baseSha) {
 }
 
 /**
+ * Every path the worktree differs in from `baseSha`: committed, staged, unstaged, or untracked (not ignored). The worker's
+ * work may sit in any of these: a leftovers commit a hook rejected keeps it staged on the base (REQ-RUN-65).
+ */
+const changedSinceBase = (wt, baseSha) =>
+  [
+    ...new Set([
+      ...git(['diff', '--name-only', '-z', '--no-renames', baseSha], wt).split('\0'),
+      ...git(['ls-files', '-z', '--others', '--exclude-standard'], wt).split('\0'),
+    ]),
+  ].filter(Boolean);
+
+/**
  * Start the next attempt from the base (REQ-RUN-69): the failed attempt's commits come off the branch, its diff stays as
- * uncommitted changes, so only the final attempt's single commit reaches history. Each file of the diff outside the
- * card's paths is dropped (restored to the base, or removed when the attempt added it) and logged, so the next tier
- * never sees it (REQ-RUN-70). Returns the failed commit and the dropped paths, or null when there was nothing to carry.
+ * uncommitted changes, so only the final attempt's single commit reaches history. Each changed file outside the card's
+ * paths, committed or not (a rejected leftovers commit leaves it staged), is dropped (restored to the base, or removed
+ * when the attempt added it) and logged, so the next tier never sees it (REQ-RUN-70). Returns the failed commit (null
+ * when the branch was already at the base) and the dropped paths, or null when there was nothing to do.
  */
 function restartFromBase(wt, branch, baseSha, card, attempt, log) {
-  const changed = onBranch(wt, branch) ? changedFiles(baseSha, 'HEAD', wt).map((f) => f.path) : [];
+  if (!onBranch(wt, branch)) return null;
   const was = uncommit(wt, branch, baseSha);
-  if (!was) return null;
-  const dropped = outOfScope(changed, card.paths.length ? [...card.paths, ...card.allowEdits] : []);
+  const dropped = outOfScope(changedSinceBase(wt, baseSha), card.paths.length ? [...card.paths, ...card.allowEdits] : []);
+  if (!was && !dropped.length) return null;
   for (const path of dropped) {
     if (exec('git', ['cat-file', '-e', `${baseSha}:${path}`], wt).status === 0) git(['checkout', '-q', baseSha, '--', path], wt);
-    else rmSync(join(wt, path), { force: true }); // a file the attempt added; `path` is a repo-relative name from git
+    else {
+      git(['rm', '-q', '--cached', '--ignore-unmatch', '--', path], wt); // a staged add would stay in the index
+      rmSync(join(wt, path), { force: true }); // a file the attempt added; `path` is a repo-relative name from git
+    }
   }
+  const what = was ? `failed on ${was}: the next attempt starts on the base with its diff uncommitted` : 'failed';
   log(
-    `attempt ${attempt} failed on ${was}: the next attempt starts on the base with its diff uncommitted` +
-      (dropped.length ? `; dropped ${dropped.length} file(s) outside the card paths: ${dropped.join(', ')}` : ''),
+    `attempt ${attempt} ${what}${dropped.length ? `; dropped ${dropped.length} file(s) outside the card paths: ${dropped.join(', ')}` : ''}`,
   );
   return { from: was, dropped };
 }

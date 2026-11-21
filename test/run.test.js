@@ -903,3 +903,25 @@ if (n === 0) { console.log('FINDING medium src/add.js:1 add ignores NaN'); conso
   assert.equal(second.restartedFrom, first.head);
   assert.match(readFileSync(promptFile, 'utf8'), new RegExp(`# Previous review \\(at ${first.head.slice(0, 12)}\\)`));
 });
+
+test('REQ-RUN-70 when the leftovers commit fails, out-of-scope files staged on the base are still dropped before the next tier', () => {
+  const { dir } = fixtureRepo({ ...BUGGY, 'README.md': 'base\n' });
+  // A pre-commit hook that rejects any commit touching docs/: attempt 1's commit fails (REQ-RUN-65), so its work stays staged.
+  writeFileSync(join(dir, '.git', 'hooks', 'pre-commit'), "#!/bin/sh\n! git diff --cached --name-only | grep -q '^docs/'\n");
+  chmodSync(join(dir, '.git', 'hooks', 'pre-commit'), 0o755);
+  const t = rsTiers(['scatter'], ['fix']);
+  const out = [];
+  const header = 'kind: bug\nsize: S\npaths: src/**, test/**';
+  const r = run({ repo: dir, card: rsCard(header), config: rsConfig(t), log: (l) => out.push(l) });
+  assert.equal(r.pass, true, r.failure);
+  assert.equal(r.attempt, 2);
+  const [first] = readLedger().filter((x) => x.card === 'T-69' && !x.role);
+  assert.equal(first.head, null, 'attempt 1 made no commit');
+  const [tier1] = rsSeen(t[1]);
+  assert.equal(tier1.notes, false, 'a staged file the attempt added is removed');
+  assert.equal(tier1.readme, 'base\n', 'a staged edit to a base file is restored');
+  assert.ok(
+    out.some((l) => /dropped 2 file\(s\) outside the card paths/.test(l)),
+    out.join('\n'),
+  );
+});
