@@ -1,6 +1,6 @@
 import { CardError, DEFAULTS, readCard } from './config.js';
-import { exec, revParse, showFile } from './git.js';
-import { matchesAny } from './scan.js';
+import { exec, git, revParse, showFile } from './git.js';
+import { fold, locksAny, matchesAny } from './scan.js';
 import { GLOB_CHAR, cardFromIssue, exactPaths, markedNew } from './linear.js';
 import { UsageError } from './usage.js';
 
@@ -8,12 +8,13 @@ import { UsageError } from './usage.js';
 export const ISSUE_ID = /^[A-Z]+-[0-9]+$/;
 
 /**
- * The card's exactly named paths that are not in `base` and that its text does not mark new (REQ-LINEAR-44): a
- * dependency not merged yet, a card for another repo, or a file that does not exist yet would stop the build for a human.
+ * The card's exactly named paths that are not in `base`, that its text does not mark new (REQ-LINEAR-44), and that its
+ * `allowEdits` does not list (REQ-CARD-14: a new locked file, such as a new workflow, is authorized there): a dependency
+ * not merged yet, a card for another repo, or a file that does not exist yet would stop the build for a human.
  * `keel poll` and `keel check-card` both call this one function, so they judge a card alike (REQ-CARD-10).
  */
 export function missingOnBase(repo, base, card) {
-  const wanted = exactPaths(card).filter((p) => !markedNew(card, p));
+  const wanted = exactPaths(card).filter((p) => !markedNew(card, p) && !matchesAny(p, card.allowEdits ?? []));
   if (!wanted.length) return { missing: [] };
   const sha = revParse(base, repo);
   return { sha, missing: wanted.filter((p) => exec('git', ['cat-file', '-e', `${sha}:${p}`], repo).status !== 0) };
@@ -42,10 +43,7 @@ export function uncoveredTraceability(repo, sha, card) {
  */
 export function lockedTestsOnly(repo, sha, card) {
   if (!['bug', 'feature'].includes(card.kind) || !card.paths.length) return [];
-  // Only these keys are read: a repo whose keel.json is incomplete still gets its cards checked.
-  const text = showFile(sha, 'keel.json', repo);
-  const user = text === null ? {} : JSON.parse(text);
-  const pick = (k) => (Object.hasOwn(user, k) ? user[k] : DEFAULTS[k]);
+  const pick = basePolicy(repo, sha);
   // The gate can prove an edit of an existing test there (REQ-GATE-44), so an existing test file is a home.
   if (pick('approveAllowEdits') && pick('testFilesCommand')) return [];
   const testGlobs = pick('testGlobs');
@@ -56,6 +54,38 @@ export function lockedTestsOnly(repo, sha, card) {
     named.some((p) => markedNew(card, p)) ||
     (card.allowEdits ?? []).some((p) => matchesAny(p, testGlobs));
   return home ? [] : named.filter((p) => exec('git', ['cat-file', '-e', `${sha}:${p}`], repo).status === 0);
+}
+
+/**
+ * A reader of one `keel.json` key at `sha`, else its default. Only the keys asked for are read: a repo whose keel.json is
+ * incomplete still gets its cards checked.
+ */
+function basePolicy(repo, sha) {
+  const text = showFile(sha, 'keel.json', repo);
+  const user = text === null ? {} : JSON.parse(text);
+  return (k) => (Object.hasOwn(user, k) ? user[k] : DEFAULTS[k]);
+}
+
+/**
+ * The card's exactly named paths that `verificationPaths` at `sha` locks (letter case folded, as the gate matches them,
+ * REQ-GATE-4), that is not genuinely new and its `allowEdits` does not list (REQ-CARD-13). Only a parsed ` (new)` path
+ * absent from the base in every letter case is new here; prose that says "new" does not authorize a gate edit. The gate
+ * then fails the build on `verification-file-changed` (BUI-2096, 2026-11-21). A glob or a directory in `paths` is not
+ * reported: it does not say the card edits a locked file.
+ */
+export function lockedWithoutAllow(repo, sha, card) {
+  // A directory (`.github/workflows/`) is a scope like a glob, so only the items that name one file are judged.
+  const files = exactPaths({ ...card, paths: card.paths.filter((p) => !p.endsWith('/')) });
+  if (!files.length) return [];
+  const verificationPaths = basePolicy(repo, sha)('verificationPaths');
+  const newPaths = new Set(exactPaths({ paths: card.newPaths ?? [] }).map(fold));
+  const onBase = newPaths.size
+    ? new Set(git(['ls-tree', '-r', '-z', '--name-only', sha], repo).split('\0').filter(Boolean).map(fold))
+    : new Set();
+  return files.filter((p) => {
+    const genuinelyNew = newPaths.has(fold(p)) && !onBase.has(fold(p));
+    return locksAny(p, verificationPaths) && !genuinelyNew && !matchesAny(p, card.allowEdits ?? []);
+  });
 }
 
 /** The card of an open issue, as `keel poll` maps it (REQ-LINEAR-2); a mapping error is a CardError (REQ-CARD-9). */
@@ -99,7 +129,10 @@ export async function checkCard({ repo, base, target, issues, log, isFile = () =
     log(
       `check-card ${card.id}: every test file in paths is on base ${at} and locked (${locked.join(', ')}); add a new test file marked \`(new)\` to paths for the regression test`,
     );
-  if (!missing.length && !trace.length && !locked.length) {
+  const unallowed = lockedWithoutAllow(repo, sha, card);
+  for (const p of unallowed)
+    log(`check-card ${card.id}: ${p} is locked (verification file); add it to allowEdits if the card must change it`);
+  if (!missing.length && !trace.length && !locked.length && !unallowed.length) {
     log(`check-card ${card.id}: pass (every exact path is on base ${at} or marked new)`);
     return 0;
   }
