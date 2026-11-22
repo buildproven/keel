@@ -68,10 +68,11 @@ test('REQ-SLOT-1 a waiting gate recomputes the count: a free slot opens when the
   );
 });
 
-test('REQ-SLOT-1 with no slot held, a gate runs however busy the machine is', () => {
+// Memory short is the exception: a lone gate then waits (BUI-2122, test/slots-memory.test.js).
+test('REQ-SLOT-1 with no slot held, a gate runs however busy the CPU is', () => {
   const dir = tmp('keel-locks-');
   const ran = withGateSlot(
-    { dir, sleep: () => assert.fail('must not wait'), log: () => {}, idle: () => 0, memLow: () => true, cpus: 4 },
+    { dir, sleep: () => assert.fail('must not wait'), log: () => {}, idle: () => 0, memLow: () => false, cpus: 4 },
     () => 'ran',
   );
   assert.equal(ran, 'ran');
