@@ -118,6 +118,28 @@ export function readPlan(
 
 const NAMES = { fiveHour: '5h', week: 'week' };
 
+/**
+ * REQ-PLAN-9: the owner's one-off override of `planLimits`, from `KEEL_PLAN_LIMITS` (`week=97` or `fiveHour=95,week=97`),
+ * merged over the keel.json limits. Only the run the owner starts with the variable uses it; the nightly polls never set
+ * it. Returns the limits to use and, when overridden, the line to log. A malformed value is an error, never ignored.
+ */
+export function ownerPlanLimits(limits, env = process.env) {
+  const raw = env.KEEL_PLAN_LIMITS;
+  if (raw === undefined || raw === '') return { limits, note: null };
+  const out = { ...(limits ?? { fiveHour: 90, week: 80 }) };
+  for (const part of raw.split(',')) {
+    const m = /^\s*(fiveHour|week)\s*=\s*(\d+(?:\.\d+)?)\s*$/.exec(part);
+    const n = m ? Number(m[2]) : NaN;
+    if (!m || !(n > 0 && n <= 100)) {
+      throw new Error(
+        `KEEL_PLAN_LIMITS must be fiveHour=<percent>, week=<percent> or both, each above 0 and at most 100; got ${JSON.stringify(raw)}`,
+      );
+    }
+    out[m[1]] = n;
+  }
+  return { limits: out, note: `plan limits overridden by KEEL_PLAN_LIMITS (owner's OK): 5h ${out.fiveHour}%, week ${out.week}%` };
+}
+
 /** Providers with a window at or over its `planLimits` percent, each with why (REQ-PLAN-2); an unknown window never counts. */
 export function reservedProviders(plan, limits, lastResort = [], lastResortLimits = limits) {
   const out = new Map();
