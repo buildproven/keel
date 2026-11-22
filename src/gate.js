@@ -1013,7 +1013,7 @@ export function gate({
   const slots = slotDir
     ? {
         dir: slotDir,
-        size: fixedSlots(),
+        cap: fixedSlots(),
         since: Date.now(),
         log,
         holdMs: OPEN_HOLD_MS,

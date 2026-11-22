@@ -10,7 +10,7 @@ import { OPEN_HOLD_MS, fixedSlots, withGateSlot } from './slots.js';
  */
 export function keelTest({ repo, config, slotDir, log }) {
   return withGateSlot(
-    { dir: slotDir, size: fixedSlots(), log, holdMs: OPEN_HOLD_MS, ...(config.gateCores ? { coresPerGate: config.gateCores } : {}) },
+    { dir: slotDir, cap: fixedSlots(), log, holdMs: OPEN_HOLD_MS, ...(config.gateCores ? { coresPerGate: config.gateCores } : {}) },
     () => {
       const r = spawnSync(config.testCommand, {
         cwd: repo,

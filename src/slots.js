@@ -5,7 +5,10 @@ import { basename, join } from 'node:path';
 
 const sleepMs = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
-/** A fixed slot count from KEEL_GATE_SLOTS (REQ-SLOT-1), or null: then the count follows the machine's idle CPU and memory. */
+/**
+ * The KEEL_GATE_SLOTS cap (REQ-SLOT-1), or null. It only lowers the count measured from idle CPU and memory, never raises
+ * it: a fixed 2 ran gates past the machine's memory and the Mac panicked (BUI-2121, 2026-11-22).
+ */
 export function fixedSlots(env = process.env) {
   if (env.KEEL_GATE_SLOTS === undefined) return null;
   const n = Number(env.KEEL_GATE_SLOTS);
@@ -196,14 +199,15 @@ function ahead(dir, mine) {
  * served: each request leaves a ticket, and a gate takes a slot only while fewer live tickets are ahead of it than slots
  * are free. A ticket sorts by `since`, the gate's start time (REQ-SLOT-3), so each later stage of a started gate queues
  * ahead of gates that came after it, and the oldest gate finishes first. The count is `size` when fixed, else it follows
- * the machine's idle CPU and memory and is recomputed while waiting (REQ-SLOT-1); with no slot held, a gate always runs. The waiting
+ * the machine's idle CPU and memory and is recomputed while waiting (REQ-SLOT-1), capped by `cap`; with no slot held, a gate runs unless memory is short. The waiting
  * line names the count and is said again when it changes. The wait does not count against any stage timeout, since the
  * stage starts after it.
  */
 export function withGateSlot(
   {
     dir,
-    size = null,
+    size = null, // a fixed count (tests); gates pass `cap` instead
+    cap = null, // KEEL_GATE_SLOTS: an upper bound on the measured count (BUI-2121)
     since = Date.now(),
     sleep = sleepMs,
     log,
@@ -229,10 +233,22 @@ export function withGateSlot(
       // A slot opened in the last holdMs: its gate's load is not in the idle reading yet, so open no other (REQ-SLOT-4).
       // holdMs 0 means no hold: a just-made slot's mtime can read a fraction of a millisecond after Date.now().
       const fresh = first && holdMs > 0 && running && newestSlotAgeMs(dir, now()) < holdMs;
-      const n = size ?? (!running ? 1 : fresh ? running : idleSlots({ idle: idle(), running, cpus, memLow: memLow(), coresPerGate }));
+      // Short of memory, even a lone gate waits: outside CPU load only slows a gate, but a gate that starts its browsers
+      // with memory short swaps the machine into a watchdog panic (BUI-2122, 2026-11-22).
+      const short = !size && !running && memLow();
+      const measured = short
+        ? 0
+        : !running
+          ? 1
+          : fresh
+            ? running
+            : idleSlots({ idle: idle(), running, cpus, memLow: memLow(), coresPerGate });
+      const n = size ?? (cap ? Math.min(cap, measured) : measured);
       if (before < n - running) slot = take(dir, n, first && holdMs > 0);
       if (slot) break;
-      const line = `waiting for gate slot (${running} running of ${n}${before ? `, ${before} ahead` : ''})`;
+      const line = short
+        ? 'waiting for memory: under 15 % available or the kernel reports pressure'
+        : `waiting for gate slot (${running} running of ${n}${before ? `, ${before} ahead` : ''})`;
       if (line !== said) log(line);
       said = line;
       sleep(2000);
