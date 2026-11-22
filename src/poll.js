@@ -28,7 +28,7 @@ import { readLedger, spentToday, stateDir } from './ledger.js';
 import { finishSelfMerges, recordSelfMerge } from './merge.js';
 import { REFINED_HEADING, refineIssue, refineReason } from './refine.js';
 import { networkFailure } from './network.js';
-import { nextReset, planLine, readPlan, reservedProviders, savePlan } from './plan.js';
+import { nextReset, ownerPlanLimits, planLine, readPlan, reservedProviders, savePlan } from './plan.js';
 import { run } from './run.js';
 import { locksAny, matchesAny } from './scan.js';
 import { GATE_CONTEXT, gateDescription, gateState, postGateStatus } from './status.js';
@@ -1189,15 +1189,17 @@ function overBudget({ repo, config, log }) {
  * REQ-PLAN-3: the subscription plan windows, read before every issue. Returns `{ stop }` when every provider of the
  * ladder is over a `planLimits` window, else `{ reserved }`: the providers the run must skip.
  */
-function planCheck({ config, log, planFn }) {
+function planCheck({ config, log, planFn, env = process.env }) {
   if (!config.planLimits || !planFn) return { reserved: new Map() };
+  const { limits, note } = ownerPlanLimits(config.planLimits, env); // REQ-PLAN-9
   const plan = planFn(config);
   savePlan(plan, stateDir()); // every gate of this poll's runs reads it for the review window (REQ-PLAN-5)
   log(`plan: ${planLine(plan)}`);
-  const reserved = reservedProviders(plan, config.planLimits, config.lastResort, config.lastResortLimits);
+  if (note) log(note);
+  const reserved = reservedProviders(plan, limits, config.lastResort, config.lastResortLimits);
   const providers = new Set(config.tiers.map((t) => t.provider));
   if (!reserved.size || ![...providers].every((p) => reserved.has(p))) return { reserved };
-  const reset = nextReset(plan, config.planLimits, config.lastResort, config.lastResortLimits);
+  const reset = nextReset(plan, limits, config.lastResort, config.lastResortLimits);
   log(`plan limit reached: ${[...reserved].map(([p, w]) => `${p} ${w}`).join('; ')}${reset ? `; next reset ${reset}` : ''}`);
   return { stop: { outcome: 'plan', reserved: Object.fromEntries(reserved) } };
 }
