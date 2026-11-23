@@ -136,8 +136,14 @@ export const DEFAULTS = {
   followUpsPerDay: 20,
   // Most Keel-filed follow-ups a project may hold unbuilt (Backlog or Todo) before filing waits (REQ-LINEAR-42); 0 = no limit.
   followUpOpenMax: 8,
-  // Unarchived Linear issues in the workspace at which `keel poll` stops filing found work (REQ-LINEAR-37); 0 = off.
-  followUpHoldAt: 200,
+  // Unarchived Linear issues in the workspace at which `keel poll` stops filing found work (REQ-LINEAR-37, REQ-LINEAR-57); 0 = off.
+  followUpHoldAt: 50,
+  // Days with no activity after which `keel poll` cancels an open issue (REQ-LINEAR-57); 0 = off.
+  staleDays: 14,
+  // Days with no activity after which `keel poll` cancels an unbuilt `Review:` or `Audit #` follow-up (REQ-LINEAR-57); 0 = off.
+  followUpStaleDays: 7,
+  // Linear projects whose issues `keel poll` never cancels as stale (REQ-LINEAR-57).
+  staleSkipProjects: [],
   // One read-only refine turn before `keel poll` builds an unclear or too-big issue (REQ-LINEAR-32).
   refineIssues: true,
   // How long `keel poll --merge` waits for every check on a certified SHA before it gives up a self-merge (REQ-MERGE-4).
@@ -261,6 +267,9 @@ function validate(c) {
   if (!Number.isInteger(c.followUpsPerDay) || c.followUpsPerDay < 0) bad('"followUpsPerDay" must be an integer ≥ 0');
   if (!Number.isInteger(c.followUpOpenMax) || c.followUpOpenMax < 0) bad('"followUpOpenMax" must be an integer ≥ 0');
   if (!Number.isInteger(c.followUpHoldAt) || c.followUpHoldAt < 0) bad('"followUpHoldAt" must be an integer ≥ 0');
+  for (const k of ['staleDays', 'followUpStaleDays']) if (!Number.isInteger(c[k]) || c[k] < 0) bad(`"${k}" must be an integer ≥ 0`);
+  if (!Array.isArray(c.staleSkipProjects) || !c.staleSkipProjects.every((v) => typeof v === 'string'))
+    bad('"staleSkipProjects" must be an array of strings');
   if (!Number.isInteger(c.worktreeKeepDays) || c.worktreeKeepDays < 0) bad('"worktreeKeepDays" must be an integer ≥ 0');
   if (!positive(c.selfMergeTimeoutMinutes)) bad('"selfMergeTimeoutMinutes" must be a positive number');
   for (const d of c.shareDirs) if (d.includes('..') || d.startsWith('/')) bad(`shareDirs entry "${d}" must be a plain relative name`);

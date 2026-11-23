@@ -389,6 +389,62 @@ async function archiveClosed(archiveFn, log) {
   }
 }
 
+// An unbuilt Keel follow-up: a review note (`run.js`) or an audit finding (`audit.js`) in a not-started state (REQ-LINEAR-57).
+const FOLLOW_UP_TITLE = /^(Review:|Audit #)/;
+const UNBUILT = new Set(['backlog', 'unstarted', 'triage']);
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Why open `issue` is stale at `now` (REQ-LINEAR-57), or null when it stays open. */
+function idleReason(issue, config, now) {
+  if (config.staleSkipProjects.includes(issue.project)) return null;
+  if (issue.stateType === 'started' && issue.openPr) return null;
+  const days = Math.floor((now - Date.parse(issue.updatedAt)) / DAY_MS);
+  const followUp = FOLLOW_UP_TITLE.test(issue.title) && UNBUILT.has(issue.stateType);
+  if (followUp && config.followUpStaleDays > 0 && days >= config.followUpStaleDays)
+    return `an unbuilt follow-up with no activity for ${days} days (followUpStaleDays ${config.followUpStaleDays})`;
+  if (config.staleDays > 0 && days >= config.staleDays) return `no activity for ${days} days (staleDays ${config.staleDays})`;
+  return null;
+}
+
+/**
+ * Cancel the workspace's stale open issues (REQ-LINEAR-57), each after a comment that gives the reason, so open issues
+ * cannot pile up past `followUpHoldAt`. A client without `staleIssues` and `cancel` (a test fake of other behavior)
+ * cancels nothing. Returns the poll results to add: none, or one `followUpsFailed` when Linear failed, so the poll
+ * exits 1 and goes on; an issue that fails does not stop the others.
+ */
+async function cancelStale(client, config, log) {
+  const ages = [config.staleDays, config.followUpStaleDays].filter((d) => d > 0);
+  if (!client.staleIssues || !client.cancel || !ages.length) return [];
+  const errors = [];
+  const canceled = [];
+  try {
+    const now = Date.now();
+    for (const issue of await client.staleIssues(Math.min(...ages))) {
+      const reason = idleReason(issue, config, now);
+      if (!reason) continue;
+      try {
+        await client.comment(
+          issue.id,
+          `keel: canceled as stale: ${reason}. Reopen this issue if the work is still needed; to keep a project's issues open, add it to \`staleSkipProjects\` in keel.json.`,
+        );
+        await client.cancel(issue.id);
+        canceled.push(issue.id);
+      } catch (e) {
+        if (networkFailure(e)) throw e; // REQ-LINEAR-40
+        errors.push(`stale issue ${issue.id} not canceled: ${e.message}`);
+      }
+    }
+  } catch (e) {
+    // An unreachable network stops the poll (REQ-LINEAR-40): every later Linear call would fail the same way.
+    if (networkFailure(e)) throw e;
+    // Every other Linear error here is logged and fails the poll, never stops it (REQ-LINEAR-57).
+    errors.push(`stale issues not canceled: ${e.message}`);
+  }
+  if (canceled.length) log(`canceled ${canceled.length} stale issue(s): ${canceled.join(', ')}`);
+  for (const e of errors) log(e);
+  return errors.map((detail) => ({ outcome: 'followUpsFailed', detail }));
+}
+
 /** Keel's install root: the checkout this code runs from (REQ-LINEAR-48). */
 export const KEEL_ROOT = fileURLToPath(new URL('..', import.meta.url));
 
@@ -1322,8 +1378,9 @@ export async function poll({
   // A project that is not this repo's stops before Linear is read or a worktree made (REQ-LINEAR-34).
   resolveProject(project, config, repo);
   // File the queued follow-ups and stop: no issue is built, commented on, or recorded (REQ-LINEAR-31).
-  // Closed issues stop counting toward Linear's limit before anything is filed (REQ-LINEAR-39).
-  const archived = await archiveClosed(archiveFn, log);
+  // Stale open issues are canceled, then closed issues stop counting toward Linear's limit before anything is filed
+  // (REQ-LINEAR-57, REQ-LINEAR-39).
+  const archived = [...(await cancelStale(client, config, log)), ...(await archiveClosed(archiveFn, log))];
   if (fileOnly)
     return [...archived, ...filingFailed(await fileFollowUps({ repo, project, config, client, log, base, capacityFn, keelRoot }))];
   const results = [...archived];

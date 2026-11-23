@@ -97,6 +97,19 @@ const CLOSED_ISSUES = `
 
 const ARCHIVE_ISSUE = `mutation ($id: String!) { issueArchive(id: $id) { success } }`;
 
+const IDLE_ISSUES = `
+  query ($filter: IssueFilter, $after: String) {
+    issues(filter: $filter, first: 100, after: $after) {
+      pageInfo { hasNextPage endCursor }
+      nodes { identifier title updatedAt state { type } project { name } attachments(first: 20) { nodes { url } } }
+    }
+  }
+`;
+
+// A GitHub pull request link on an issue (REQ-LINEAR-57). Linear's API documents no PR state field, so a linked PR counts
+// as open: a started issue with one is never canceled as stale.
+const PR_URL = /^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+/;
+
 const MOVE_ISSUE = `mutation ($id: String!, $stateId: String!) { issueUpdate(id: $id, input: { stateId: $stateId }) { success } }`;
 
 /**
@@ -179,6 +192,38 @@ export function linearHttpClient() {
         if (!(await gql(apiKey, ARCHIVE_ISSUE, { id: issue.id })).issueArchive.success)
           throw new Error(`Linear did not archive ${issue.identifier}`);
       return closed.map((i) => i.identifier);
+    },
+    /**
+     * The workspace's open issues, in every project and in none, with no activity (`updatedAt`) for `days` days, every
+     * page (REQ-LINEAR-57): each with its state type, project name, and whether a GitHub PR is linked.
+     */
+    async staleIssues(days) {
+      const apiKey = key();
+      const filter = { state: { type: { nin: ['completed', 'canceled'] } }, updatedAt: { lt: `-P${days}D` } };
+      const nodes = [];
+      let after = null;
+      do {
+        const page = (await gql(apiKey, IDLE_ISSUES, { filter, ...(after ? { after } : {}) })).issues;
+        nodes.push(...page.nodes);
+        after = page.pageInfo?.hasNextPage ? page.pageInfo.endCursor : null;
+      } while (after);
+      return nodes.map((n) => ({
+        id: n.identifier,
+        title: n.title,
+        stateType: n.state.type,
+        project: n.project?.name ?? null,
+        updatedAt: n.updatedAt,
+        openPr: n.attachments.nodes.some((a) => PR_URL.test(a.url)),
+      }));
+    },
+    /** Move a stale issue (REQ-LINEAR-57) to its team's first canceled-type state. */
+    async cancel(issueId) {
+      const apiKey = key();
+      const data = await gql(apiKey, TEAM_STATES, { id: issueId });
+      const target = data.issue.team.states.nodes.find((s) => s.type === 'canceled');
+      if (!target) throw new Error(`no "canceled"-type state found on the team for issue ${issueId}; not canceling it`);
+      if (!(await gql(apiKey, MOVE_ISSUE, { id: issueId, stateId: target.id })).issueUpdate.success)
+        throw new Error(`Linear did not cancel ${issueId}`);
     },
     async comment(issueId, body) {
       const apiKey = key();
