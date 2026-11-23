@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { exec, git } from './git.js';
 import { UsageError } from './usage.js';
 
@@ -16,6 +17,34 @@ export function findDefaultBase(repo) {
  * origin's default branch, else HEAD. The primary checkout can be stale or on any branch (REQ-CFG-2).
  */
 export const policyRef = (repo) => findDefaultBase(repo) ?? 'HEAD';
+
+/** A remote that cannot give the base of a card command; the CLI stops with exit 4 (REQ-BASE-3). */
+export class BaseError extends Error {}
+
+/** A remote URL without its user and password, safe to print (REQ-BASE-3). */
+const redact = (text) => text.replace(/(\/\/)[^/@\s]*@/g, '$1');
+
+/**
+ * The base of every command that reads a card (`keel run`, `keel poll`, `keel check-card`) without `--base`: origin's
+ * default branch, fetched first, so a primary checkout that has not pulled cannot give a build a stale base. HEAD only
+ * in a repo without an `origin` remote. A failed fetch throws BaseError, never falls back (REQ-BASE-1..3).
+ */
+export function cardBase(repo) {
+  const url = exec('git', ['remote', 'get-url', 'origin'], repo);
+  if (url.status !== 0) return 'HEAD';
+  // No credential prompt: a nightly poll has no terminal to answer it.
+  const remote = (args) => spawnSync('git', args, { cwd: repo, encoding: 'utf8', env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } });
+  const fail = (why) =>
+    new BaseError(`cannot fetch remote origin (${redact(url.stdout.trim())}): ${redact(why)}; pass --base <ref> to use a local ref`);
+  const lastLine = (r) => (r.stderr ?? r.error?.message ?? '').trim().split('\n').at(-1) || `git exited ${r.status}`;
+  const head = remote(['ls-remote', '--symref', 'origin', 'HEAD']);
+  if (head.error || head.status !== 0) throw fail(lastLine(head));
+  const branch = /^ref: refs\/heads\/(\S+)\tHEAD$/m.exec(head.stdout)?.[1];
+  if (!branch) throw fail('it has no default branch');
+  const fetched = remote(['fetch', '--quiet', '--no-tags', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`]);
+  if (fetched.error || fetched.status !== 0) throw fail(lastLine(fetched));
+  return `origin/${branch}`;
+}
 
 export function defaultBase(repo) {
   const ref = findDefaultBase(repo);

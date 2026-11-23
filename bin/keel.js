@@ -6,7 +6,7 @@ import { autoClean } from '../src/autoclean.js';
 import { ISSUE_ID, checkCard } from '../src/check-card.js';
 import { expectedBranch, listParkedWorktrees, removeParkedWorktree } from '../src/clean.js';
 import { CardError, loadConfig, readTrustedCard } from '../src/config.js';
-import { branchCard, defaultBase, findDefaultBase, policyRef } from '../src/defaults.js';
+import { BaseError, branchCard, cardBase, defaultBase, findDefaultBase, policyRef } from '../src/defaults.js';
 import { doctor, keelGateRequired, linearDoctor, mergeReadiness, setupAdvice } from '../src/doctor.js';
 import { git } from '../src/git.js';
 import { dora, formatDora } from '../src/dora.js';
@@ -46,16 +46,19 @@ const USAGE = `keel — quality gate that picks the model
                                                                --wait-review <hours>: when every reviewer is out, wait up
                                                                to that long for the named reset, then review again
   keel run <card.md | ISSUE-ID> [--base <ref>] [--repo <dir>] [--pr | --merge]
-                                                               build a card: cheapest tier first, escalate on gate failure;
+                                                               build a card on base (default: origin's default branch,
+                                                               fetched first; HEAD without an origin remote): cheapest
+                                                               tier first, escalate on gate failure;
                                                                an issue ID builds that Linear issue (as poll --issue);
                                                                --merge also enables GitHub auto-merge of the certified SHA
   keel poll [--project <name>] [--base <ref>] [--repo <dir>] [--pr | --merge] [--limit N | --issue <ID> | --file-only]
-                                                               pick, build, and report on the next N Linear issues (needs LINEAR_API_KEY);
+                                                               pick, build, and report on the next N Linear issues (needs LINEAR_API_KEY),
+                                                               on the base of run;
                                                                --file-only files queued follow-ups and builds nothing
   keel check-card <card.md | ISSUE-ID> [--repo <dir>] [--base <ref>] [--project <name>]
                                                                check a card before it is built: it parses, and every exact
-                                                               path is on base (default: origin's default branch, else
-                                                               HEAD) or marked "(new)"; exits 1 with the fix otherwise
+                                                               path is on base (the base of run) or marked "(new)";
+                                                               exits 1 with the fix otherwise
   keel doctor [--repo <dir>] [--base <ref>]                  run the configured checks on a clean checkout of base; find red ones before a card does
   keel report [--escaped] [--dora] [--value [--days N]] [--recur]
                                                                ledger summary; --escaped lists fix: commits on files of merged
@@ -228,7 +231,7 @@ if (values.version && command) {
     } else if (command === 'run' && !isIssueRun) {
       if (!arg) throw new UsageError('run needs a card file or an issue ID');
       autoClean({ log }); // REQ-CLEAN-3: each run starts by removing finished worktrees
-      const base = values.base ?? 'HEAD';
+      const base = values.base ?? cardBase(repo); // REQ-BASE-1, 2
       const card = readTrustedCard(repo, base, arg);
       const held = cardLease(repo, base, card, log);
       if (held.length) {
@@ -250,7 +253,7 @@ if (values.version && command) {
       if (isIssueRun) values.issue = arg;
       if (values['file-only'] && values.issue !== undefined) throw new UsageError('--file-only cannot be combined with --issue');
       autoClean({ log }); // REQ-CLEAN-3: each poll pass starts by removing finished worktrees
-      const base = values.base ?? 'HEAD';
+      const base = values.base ?? cardBase(repo); // REQ-BASE-1, 2
       const limit = limitOption(values.limit, 1);
       const config = loadConfig(repo, base);
       const project = resolveProject(values.project, config, repo);
@@ -274,7 +277,7 @@ if (values.version && command) {
     } else if (command === 'check-card') {
       // The poll's own parse and missing-path check, run when the card is written, not a night later (REQ-CARD-7..10).
       if (!arg) throw new UsageError('check-card needs a card file or an issue ID');
-      const base = values.base ?? policyRef(repo);
+      const base = values.base ?? cardBase(repo); // REQ-BASE-2: the base run and poll build on
       const issues = () => linearHttpClient().listIssues(resolveProject(values.project, loadConfig(repo, base), repo));
       process.exitCode = await checkCard({ repo, base, target: arg, issues, log, isFile: existsSync });
     } else if (command === 'doctor') {
@@ -383,6 +386,10 @@ if (values.version && command) {
     const down = networkFailure(e);
     if (down) {
       log(`${command} stopped: network unreachable (${down.host}: ${down.code})`);
+      process.exitCode = 4;
+    } else if (e instanceof BaseError) {
+      // REQ-BASE-3: no base from origin stops the command; a stale local HEAD is never used instead.
+      log(`${command} stopped: ${e.message}`);
       process.exitCode = 4;
     } else if (e instanceof CardError) {
       // REQ-CARD-2: a bad card is one line naming the file and what is allowed; the usage text would bury it.
