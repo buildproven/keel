@@ -1,5 +1,6 @@
 import { CardError, DEFAULTS, readCard } from './config.js';
 import { exec, git, revParse, showFile } from './git.js';
+import { gateCommands, runnerFiles } from './gate.js';
 import { fold, locksAny, matchesAny } from './scan.js';
 import { GLOB_CHAR, cardFromIssue, exactPaths, markedNew } from './linear.js';
 import { UsageError } from './usage.js';
@@ -89,10 +90,29 @@ export function lockedWithoutAllow(repo, sha, card) {
 }
 
 /**
+ * The card's exactly named paths that the gate locks as scripts or runners (REQ-CARD-16), letter case folded as the gate
+ * matches them (REQ-GATE-4), that `allowEdits` does not list: the root `package.json`, whose `scripts` the test command
+ * runs (a nested one holds none, REQ-GATE-42), and the runner files the base's commands run through it
+ * (`runner-script-changed`). A path `exclude` holds (already reported by REQ-CARD-13) is left out.
+ */
+export function scriptsLockedWithoutAllow(repo, sha, card, exclude = []) {
+  if (!['bug', 'feature'].includes(card.kind)) return [];
+  const files = exactPaths({ ...card, paths: card.paths.filter((p) => !p.endsWith('/')) });
+  if (!files.length) return [];
+  const pick = basePolicy(repo, sha);
+  const config = Object.fromEntries(['checks', 'testCommand', 'testFilesCommand', 'heldOutCommand'].map((k) => [k, pick(k)]));
+  const runners = runnerFiles(repo, [sha], gateCommands(config));
+  return files.filter(
+    (p) => (fold(p) === 'package.json' || runners.has(fold(p))) && !exclude.includes(p) && !matchesAny(p, card.allowEdits ?? []),
+  );
+}
+
+/**
  * Judge a card against `base` as `keel check-card` and `keel poll` both do (REQ-CARD-10, REQ-CARD-15): missing paths
  * (REQ-CARD-7), uncovered traceability files (REQ-CARD-11), locked tests only (REQ-CARD-12) and locked files without
- * allowEdits (REQ-CARD-13). `messages` holds one line per reason, without a command prefix, in check-card's order; the
- * card would build when it is empty. The lists carry no base sha, so poll can compare reasons across base commits.
+ * allowEdits (REQ-CARD-13, then the scripts and runners of REQ-CARD-16 in the same `lockedWithoutAllow` list).
+ * `messages` holds one line per reason, without a command prefix, in check-card's order; the card would build when it is
+ * empty. The lists carry no base sha, so poll can compare reasons across base commits.
  */
 export function judgeCard(repo, base, card) {
   const { missing } = missingOnBase(repo, base, card);
@@ -101,6 +121,7 @@ export function judgeCard(repo, base, card) {
   const traceability = uncoveredTraceability(repo, sha, card);
   const lockedTests = lockedTestsOnly(repo, sha, card);
   const unallowed = lockedWithoutAllow(repo, sha, card);
+  const scripts = scriptsLockedWithoutAllow(repo, sha, card, unallowed);
   const messages = [
     ...traceability.map((p) => `${p} is a traceability file on base ${at}; add it to paths: a new test must be mapped in it`),
     ...(lockedTests.length
@@ -109,12 +130,13 @@ export function judgeCard(repo, base, card) {
         ]
       : []),
     ...unallowed.map((p) => `${p} is locked (verification file); add it to allowEdits if the card must change it`),
+    ...scripts.map((p) => `${p} is locked (scripts or runner); add it to allowEdits if the card must change it`),
     ...missing.map(
       (p) =>
         `${p} is not on base ${at}; if the card creates it, mark it \`${p} (new)\` in paths; else merge its dependency first or fix the path`,
     ),
   ];
-  return { sha, missing, traceability, lockedTests, lockedWithoutAllow: unallowed, messages };
+  return { sha, missing, traceability, lockedTests, lockedWithoutAllow: [...unallowed, ...scripts], messages };
 }
 
 /** The card of an open issue, as `keel poll` maps it (REQ-LINEAR-2); a mapping error is a CardError (REQ-CARD-9). */
