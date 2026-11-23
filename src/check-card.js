@@ -88,6 +88,35 @@ export function lockedWithoutAllow(repo, sha, card) {
   });
 }
 
+/**
+ * Judge a card against `base` as `keel check-card` and `keel poll` both do (REQ-CARD-10, REQ-CARD-15): missing paths
+ * (REQ-CARD-7), uncovered traceability files (REQ-CARD-11), locked tests only (REQ-CARD-12) and locked files without
+ * allowEdits (REQ-CARD-13). `messages` holds one line per reason, without a command prefix, in check-card's order; the
+ * card would build when it is empty. The lists carry no base sha, so poll can compare reasons across base commits.
+ */
+export function judgeCard(repo, base, card) {
+  const { missing } = missingOnBase(repo, base, card);
+  const sha = revParse(base, repo);
+  const at = sha.slice(0, 12);
+  const traceability = uncoveredTraceability(repo, sha, card);
+  const lockedTests = lockedTestsOnly(repo, sha, card);
+  const unallowed = lockedWithoutAllow(repo, sha, card);
+  const messages = [
+    ...traceability.map((p) => `${p} is a traceability file on base ${at}; add it to paths: a new test must be mapped in it`),
+    ...(lockedTests.length
+      ? [
+          `every test file in paths is on base ${at} and locked (${lockedTests.join(', ')}); add a new test file marked \`(new)\` to paths for the regression test`,
+        ]
+      : []),
+    ...unallowed.map((p) => `${p} is locked (verification file); add it to allowEdits if the card must change it`),
+    ...missing.map(
+      (p) =>
+        `${p} is not on base ${at}; if the card creates it, mark it \`${p} (new)\` in paths; else merge its dependency first or fix the path`,
+    ),
+  ];
+  return { sha, missing, traceability, lockedTests, lockedWithoutAllow: unallowed, messages };
+}
+
 /** The card of an open issue, as `keel poll` maps it (REQ-LINEAR-2); a mapping error is a CardError (REQ-CARD-9). */
 async function issueCard(id, issues) {
   const issue = (await issues()).find((i) => i.id === id);
@@ -118,27 +147,9 @@ export async function checkCard({ repo, base, target, issues, log, isFile = () =
   }
   if (exec('git', ['rev-parse', '--verify', '--quiet', '--end-of-options', `${base}^{commit}`], repo).status !== 0)
     throw new UsageError(`check-card: --base ${base} is not a commit in ${repo}`);
-  const { missing } = missingOnBase(repo, base, card);
-  const sha = revParse(base, repo);
-  const at = sha.slice(0, 12);
-  const trace = uncoveredTraceability(repo, sha, card);
-  for (const p of trace)
-    log(`check-card ${card.id}: ${p} is a traceability file on base ${at}; add it to paths: a new test must be mapped in it`);
-  const locked = lockedTestsOnly(repo, sha, card);
-  if (locked.length)
-    log(
-      `check-card ${card.id}: every test file in paths is on base ${at} and locked (${locked.join(', ')}); add a new test file marked \`(new)\` to paths for the regression test`,
-    );
-  const unallowed = lockedWithoutAllow(repo, sha, card);
-  for (const p of unallowed)
-    log(`check-card ${card.id}: ${p} is locked (verification file); add it to allowEdits if the card must change it`);
-  if (!missing.length && !trace.length && !locked.length && !unallowed.length) {
-    log(`check-card ${card.id}: pass (every exact path is on base ${at} or marked new)`);
-    return 0;
-  }
-  for (const p of missing)
-    log(
-      `check-card ${card.id}: ${p} is not on base ${at}; if the card creates it, mark it \`${p} (new)\` in paths; else merge its dependency first or fix the path`,
-    );
-  return 1;
+  const { sha, messages } = judgeCard(repo, base, card);
+  for (const m of messages) log(`check-card ${card.id}: ${m}`);
+  if (messages.length) return 1;
+  log(`check-card ${card.id}: pass (every exact path is on base ${sha.slice(0, 12)} or marked new)`);
+  return 0;
 }

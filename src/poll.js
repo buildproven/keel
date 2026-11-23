@@ -1,7 +1,7 @@
 import { holdsUncommitted, removeParkedWorktree } from './clean.js';
 import { exec, isDirty, revParse, showFile, withTempWorktree } from './git.js';
 import { ALREADY_SATISFIED, verifyDone } from './done.js';
-import { missingOnBase, uncoveredTraceability } from './check-card.js';
+import { judgeCard, uncoveredTraceability } from './check-card.js';
 import {
   attemptedIssueIds,
   cardFromIssue,
@@ -1029,24 +1029,29 @@ async function refineStep({ repo, base, config, client, issue, project, log, ref
   return { issue: { ...issue, description } };
 }
 
+/** The reasons of a card-check deferral, without the base sha; a legacy row's detail holds `missing` only (REQ-CARD-15). */
+const deferReasons = (d) => JSON.stringify(['missing', 'traceability', 'lockedTests', 'lockedWithoutAllow'].map((k) => d?.[k] ?? []));
+
 /**
- * Before a build (REQ-LINEAR-44): when the card names a path missing on base, return a `deferred` outcome without a
- * build, so the next poll tries again, and comment the missing paths unless the issue's latest poll row already
- * deferred it for the same ones. Returns null when every named path is there.
+ * Before a build (REQ-LINEAR-44, REQ-CARD-15): judge the card with `judgeCard`, the function `keel check-card` uses. When
+ * it rejects the card, return a `deferred` outcome without a build, so the next poll tries again, and comment
+ * check-card's messages unless the issue's latest poll row already deferred it for the same reasons. Returns null when
+ * the card would build.
  */
-async function deferMissing({ repo, base, client, issue, card, log }) {
-  const { sha, missing } = missingOnBase(repo, base, card);
-  if (!missing.length) return null;
-  const list = missing.map((p) => `\`${p}\``).join(', ');
-  log(`${issue.id} deferred: ${missing.join(', ')} not on base ${sha.slice(0, 12)}`);
+async function deferRejected({ repo, base, client, issue, card, log }) {
+  const { sha, messages, ...reasons } = judgeCard(repo, base, card);
+  if (!messages.length) return null;
+  log(`${issue.id} deferred: ${messages.join('; ')}`);
   const last = latestPollRow(repo, issue.id);
-  const same = last?.outcome === 'deferred' && JSON.stringify(last.detail?.missing) === JSON.stringify(missing);
-  if (!same)
-    await client.comment(
-      issue.id,
-      `keel: deferred, not built: the card's \`paths\` name ${list}, which ${missing.length === 1 ? 'is' : 'are'} not on the base (${sha.slice(0, 12)}) and the card does not mark new. A dependency may not be merged yet, or the card may belong to another repo. Merge the dependency, fix the path, or mark a new file in the card text ("the new file \`${missing[0]}\`"); the next poll tries again.`,
-    );
-  return { outcome: 'deferred', issue: issue.id, detail: { missing } };
+  const same = last?.outcome === 'deferred' && deferReasons(last.detail) === deferReasons(reasons);
+  if (!same) {
+    const { missing } = reasons;
+    const head = missing.length
+      ? `keel: deferred, not built: the card's \`paths\` name ${missing.map((p) => `\`${p}\``).join(', ')}, which ${missing.length === 1 ? 'is' : 'are'} not on the base (${sha.slice(0, 12)}) and the card does not mark new. A dependency may not be merged yet, or the card may belong to another repo. Merge the dependency, fix the path, or mark a new file in the card text ("the new file \`${missing[0]}\`"); the next poll tries again.`
+      : `keel: deferred, not built: \`keel check-card\` rejects the card on the base (${sha.slice(0, 12)}), so the gate would fail the build. Fix the card; the next poll tries again.`;
+    await client.comment(issue.id, `${head}\n\n${messages.map((m) => `- ${m}`).join('\n')}`);
+  }
+  return { outcome: 'deferred', issue: issue.id, detail: reasons };
 }
 
 /**
@@ -1058,8 +1063,8 @@ async function runOne({ repo, base, pr, merge, log, config, client, issue: picke
   if (step.outcome) return step.outcome;
   const { issue } = step;
   const card = cardFromIssue(issue);
-  const missing = await deferMissing({ repo, base, client, issue, card, log });
-  if (missing) return missing;
+  const rejected = await deferRejected({ repo, base, client, issue, card, log });
+  if (rejected) return rejected;
   const result = runFn({ repo, card, config, base, pr, merge, reserved, log });
   // Found work is queued before any Linear call, so a Linear error cannot lose it (REQ-LINEAR-22).
   queueFollowUps(repo, issue.id, result.followUps, result.branch, result.pr?.ok ? result.pr.out.trim().split('\n').at(-1) : null);
@@ -1420,7 +1425,7 @@ export async function poll({
     // A deferred issue is retried by the next poll, not again in this one: move on to other work (REQ-LINEAR-19).
     if (outcome.outcome === 'deferred') deferredNow.add(issue.id);
     results.push(outcome, ...filingFailed(await fileFollowUps({ repo, project, config, client, log, base, capacityFn, keelRoot })));
-    // A card deferred for a path missing on base paid for no build: it uses no `limit` slot (REQ-LINEAR-44).
+    // A card deferred by the card checks paid for no build: it uses no `limit` slot (REQ-LINEAR-44, REQ-CARD-15).
     if (outcome.outcome === 'deferred' && outcome.detail?.missing) i -= 1;
   }
   return results;
