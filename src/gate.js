@@ -214,6 +214,19 @@ function newVerificationBlocker(path, { repo, base, from }) {
   return null;
 }
 
+/** The commands whose runner files stay locked (REQ-GATE-4): every check and the test, test-files, and held-out commands. */
+export const gateCommands = (config) =>
+  [...Object.values(config.checks ?? {}), config.testCommand, config.testFilesCommand, config.heldOutCommand].filter(Boolean);
+
+/**
+ * The runner files `commands` run through the root `package.json` scripts at any of `refs`, letter case folded
+ * (REQ-GATE-4, REQ-GATE-40). `keel check-card` reads the same set at the base (REQ-CARD-16), so it warns before a build
+ * that the gate would fail on `runner-script-changed`.
+ */
+export function runnerFiles(repo, refs, commands) {
+  return new Set([...new Set(refs)].flatMap((ref) => scriptPaths(showFile(ref, 'package.json', repo), commands)).map(fold));
+}
+
 const APPROVED_SHAPE = 'approved allowEdits (REQ-RUN-30) keeps every test name, assertion, and skip marker count';
 
 function staticChecks(ctx) {
@@ -222,11 +235,9 @@ function staticChecks(ctx) {
   // An allowEdits path the other family approved before the edit (REQ-RUN-30) is still proved after it (REQ-GATE-44).
   const approved = (p) => matchesAny(p, card.approvedEdits ?? []);
   const allowed = (p) => matchesAny(p, card.allowEdits) && !approved(p);
-  const commands = [...Object.values(config.checks), config.testCommand, config.testFilesCommand, config.heldOutCommand].filter(Boolean);
+  const commands = gateCommands(config);
   // Runner files either side calls stay locked (REQ-GATE-40): the base may call a file the branch's fork point did not.
-  const runners = new Set(
-    [...new Set([from, base])].flatMap((ref) => scriptPaths(showFile(ref, 'package.json', repo), commands)).map(fold),
-  );
+  const runners = runnerFiles(repo, [from, base], commands);
   const lines = addedLines(from, head, repo);
   const lockfileBefore = showFile(from, 'package-lock.json', repo);
   const lockfileAfter = showFile(head, 'package-lock.json', repo);
