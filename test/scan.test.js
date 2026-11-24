@@ -163,3 +163,20 @@ test('REQ-GATE-44 testShape blanks a regex literal after return and at a line st
   assert.deepEqual(shape.tests, ['after lone slash', 'class slash', 'no closing slash']);
   assert.equal(shape.assertions, 3);
 });
+
+test('REQ-GATE-44 testShape reads /> after a JSX prop expression as a tag end, not a regex', () => {
+  const shape = testShape(
+    [
+      "test('renders', () => { render(<A b={c} />); expect(x).toBe('a/b'); });",
+      "test('spreads', () => { render(<A {...p}/>); assert.equal(y, 'c/d'); });",
+    ].join('\n'),
+  );
+  assert.deepEqual(shape.tests, ['renders', 'spreads']);
+  assert.equal(shape.assertions, 2);
+});
+
+test('REQ-GATE-44 testShape reads /> at a line start as a JSX tag end, not a regex', () => {
+  const shape = testShape(["test('multi-line', () => {", '  render(<A', '    b={c}', "  />); expect(x).toBe('a/b');", '});'].join('\n'));
+  assert.deepEqual(shape.tests, ['multi-line']);
+  assert.equal(shape.assertions, 1);
+});

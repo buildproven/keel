@@ -435,11 +435,14 @@ const ASSERTIONS = [
 ];
 
 /** Whether a `/` at `i` starts a regex literal: the code before it (already masked) ends a line, or ends in one of
- * `(,=:[!&|?{};` or the word `return`. After an identifier, a number, `)` or `]` it is division (REQ-GATE-44). */
+ * `(,=:[!&|?{};` or the word `return`. After an identifier, a number, `)` or `]` it is division, and `/>` after
+ * `}` or at a line start closes a JSX tag (REQ-GATE-44). */
 function regexStarts(out, i) {
   let k = i - 1;
   while (k >= 0 && (out[k] === ' ' || out[k] === '\t')) k--;
-  if (k < 0 || out[k] === '\n' || out[k] === '\r') return true;
+  const lineStart = k < 0 || out[k] === '\n' || out[k] === '\r';
+  if ((lineStart || out[k] === '}') && out[i + 1] === '>') return false; // `<A b={c} />`: a JSX tag end, not a regex
+  if (lineStart) return true;
   if ('(,=:[!&|?{};'.includes(out[k])) return true;
   let w = k;
   while (w >= 0 && /[\w$]/.test(out[w])) w--;
