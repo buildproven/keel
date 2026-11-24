@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { escapeRe, expectedBranch, listParkedWorktrees, removeParkedWorktree } from './clean.js';
 import { loadConfig } from './config.js';
-import { policyRef } from './defaults.js';
+import { findDefaultBase, policyRef } from './defaults.js';
 import { exec, git, makeRemovable } from './git.js';
 import { readLedger, stateDir } from './ledger.js';
 import { runLockHeld } from './run-lock.js';
@@ -78,9 +78,9 @@ export function autoClean({ log = () => {}, now = Date.now(), tmpRoot = tmpdir()
     try {
       verdict = judge(w, { rows, now, keepDays });
       if (verdict.remove) {
-        removeParkedWorktree(w);
+        removeParkedWorktree({ ...w, keepBranch: Boolean(verdict.keepBranch) });
         removed.push(w.path);
-        log(`removed ${w.path} (${verdict.why})`);
+        log(verdict.keepBranch ? `removed ${w.path}, kept branch ${w.branch} (not merged)` : `removed ${w.path} (${verdict.why})`);
       }
     } catch (e) {
       // REQ-CLEAN-4: a failure on one worktree is reported and never stops the cleanup, the poll, or the run.
@@ -118,7 +118,9 @@ function judge(w, { rows, now, keepDays }) {
   const last = rows.filter((r) => r.card === id && r.at && r.repo && sameDir(r.repo, repo)).at(-1);
   const activity = last ? Date.parse(last.at) : Number(git(['log', '-1', '--format=%ct', ref], w.repo)) * 1000;
   if (now - activity < HOUR) return {}; // a run that just ended: its own poll handles it
-  if (!only.length) return { remove: true, why: 'no commit only there' };
+  // Another ref holding the commits (a ship train/* branch, a pushed branch) is not a merge: when that ref goes, the
+  // branch would be the only name of passed work, so it stays unless its tip is in the default branch (REQ-CLEAN-3).
+  if (!only.length) return { remove: true, why: 'no commit only there', keepBranch: !inDefaultBranch(w.repo, ref) };
   if (!keepDays.has(w.repo)) {
     try {
       keepDays.set(w.repo, loadConfig(w.repo, policyRef(w.repo)).worktreeKeepDays);
@@ -128,8 +130,30 @@ function judge(w, { rows, now, keepDays }) {
   }
   const days = keepDays.get(w.repo);
   if (days instanceof Error) return { keep: `keel.json of ${w.repo} unreadable: ${days.message.split('\n')[0]}` };
+  // The commits only there are Keel's leftovers of failed attempts: the branch goes too, or it would block a retry of
+  // the card (`git worktree add -b`), REQ-CLEAN-6.
   if (now - activity > days * DAY) return { remove: true, why: `Keel commits only, last activity over ${days} days ago` };
   return {};
+}
+
+/**
+ * Whether `ref`'s work is in the repo's default branch (origin's, else the primary checkout's HEAD in a repo without
+ * origin, REQ-CFG-2): its tip is an ancestor, or the default branch holds a commit patch-equivalent to the whole branch,
+ * as `gh pr merge --squash` makes (REQ-MERGE-1, REQ-RUN-20). A squash whose diff a conflict changed is not seen, so that
+ * branch is kept: the safe side. A git error throws, so the worktree is kept and reported (REQ-CLEAN-4), never guessed.
+ */
+function inDefaultBranch(repo, ref) {
+  const base = findDefaultBase(repo) ?? 'HEAD';
+  const r = exec('git', ['merge-base', '--is-ancestor', ref, base], repo);
+  if (r.status === 0) return true;
+  if (r.status !== 1) throw new Error(`git merge-base --is-ancestor ${ref} ${base}: ${(r.stderr || '').trim() || `exit ${r.status}`}`);
+  const fork = git(['merge-base', ref, base], repo).trim();
+  // One commit holding the branch's whole change, so `git cherry` can match it against a squash merge on the base.
+  const squashed = git(
+    ['-c', 'user.name=keel', '-c', 'user.email=keel@localhost', 'commit-tree', `${ref}^{tree}`, '-p', fork, '-m', 'squash'],
+    repo,
+  ).trim();
+  return git(['cherry', base, squashed], repo).startsWith('-');
 }
 
 const reportedFile = () => join(stateDir(), 'cleanup-kept.json');
