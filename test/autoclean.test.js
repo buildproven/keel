@@ -63,7 +63,39 @@ test('REQ-CLEAN-3 a pushed branch (its tip in a remote-tracking ref, as after a 
   g(repo, 'update-ref', 'refs/remotes/origin/keel/T-2', g(wt, 'rev-parse', 'HEAD'));
   pass(Date.now() + 2 * HOUR);
   assert.ok(!existsSync(wt));
-  assert.ok(!branchExists(repo, 'keel/T-2'));
+  assert.ok(branchExists(repo, 'keel/T-2'), 'its tip is not in the default branch: only the worktree goes');
+});
+
+test('REQ-CLEAN-3 a pushed but unmerged branch keeps its branch', () => {
+  const { repo, wt } = parked('T-16');
+  keelCommit(wt, 'T-16');
+  g(repo, 'update-ref', 'refs/remotes/origin/keel/T-16', g(wt, 'rev-parse', 'HEAD'));
+  g(repo, 'update-ref', 'refs/remotes/origin/main', g(repo, 'rev-parse', 'main'));
+  const { lines } = pass(Date.now() + 2 * HOUR);
+  assert.ok(lines.includes(`removed ${wt}, kept branch keel/T-16 (not merged)`), lines.join('\n'));
+  assert.ok(!existsSync(wt), 'the worktree goes at once');
+  assert.ok(branchExists(repo, 'keel/T-16'), 'its tip is not in origin/main: the branch stays');
+});
+
+test('REQ-CLEAN-3 a branch whose commits only a train/* branch holds keeps its branch when its worktree goes', () => {
+  const { repo, wt } = parked('T-14');
+  keelCommit(wt, 'T-14', 1, 'fix(T-14): passed work');
+  g(repo, 'branch', 'train/2026-11-24-1', 'keel/T-14');
+  const { lines } = pass(Date.now() + 2 * HOUR);
+  assert.ok(lines.includes(`removed ${wt}, kept branch keel/T-14 (not merged)`), lines.join('\n'));
+  assert.ok(!existsSync(wt));
+  g(repo, 'branch', '-D', 'train/2026-11-24-1');
+  assert.ok(branchExists(repo, 'keel/T-14'), 'the passed work keeps a name after the train branch goes');
+});
+
+test('REQ-CLEAN-3 a tip merged into origin default branch deletes the branch, though local HEAD lacks it', () => {
+  const { repo, wt } = parked('T-15');
+  keelCommit(wt, 'T-15');
+  g(repo, 'update-ref', 'refs/remotes/origin/main', g(wt, 'rev-parse', 'HEAD'));
+  const { lines } = pass(Date.now() + 2 * HOUR);
+  assert.match(lines.join('\n'), new RegExp(`removed ${wt} \\(no commit only there\\)`));
+  assert.ok(!existsSync(wt));
+  assert.ok(!branchExists(repo, 'keel/T-15'));
 });
 
 test('REQ-CLEAN-3 a failed run with only Keel commits is kept for worktreeKeepDays after its last ledger row, then removed', () => {
@@ -81,6 +113,17 @@ test('REQ-CLEAN-3 a failed run with only Keel commits is kept for worktreeKeepDa
   assert.match(lines.join('\n'), /removed .*T-3 \(.*7 days/);
   assert.ok(!existsSync(wt));
   assert.ok(!branchExists(repo, 'keel/T-3'));
+});
+
+test('REQ-CLEAN-6 the age rule deletes an unmerged leftovers-only branch, so a retry of the card can create it again', () => {
+  const { repo, wt } = parked('T-17');
+  keelCommit(wt, 'T-17');
+  g(repo, 'update-ref', 'refs/remotes/origin/main', g(repo, 'rev-parse', 'main'));
+  const { lines } = pass(Date.now() + 8 * DAY);
+  assert.match(lines.join('\n'), new RegExp(`removed ${wt} \\(Keel commits only`));
+  assert.ok(!branchExists(repo, 'keel/T-17'));
+  g(repo, 'worktree', 'add', '-q', '-b', 'keel/T-17', wt, 'main'); // what keel run does for a retry (REQ-RUN-48)
+  assert.ok(existsSync(wt));
 });
 
 test('REQ-CLEAN-3 worktreeKeepDays comes from the owning repo keel.json and is validated', () => {

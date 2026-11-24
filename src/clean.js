@@ -55,11 +55,12 @@ export const expectedBranch = (path) => `keel/${basename(path).replace(/^.*?-[0-
 /**
  * Remove one parked worktree and its branch (REQ-CLEAN-2). Only a keel/ branch is ever deleted: a branch Keel did not
  * make is refused. Refuses a worktree with uncommitted tracked changes unless `force` is set, so a card's in-progress
- * fix is never silently discarded.
+ * fix is never silently discarded. `keepBranch` removes only the worktree: the cleanup keeps an unmerged branch
+ * (REQ-CLEAN-3).
  */
-export function removeParkedWorktree({ repo, path, branch, force = false }) {
+export function removeParkedWorktree({ repo, path, branch, force = false, keepBranch = false }) {
   if (!branch?.startsWith('keel/')) throw new Error(`will not delete branch ${branch ?? '(none)'}: not a keel/ branch (${path})`);
   if (!force && isDirty(path)) throw new Error(`worktree has uncommitted changes: ${path} (pass force to discard)`);
   git(['worktree', 'remove', '--force', path], repo);
-  exec('git', ['branch', '-D', branch], repo);
+  if (!keepBranch) exec('git', ['branch', '-D', branch], repo);
 }
