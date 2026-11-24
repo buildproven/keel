@@ -434,11 +434,37 @@ const ASSERTIONS = [
   /\bt\.(?:Error|Errorf|Fatal|Fatalf|Fail|FailNow)\s*\(/g, // Go
 ];
 
+/** Whether a `/` at `i` starts a regex literal: the code before it (already masked) ends a line, or ends in one of
+ * `(,=:[!&|?{};` or the word `return`. After an identifier, a number, `)` or `]` it is division (REQ-GATE-44). */
+function regexStarts(out, i) {
+  let k = i - 1;
+  while (k >= 0 && (out[k] === ' ' || out[k] === '\t')) k--;
+  if (k < 0 || out[k] === '\n' || out[k] === '\r') return true;
+  if ('(,=:[!&|?{};'.includes(out[k])) return true;
+  let w = k;
+  while (w >= 0 && /[\w$]/.test(out[w])) w--;
+  return out.slice(w + 1, k + 1).join('') === 'return';
+}
+
+/** The index of the `/` that closes a regex literal opened at `i`, or -1 if the line has none (REQ-GATE-44). */
+function regexEnd(text, i) {
+  let inClass = false;
+  for (let k = i + 1; k < text.length && text[k] !== '\n'; k++) {
+    if (text[k] === '\\') k++;
+    else if (text[k] === '[') inClass = true;
+    else if (text[k] === ']') inClass = false;
+    else if (text[k] === '/' && !inClass) return k;
+  }
+  return -1;
+}
+
 /**
  * The code of a test file with comments and the contents of string literals blanked to spaces (newlines kept, so
  * offsets and lines match the text), so a commented-out check, or a test call or assertion written as text in a string,
  * does not count (REQ-GATE-44). Comments: `//`, `/* *\/`, and `#` at a line start or after whitespace (not `#[` or
  * `#!`). Strings: `'…'` and `"…"` end at their line, a triple-quoted one and a template literal may span lines.
+ * JS regex literals: a `/` where an expression starts (see `regexStarts`) up to its closing unescaped `/` on the same
+ * line, outside a `[...]` class, so a quote in a pattern does not open a string; with no closing `/` it is division.
  */
 function masked(text) {
   const out = [...text];
@@ -471,6 +497,13 @@ function masked(text) {
       }
       blank(i + open, Math.min(k, text.length));
       i = text[k] === c ? k + open : k;
+    } else if (c === '/' && regexStarts(out, i)) {
+      const end = regexEnd(text, i);
+      if (end < 0) i++;
+      else {
+        blank(i + 1, end);
+        i = end + 1;
+      }
     } else i++;
   }
   return out.join('');

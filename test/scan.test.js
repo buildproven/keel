@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { findBypassMarkers, findSkipMarkers, outOfScope, pyprojectToolSectionsChanged, scriptPaths, scriptsChanged } from '../src/scan.js';
+import {
+  findBypassMarkers,
+  findSkipMarkers,
+  outOfScope,
+  pyprojectToolSectionsChanged,
+  scriptPaths,
+  scriptsChanged,
+  testShape,
+} from '../src/scan.js';
 
 const lines = (...texts) => texts.map((text, i) => ({ path: 'f.js', line: i + 1, text }));
 
@@ -110,4 +118,48 @@ test('REQ-PROJ-4 identifies only the test/lint/type tool sections of pyproject.t
   assert.equal(pyprojectToolSectionsChanged(before, afterToolChanged), true);
   assert.equal(pyprojectToolSectionsChanged(null, before), true);
   assert.equal(pyprojectToolSectionsChanged(before, before), false);
+});
+
+test('REQ-GATE-44 testShape finds tests after a regex literal with an odd number of backticks', () => {
+  const shape = testShape(
+    [
+      "import { test } from 'node:test';",
+      'const PATH = /`((?:\\.claude|docs)\\/[^`\\s<>*]+\\.(?:md|mjs|js|json))`/g;',
+      'const Q = (s) => s.match(/"[^/]*/);',
+      "test('finds paths', () => { assert.equal(PATH.exec('x'), false); });",
+      "test('finds more', () => { assert.ok(Q('a')); });",
+    ].join('\n'),
+  );
+  assert.deepEqual(shape.tests, ['finds paths', 'finds more']);
+  assert.equal(shape.assertions, 2);
+});
+
+test('REQ-GATE-44 testShape treats a/b/c as division', () => {
+  const shape = testShape(
+    [
+      'const x = a / b / c; const s = a / b; const u = `/`;',
+      "const y = f(1) / 2 + arr[0] / 3; const q = '`';",
+      "test('after division', () => { assert.equal(x, y); });",
+      'const z = 4 / n; // a ` in a comment',
+      "test('still found', () => { assert.ok(z); });",
+    ].join('\n'),
+  );
+  assert.deepEqual(shape.tests, ['after division', 'still found']);
+  assert.equal(shape.assertions, 2);
+});
+
+test('REQ-GATE-44 testShape blanks a regex literal after return and at a line start, not a lone slash', () => {
+  const shape = testShape(
+    [
+      'function r() { return /`/; }',
+      "  /\"/.exec('a');",
+      'const half = n /',
+      "  2; test('after lone slash', () => { assert.ok(half); });",
+      "test('class slash', () => { assert.ok(/[/'`]/.exec(r())); });",
+      "const t = /test\\('fake'\\)/;",
+      "def f(a, /, b): test('no closing slash', () => { assert.ok(a); });",
+    ].join('\n'),
+  );
+  assert.deepEqual(shape.tests, ['after lone slash', 'class slash', 'no closing slash']);
+  assert.equal(shape.assertions, 3);
 });
