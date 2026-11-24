@@ -17,15 +17,16 @@ import {
   textPrerequisites,
   titleKey,
 } from './linear.js';
-import { mkdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadConfig } from './config.js';
+import { builderText, loadConfig } from './config.js';
 import { branchCard } from './defaults.js';
 import { keelGateRequired } from './doctor.js';
 import { cardLease, describeConflicts } from './lease.js';
 import { readLedger, spentToday, stateDir } from './ledger.js';
-import { finishSelfMerges, recordSelfMerge } from './merge.js';
+import { finishSelfMerges, pendingSelfMerges, recordSelfMerge } from './merge.js';
 import { REFINED_HEADING, refineIssue, refineReason } from './refine.js';
 import { networkFailure } from './network.js';
 import { nextReset, ownerPlanLimits, planLine, readPlan, reservedProviders, savePlan } from './plan.js';
@@ -747,7 +748,7 @@ const filingFailed = (r) => (r.error ? [{ outcome: 'followUpsFailed', detail: r.
 const OPEN_PRS_QUERY = `query($owner: String!, $name: String!, $endCursor: String) {
   repository(owner: $owner, name: $name) {
     pullRequests(states: OPEN, first: 100, after: $endCursor) {
-      nodes { number headRefName mergeable mergeStateStatus autoMergeRequest { enabledAt } }
+      nodes { number headRefName baseRefName mergeable mergeStateStatus autoMergeRequest { enabledAt } }
       pageInfo { hasNextPage endCursor }
     }
   }
@@ -755,11 +756,14 @@ const OPEN_PRS_QUERY = `query($owner: String!, $name: String!, $endCursor: Strin
 
 /**
  * Keel's own open PRs (`keel/<ID>` branches) that GitHub reports as conflicting with their base (REQ-LINEAR-23), or as
- * behind it with auto-merge armed (REQ-LINEAR-41): auto-merge would wait forever, and Keel never moves a certified head.
- * Close each one (GitHub keeps its commits), delete its branch and clean worktree, comment on the issue, and mark it
- * deferred so this poll builds it again on the current base. Without an origin remote or a working `gh`, nothing is checked.
+ * behind it with auto-merge armed (REQ-LINEAR-41). A conflicting PR is closed (GitHub keeps its commits), its branch and
+ * clean worktree deleted, the issue commented on and marked deferred, so this poll builds it again on the current base.
+ * A behind PR without a conflict needs no new build: its branch is updated from the base, the new head gated with the
+ * issue's card and `keel/gate` posted on it, and the PR stays open with auto-merge armed (REQ-LINEAR-58). Only when
+ * that update or gate fails is it closed and rebuilt, the comment naming the failed step. Without an origin remote or a
+ * working `gh`, nothing is checked.
  */
-async function rebuildConflicts({ repo, client, log }) {
+async function rebuildConflicts({ repo, client, log, project = null, config = {}, base = 'HEAD', gateFn = null }) {
   if (exec('git', ['remote', 'get-url', 'origin'], repo).status !== 0) return;
   // GraphQL pages through every open PR; `gh pr list` stops at its --limit (REQ-LINEAR-41).
   const r = exec(
@@ -788,6 +792,7 @@ async function rebuildConflicts({ repo, client, log }) {
     .split('\n')
     .filter((l) => l.trim())
     .map((l) => JSON.parse(l));
+  let open = null; // the project's open issues, read once and only when a behind PR needs its card (REQ-LINEAR-58)
   for (const pr of prs) {
     const id = /^keel\/([A-Z]+-\d+)$/.exec(pr.headRefName)?.[1];
     if (!id) continue;
@@ -800,6 +805,16 @@ async function rebuildConflicts({ repo, client, log }) {
       log(`${id}: PR #${pr.number} ${behind ? 'is behind its base' : 'conflicts'}, but ${wt} has uncommitted changes; left as is`);
       continue;
     }
+    let failed = null; // the step that stopped the update of a behind PR (REQ-LINEAR-58)
+    if (behind && gateFn) {
+      open ??= project ? await client.listIssues(project) : [];
+      failed = updateBehind({ repo, pr, id, issue: open.find((i) => i.id === id), config, base, gateFn, log });
+      if (!failed) {
+        log(`${id}: PR #${pr.number} was behind its base; updated and gated the new head, PR kept open`);
+        continue;
+      }
+      log(`${id}: PR #${pr.number} is behind its base and the ${failed.step} step failed: ${failed.detail}`);
+    }
     // Local cleanup first: gh cannot delete a branch a worktree has checked out.
     if (wt) removeParkedWorktree({ repo, path: wt, branch: pr.headRefName });
     else exec('git', ['branch', '-D', pr.headRefName], repo);
@@ -811,7 +826,7 @@ async function rebuildConflicts({ repo, client, log }) {
         String(pr.number),
         '--delete-branch',
         '--comment',
-        `keel: this PR ${why} the base branch after later merges; building the issue again on the current base.`,
+        `keel: this PR ${why} the base branch after later merges${failed ? `; the ${failed.step} step of updating it failed (${failed.detail})` : ''}; building the issue again on the current base.`,
       ],
       repo,
     );
@@ -826,9 +841,91 @@ async function rebuildConflicts({ repo, client, log }) {
       outcome: 'deferred',
       detail: `PR #${pr.number} ${behind ? 'was behind its base' : 'conflicted'}`,
     });
-    await client.comment(id, `keel: PR #${pr.number} ${past} the base branch; building again on the current base.`);
+    await client.comment(
+      id,
+      `keel: PR #${pr.number} ${past} the base branch; building again on the current base.${failed ? ` Updating it failed at the ${failed.step} step: ${failed.detail}` : ''}`,
+    );
     log(`${id}: PR #${pr.number} ${behind ? 'was behind its base' : 'conflicted'}; building again`);
   }
+}
+
+/** The first `n` chars of a command's output, for a comment or log line. */
+const outText = (r, n = 300) => `${r.stdout ?? ''}${r.stderr ?? ''}${r.error?.message ?? ''}`.trim().slice(-n);
+
+/**
+ * The held-out directory `keel run` keeps for this issue's card (run.js `heldDir`), or null when it holds none authored
+ * for this card text: the same worktree key, and the same card hash `heldOutFor` compares (REQ-LINEAR-58).
+ */
+function heldOutDirFor(repo, card) {
+  const key = `${basename(repo)}-${createHash('sha256').update(resolve(repo)).digest('hex').slice(0, 8)}-${card.id}`;
+  const dir = join(stateDir(), 'heldout', key);
+  const hashFile = `${dir}.card-hash`;
+  const hash = createHash('sha256').update(JSON.stringify(card)).digest('hex');
+  return existsSync(dir) && readdirSync(dir).length && existsSync(hashFile) && readFileSync(hashFile, 'utf8').trim() === hash ? dir : null;
+}
+
+/**
+ * Bring a behind, non-conflicting PR up to date without a new build (REQ-LINEAR-58): GitHub merges the base into the
+ * branch (`gh pr update-branch`), the new head is fetched and gated in a temporary checkout with the issue's card and
+ * its held-out directory, and `keel/gate` is posted on it, so the PR stays open with its auto-merge armed. Returns null
+ * on success, else `{ step, detail }` naming the step that failed (card, update, fetch, gate, or status).
+ */
+function updateBehind({ repo, pr, id, issue, config, base, gateFn, log }) {
+  if (!issue) return { step: 'card', detail: `${id} is not an open issue in the project` };
+  let card;
+  try {
+    card = cardFromIssue(issue);
+  } catch (e) {
+    // REQ-LINEAR-58: a card that cannot be read is a failed step, so the PR falls back to a rebuild, which reports it.
+    return { step: 'card', detail: e.message };
+  }
+  const baseBranch = pr.baseRefName ?? base.replace(/^origin\//, '');
+  const updated = exec('gh', ['pr', 'update-branch', String(pr.number)], repo);
+  if (updated.status !== 0) return { step: 'update', detail: outText(updated) };
+  const heads = `refs/remotes/origin/${pr.headRefName}`;
+  const fetched = exec(
+    'git',
+    ['fetch', '--quiet', 'origin', `+refs/heads/${pr.headRefName}:${heads}`, `+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`],
+    repo,
+  );
+  if (fetched.status !== 0) return { step: 'fetch', detail: outText(fetched) };
+  const head = exec('git', ['rev-parse', '--verify', '--end-of-options', `${heads}^{commit}`], repo).stdout.trim();
+  // As `keel run` does: a card that names its own held-out tests is gated with them as written; only a card without
+  // one gets the directory `keel run` authored for it (REQ-LINEAR-58, REQ-RUN-17).
+  const held = card.heldOut ?? heldOutDirFor(repo, card);
+  const text = card.heldOut || !held ? card.text : builderText(card).replace(/^(# .*\n)/, `$1heldOut: ${held}\n`);
+  log(`${id}: PR #${pr.number} updated; gating ${head} against origin/${baseBranch}${held ? ' with its held-out tests' : ''}`);
+  let failure = null;
+  try {
+    withTempWorktree(repo, head, (wt) => {
+      const gate = gateFn({ repo: wt, base: `origin/${baseBranch}`, card, text, log });
+      if (gate.error) {
+        failure = { step: 'gate', detail: gate.error };
+        return;
+      }
+      const { receipt } = gate;
+      if (receipt.head !== head) {
+        failure = { step: 'gate', detail: `the gate ran on ${receipt.head}, not ${head}` };
+        return;
+      }
+      if (!receipt.pass) {
+        const stages = receipt.results
+          .filter((r) => !r.pass)
+          .map((r) => `${r.name}: ${[...new Set((r.problems ?? []).map((p) => p.rule))].join(', ') || '(no rule)'}`);
+        failure = { step: 'gate', detail: `${gateDescription(receipt, config)}; ${stages.join('; ')}` };
+        return;
+      }
+      const status = postGateStatus(wt, receipt, config);
+      if (!status.ok) failure = { step: 'status', detail: `${GATE_CONTEXT} not posted: ${status.out.slice(-300)}` };
+    });
+  } catch (e) {
+    // REQ-LINEAR-58: a gate that cannot run (no checkout, a crash) is a failed step, never a reason to stop the poll.
+    return { step: 'gate', detail: `could not run: ${e.message}` };
+  }
+  if (failure) return failure;
+  // A self-merge waiting on the old certified SHA now waits on this one (REQ-MERGE-3).
+  for (const m of pendingSelfMerges(repo)) if (m.issue === id) recordSelfMerge(repo, { issue: id, pr: m.pr, sha: head });
+  return null;
 }
 
 const DEPENDABOT = 'dependabot[bot]';
@@ -836,13 +933,13 @@ const DEPENDABOT = 'dependabot[bot]';
 /**
  * Gate one head with `keel gate --json` (REQ-LINEAR-53), the same gate a person runs by hand: `repo` is a checkout at
  * the head, `card` the card derived from its commit types. The card file goes in the state dir, outside the checkout,
- * so the tree stays clean. Returns `{ receipt }`, or `{ error }` when the gate did not run to a receipt.
+ * so the tree stays clean. `text` is the whole card instead (REQ-LINEAR-58). Returns `{ receipt }`, or `{ error }` when the gate did not run to a receipt.
  */
-export function gateHead({ repo, base, card }) {
-  const dir = join(stateDir(), 'dependabot');
+export function gateHead({ repo, base, card, text = null }) {
+  const dir = join(stateDir(), text ? 'behind' : 'dependabot');
   mkdirSync(dir, { recursive: true });
   const file = join(dir, `${card.id}.md`);
-  writeFileSync(file, `# ${card.id}\nkind: ${card.kind}\nsize: ${card.size}\n`);
+  writeFileSync(file, text ?? `# ${card.id}\nkind: ${card.kind}\nsize: ${card.size}\n`);
   const r = exec(
     process.execPath,
     [join(KEEL_ROOT, 'bin', 'keel.js'), 'gate', '--json', '--base', base, '--card', file, '--repo', repo],
@@ -1390,7 +1487,7 @@ export async function poll({
   // Self-merges whose checks were pending at an earlier poll go first; none waits on CI here (REQ-MERGE-2).
   if (merge) results.push(...(await finishSelfMerges({ repo, config, client, log })));
   results.push(...filingFailed(await fileFollowUps({ repo, project, config, client, log, base, capacityFn, keelRoot }))); // what an earlier poll could not file
-  await rebuildConflicts({ repo, client, log });
+  await rebuildConflicts({ repo, client, log, project, config, base, gateFn });
   // Dependabot PRs where keel/gate is required get it, so their auto-merge can go through (REQ-LINEAR-53).
   results.push(...gateDependabot({ repo, config, log, gateFn }));
   if (only) {
