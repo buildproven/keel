@@ -137,15 +137,23 @@ function judge(w, { rows, now, keepDays }) {
 }
 
 /**
- * Whether `ref`'s tip is an ancestor of the repo's default branch (origin's, else the primary checkout's HEAD in a repo
- * without origin, REQ-CFG-2). A git error throws, so the worktree is kept and reported (REQ-CLEAN-4), never guessed.
+ * Whether `ref`'s work is in the repo's default branch (origin's, else the primary checkout's HEAD in a repo without
+ * origin, REQ-CFG-2): its tip is an ancestor, or the default branch holds a commit patch-equivalent to the whole branch,
+ * as `gh pr merge --squash` makes (REQ-MERGE-1, REQ-RUN-20). A squash whose diff a conflict changed is not seen, so that
+ * branch is kept: the safe side. A git error throws, so the worktree is kept and reported (REQ-CLEAN-4), never guessed.
  */
 function inDefaultBranch(repo, ref) {
   const base = findDefaultBase(repo) ?? 'HEAD';
   const r = exec('git', ['merge-base', '--is-ancestor', ref, base], repo);
   if (r.status === 0) return true;
-  if (r.status === 1) return false;
-  throw new Error(`git merge-base --is-ancestor ${ref} ${base}: ${(r.stderr || '').trim() || `exit ${r.status}`}`);
+  if (r.status !== 1) throw new Error(`git merge-base --is-ancestor ${ref} ${base}: ${(r.stderr || '').trim() || `exit ${r.status}`}`);
+  const fork = git(['merge-base', ref, base], repo).trim();
+  // One commit holding the branch's whole change, so `git cherry` can match it against a squash merge on the base.
+  const squashed = git(
+    ['-c', 'user.name=keel', '-c', 'user.email=keel@localhost', 'commit-tree', `${ref}^{tree}`, '-p', fork, '-m', 'squash'],
+    repo,
+  ).trim();
+  return git(['cherry', base, squashed], repo).startsWith('-');
 }
 
 const reportedFile = () => join(stateDir(), 'cleanup-kept.json');

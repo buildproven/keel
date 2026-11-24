@@ -115,6 +115,40 @@ test('REQ-CLEAN-3 a failed run with only Keel commits is kept for worktreeKeepDa
   assert.ok(!branchExists(repo, 'keel/T-3'));
 });
 
+test('REQ-CLEAN-3 a branch squash-merged into origin default branch deletes the branch with its worktree', () => {
+  const { repo, wt } = parked('T-18');
+  keelCommit(wt, 'T-18', 1, 'fix(T-18): one');
+  keelCommit(wt, 'T-18', 2, 'fix(T-18): two');
+  g(repo, 'update-ref', 'refs/remotes/origin/keel/T-18', g(wt, 'rev-parse', 'HEAD'));
+  // main moves on, then takes the branch as one squash commit (gh pr merge --squash), then moves on again.
+  writeFileSync(join(repo, 'other.txt'), 'before');
+  g(repo, 'add', '-A');
+  g(repo, 'commit', '-q', '-m', 'unrelated before');
+  g(repo, 'merge', '-q', '--squash', 'keel/T-18');
+  g(repo, 'commit', '-q', '-m', 'fix(T-18): squashed (#9)');
+  writeFileSync(join(repo, 'other.txt'), 'after');
+  g(repo, 'commit', '-q', '-am', 'unrelated after');
+  g(repo, 'update-ref', 'refs/remotes/origin/main', g(repo, 'rev-parse', 'main'));
+  const { lines } = pass(Date.now() + 2 * HOUR);
+  assert.match(lines.join('\n'), new RegExp(`removed ${wt} \\(no commit only there\\)`));
+  assert.ok(!existsSync(wt));
+  assert.ok(!branchExists(repo, 'keel/T-18'), 'its work is in origin/main as a squash commit: merged');
+});
+
+test('REQ-CLEAN-3 a branch whose change origin/main holds only in part is not taken as squash-merged', () => {
+  const { repo, wt } = parked('T-19');
+  keelCommit(wt, 'T-19', 1, 'fix(T-19): one');
+  g(repo, 'update-ref', 'refs/remotes/origin/main', g(repo, 'rev-parse', 'main'));
+  keelCommit(wt, 'T-19', 2, 'fix(T-19): two');
+  g(repo, 'branch', 'train/2026-11-24-2', 'keel/T-19');
+  g(repo, 'merge', '-q', '--squash', 'keel/T-19~1');
+  g(repo, 'commit', '-q', '-m', 'fix(T-19): first commit only');
+  g(repo, 'update-ref', 'refs/remotes/origin/main', g(repo, 'rev-parse', 'main'));
+  const { lines } = pass(Date.now() + 2 * HOUR);
+  assert.ok(lines.includes(`removed ${wt}, kept branch keel/T-19 (not merged)`), lines.join('\n'));
+  assert.ok(branchExists(repo, 'keel/T-19'));
+});
+
 test('REQ-CLEAN-6 the age rule deletes an unmerged leftovers-only branch, so a retry of the card can create it again', () => {
   const { repo, wt } = parked('T-17');
   keelCommit(wt, 'T-17');
