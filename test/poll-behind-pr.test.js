@@ -145,26 +145,36 @@ test('REQ-LINEAR-58 a behind PR is updated from its base, its new head gated wit
   assert.deepEqual(comments, []);
 });
 
-test('REQ-LINEAR-58 the gate of an updated head gets the held-out directory authored for the card', async () => {
-  const s = setup({ prs: [behindPr] });
-  const card = cardFromIssue(issue('BUI-7'));
-  const key = `${basename(s.dir)}-${createHash('sha256').update(resolve(s.dir)).digest('hex').slice(0, 8)}-BUI-7`;
+/** The held-out directory `keel run` keeps for BUI-7 in `repo`, with `hash` as the card hash it was authored for. */
+function heldOutFor(repo, hash) {
+  const key = `${basename(repo)}-${createHash('sha256').update(resolve(repo)).digest('hex').slice(0, 8)}-BUI-7`;
   const held = join(process.env.KEEL_STATE_DIR, 'heldout', key);
   mkdirSync(held, { recursive: true });
   writeFileSync(join(held, 'held.test.js'), '// held out\n');
-  writeFileSync(`${held}.card-hash`, `${createHash('sha256').update(JSON.stringify(card)).digest('hex')}\n`);
+  writeFileSync(`${held}.card-hash`, `${hash}\n`);
+  return held;
+}
+
+const cardHashOf = (card) => createHash('sha256').update(JSON.stringify(card)).digest('hex');
+
+test('REQ-LINEAR-58 the gate of an updated head gets the held-out directory authored for the card', async () => {
+  const s = setup({ prs: [behindPr] });
+  const held = heldOutFor(s.dir, cardHashOf(cardFromIssue(issue('BUI-7'))));
   const texts = [];
   await pollWith(s, { gateFn: (a) => (texts.push(a.text), passing(a.repo)) });
   assert.equal(texts.length, 1);
   assert.match(texts[0], new RegExp(`^heldOut: ${held.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'));
   assert.deepEqual(closes(s), []);
+});
 
-  // Held-out tests authored for other card text are not used.
-  writeFileSync(`${held}.card-hash`, 'stale\n');
-  const again = setup({ prs: [behindPr] });
-  const more = [];
-  await pollWith(again, { gateFn: (a) => (more.push(a.text), passing(a.repo)) });
-  assert.doesNotMatch(more[0], /heldOut:/);
+test('REQ-LINEAR-58 held-out tests authored for other card text are not given to the gate', async () => {
+  const s = setup({ prs: [behindPr] });
+  heldOutFor(s.dir, cardHashOf(cardFromIssue({ ...issue('BUI-7'), description: '- REQ-1: an older card text.' })));
+  const texts = [];
+  await pollWith(s, { gateFn: (a) => (texts.push(a.text), passing(a.repo)) });
+  assert.equal(texts.length, 1);
+  assert.doesNotMatch(texts[0], /heldOut:/);
+  assert.deepEqual(closes(s), []);
 });
 
 test('REQ-LINEAR-58 a pending self-merge of the PR waits on the new certified head', async () => {
