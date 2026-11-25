@@ -1,5 +1,9 @@
+import { createHash } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { basename, join, resolve } from 'node:path';
 import { CardError, DEFAULTS, readCard } from './config.js';
-import { exec, git, revParse, showFile } from './git.js';
+import { exec, git, mainWorktree, revParse, showFile } from './git.js';
+import { stateDir } from './ledger.js';
 import { gateCommands, runnerFiles } from './gate.js';
 import { fold, locksAny, matchesAny } from './scan.js';
 import { GLOB_CHAR, cardFromIssue, exactPaths, markedNew } from './linear.js';
@@ -140,9 +144,9 @@ export function judgeCard(repo, base, card) {
 }
 
 /** The card of an open issue, as `keel poll` maps it (REQ-LINEAR-2); a mapping error is a CardError (REQ-CARD-9). */
-async function issueCard(id, issues) {
+async function issueCard(id, issues, command = 'check-card') {
   const issue = (await issues()).find((i) => i.id === id);
-  if (!issue) throw new UsageError(`check-card: ${id} is not an open issue of the project`);
+  if (!issue) throw new UsageError(`${command}: ${id} is not an open issue of the project`);
   try {
     return cardFromIssue(issue);
   } catch (e) {
@@ -151,6 +155,40 @@ async function issueCard(id, issues) {
     // external block); keel poll skips that issue with the message, so check-card reports the same message.
     throw new CardError(`${id}: ${e.message}`);
   }
+}
+
+/**
+ * The per-card held-out dir `keel run` writes for issue `id` (run.js `heldDir`, REQ-RUN-17), keyed by the checkout `keel
+ * run` was given, as `<repo>-<hash>-<id>`. `repo` may be that checkout or a linked worktree of it, such as the one the
+ * run built in, so the checkout itself is tried first and then the primary worktree. Returns `{ dir, exists }`; when
+ * no candidate exists, `dir` is the primary worktree's, the one `keel run` writes (REQ-CARD-18).
+ */
+export function runHeldOutDir(repo, id) {
+  const dirs = [...new Set([resolve(repo), mainWorktree(repo)])].map((r) =>
+    join(stateDir(), 'heldout', `${basename(r)}-${createHash('sha256').update(r).digest('hex').slice(0, 8)}-${id}`),
+  );
+  const found = dirs.find((d) => existsSync(d));
+  return found ? { dir: found, exists: true } : { dir: dirs.at(-1), exists: false };
+}
+
+/**
+ * The card `keel gate --card <ISSUE-ID>` gates with (REQ-CARD-17, REQ-CARD-18): the open issue mapped as `keel run`
+ * maps it (`cardFromIssue`), so the gate gets its kind, size, paths and allowEdits. A card without its own `heldOut`
+ * gets the held-out dir `keel run` wrote for it; when that dir does not exist, `heldOutExpected` names it, so a gate
+ * that needs held-out tests says where they belong.
+ */
+export async function gateCardForIssue({ repo, id, issues }) {
+  const card = await issueCard(id, issues, 'gate');
+  if (card.heldOut) return card;
+  const { dir, exists } = runHeldOutDir(repo, id);
+  return exists ? { ...card, heldOut: dir } : { ...card, heldOutExpected: dir };
+}
+
+/** The `keel gate` hint for a `keel/<ISSUE-ID>` branch gated without `--card` (REQ-CARD-19), else null. */
+export function issueBranchHint(repo) {
+  const branch = exec('git', ['symbolic-ref', '--quiet', '--short', 'HEAD'], repo);
+  const id = branch.status === 0 ? /^keel\/([A-Z]+-[0-9]+)$/.exec(branch.stdout.trim())?.[1] : null;
+  return id ? `branch keel/${id}: pass --card ${id} to gate with its card` : null;
 }
 
 /**
