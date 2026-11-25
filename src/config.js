@@ -117,7 +117,7 @@ export const DEFAULTS = {
   // Estimated list-price dollars: a ceiling for API-key billing, not for a subscription (REQ-LINEAR-9).
   dailyBudgetUsd: null,
   // Plan window percents at which `keel poll` stops using a subscription provider; null turns it off (REQ-PLAN-2).
-  planLimits: { fiveHour: 90, week: 80 },
+  planLimits: { fiveHour: 90, week: 95 },
   // Providers on a small plan (a $20 Codex plan): a tier on one is never a learned start, and it is reserved at the lower
   // lastResortLimits (REQ-PLAN-7). Only an escalation after the other tiers failed, or a risky review, reaches it.
   lastResort: ['codex'],
