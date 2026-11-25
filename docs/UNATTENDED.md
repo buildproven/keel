@@ -88,6 +88,29 @@ for repo in ~/src/*/; do
 done
 ```
 
+## An ordered card list
+
+To build a fixed list of issues or card files in one repo, in order, use `keel chain` instead of a shell loop over
+`keel run`:
+
+```sh
+keel chain ~/src/app BUI-11 BUI-12 --ship BUI-13 cards/extra.md
+```
+
+It runs `keel run` for each item and, at each `--ship` and at the end, runs `ship <repo> keel/<id>...` (a merge-train
+command on your PATH) for the branches built since the last ship. It waits instead of skipping a card when:
+
+- a plan limit defers the run: until the named reset plus 2 minutes, then the same card again (4 waits, then it stops);
+- available memory is under `KEEL_MEMORY_LINE` (else `MEMWATCH_MIN_AVAILABLE`, else 40 %) before a run: until the
+  line + 5 % (2 hours, then it stops);
+- a killed run left its worktree: the work goes to `wip/<id>-<time>` on origin, the worktree is removed, and the card
+  runs again (3 times).
+
+Any other failure is logged and the chain goes on. Progress (`built`, `failed`, `remaining`) is in
+`<state>/chain/<repo>.json`; run the command again after a stop or a reboot and it goes on where it stopped. A built
+card is never built again; delete the file to rebuild one (REQ-CHAIN-1..6). It exits 0 when every card was built and
+shipped, 1 when a card or a ship failed, and 3 when quota or memory stopped it.
+
 ## Exit codes
 
 | Code | Meaning                                                                         |

@@ -14,6 +14,7 @@ import { escapedDefects, formatEscaped } from '../src/escaped.js';
 import { gate, stageLine } from '../src/gate.js';
 import { fmtMs, formatSlowest, slowestChecks } from '../src/timing.js';
 import { audit } from '../src/audit.js';
+import { chain, chainSteps, memoryLine, spawnRun, spawnShip } from '../src/chain.js';
 import { keelTest } from '../src/keel-test.js';
 import { authorFamily, fallbackReviewers, family, label, reviewerFor, windowFallback } from '../src/review.js';
 import { readPlan, savePlan } from '../src/plan.js';
@@ -51,6 +52,11 @@ const USAGE = `keel — quality gate that picks the model
                                                                tier first, escalate on gate failure;
                                                                an issue ID builds that Linear issue (as poll --issue);
                                                                --merge also enables GitHub auto-merge of the certified SHA
+  keel chain <repo> <ISSUE-ID | card.md | --ship>...         build the issues and cards in order with keel run; at each
+                                                               --ship and at the end, ship the branches built since the last
+                                                               ship; waits out plan limits and low memory (KEEL_MEMORY_LINE,
+                                                               default 40 %), saves a killed run's worktree to
+                                                               wip/<id>-<time>, and resumes from <state>/chain/<repo>.json
   keel poll [--project <name>] [--base <ref>] [--repo <dir>] [--pr | --merge] [--limit N | --issue <ID> | --file-only]
                                                                pick, build, and report on the next N Linear issues (needs LINEAR_API_KEY),
                                                                on the base of run;
@@ -86,6 +92,7 @@ let parsed;
 try {
   parsed = parseArgs({
     allowPositionals: true,
+    tokens: true, // keel chain reads the order of its ids and --ship steps (REQ-CHAIN-1)
     options: {
       base: { type: 'string' },
       card: { type: 'string' },
@@ -107,6 +114,7 @@ try {
       author: { type: 'string' },
       status: { type: 'boolean' },
       'wait-review': { type: 'string' },
+      ship: { type: 'boolean' },
       help: { type: 'boolean', short: 'h' },
       version: { type: 'boolean', short: 'v' },
     },
@@ -153,6 +161,7 @@ if (values.version && command) {
     if (values.author !== undefined && command !== 'gate') throw new UsageError('--author is an option of gate only');
     if (values.status && command !== 'gate') throw new UsageError('--status is an option of gate only');
     if (values['wait-review'] !== undefined && command !== 'gate') throw new UsageError('--wait-review is an option of gate only');
+    if (values.ship && command !== 'chain') throw new UsageError('--ship is an option of chain only');
     if (values.days !== undefined && !(command === 'report' && values.value))
       throw new UsageError('--days is an option of report --value only');
     const waitReviewHours = values['wait-review'] === undefined ? 0 : Number(values['wait-review']);
@@ -248,6 +257,12 @@ if (values.version && command) {
         if (result.pr) log(result.pr.ok ? `PR ${result.pr.out}` : `PR failed:\n${result.pr.out}`);
         process.exitCode = result.pass && (!result.pr || result.pr.ok) && result.merge?.state !== 'failed' ? 0 : 1;
       }
+    } else if (command === 'chain') {
+      // An ordered card list that waits out quota and memory instead of skipping cards (REQ-CHAIN-1..6).
+      const { repo: chainRepo, steps } = chainSteps(parsed.tokens);
+      if (!isDirectory(chainRepo)) throw new UsageError(`chain repo ${chainRepo} is not a directory`);
+      const result = await chain({ repo: chainRepo, steps, runCard: spawnRun(chainRepo), ship: spawnShip, killLine: memoryLine(), log });
+      process.exitCode = result.exitCode;
     } else if (command === 'poll' || isIssueRun) {
       // `keel run <ISSUE-ID>` is `keel poll --issue <ISSUE-ID>` (REQ-CLI-8).
       if (isIssueRun) values.issue = arg;
