@@ -477,6 +477,70 @@ const headResult = (name, r, rule) => ({
   ...(r.code !== 0 || r.flaky ? { output: tail(r.out) } : {}),
 });
 
+// A line that names a failed test (REQ-GATE-73): the card's marks plus the runners' marks failingTests reads (REQ-RUN-46).
+const FAILURE_LINE = /^(?:[✘✖]|not ok\b|FAILED\b|FAIL )/u;
+const AFTER_FAILURE = 15; // lines kept after each failure line: the error and its location (REQ-GATE-73)
+const EXCERPT_MAX = 20000; // characters of failure excerpts; the full output is in the saved log (REQ-GATE-74)
+
+/**
+ * Each line naming a failed test with the 15 lines after it (REQ-GATE-73), overlapping excerpts merged and gaps shown
+ * as `--`, so a failure that the suite printed long before its last lines is not lost. Empty when no line names one.
+ */
+export function failureExcerpts(out) {
+  const lines = out.split('\n');
+  const keep = new Set();
+  lines.forEach((raw, i) => {
+    const line = raw.replace(ANSI, '').trim();
+    if (!FAILURE_LINE.test(line) && !FAILED_TEST.some((re) => re.test(line))) return;
+    for (let j = i; j <= Math.min(i + AFTER_FAILURE, lines.length - 1); j += 1) keep.add(j);
+  });
+  const parts = [];
+  let last = -2;
+  for (const i of [...keep].sort((a, b) => a - b)) {
+    if (last >= 0 && i > last + 1) parts.push('--');
+    parts.push(lines[i]);
+    last = i;
+  }
+  const text = parts.join('\n');
+  return text.length > EXCERPT_MAX ? `${text.slice(0, EXCERPT_MAX)}\n… more failures cut; see the full test output` : text;
+}
+
+/**
+ * Where a failed test step's full output is saved (REQ-GATE-74): `gates/` beside the receipts (the state dir, as
+ * `keel gate` and `keel run` set it), one directory per repository and one file per head; none without a receipt dir.
+ */
+function testLogFile(repo, head, receiptDir) {
+  if (!receiptDir) return null;
+  // Keyed by the repository (git common dir), so every worktree of one repo writes to one directory.
+  const repository = realpathSync(resolve(repo, git(['rev-parse', '--git-common-dir'], repo).trim()));
+  const key = `${basename(dirname(repository))}-${createHash('sha256').update(repository).digest('hex').slice(0, 8)}`;
+  return join(dirname(receiptDir), 'gates', key, `${head}-test.log`);
+}
+
+/**
+ * The result of the test command's step (REQ-GATE-73, -74). On failure the output is the failing tests' excerpts,
+ * then the tail as before, then the path of the saved full output, so a failure followed by many lines is not lost.
+ */
+function testStepResult(name, r, { repo, head, receiptDir }, rule) {
+  const result = headResult(name, r, rule);
+  if (r.code === 0) return result;
+  const excerpts = failureExcerpts(r.out);
+  const path = testLogFile(repo, head, receiptDir);
+  let saved = null;
+  if (path) {
+    try {
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, r.out);
+      saved = `keel: full test output: ${path}`;
+    } catch (err) {
+      // REQ-GATE-74: a log that cannot be written is reported, never fatal: the test step's own failure is the result.
+      saved = `keel: full test output not saved: ${err.message}`;
+    }
+  }
+  const parts = [...(excerpts ? ['keel: failing tests:', excerpts, 'keel: last output:'] : []), result.output, ...(saved ? [saved] : [])];
+  return { ...result, output: parts.join('\n'), ...(saved?.startsWith('keel: full test output: ') ? { log: path } : {}) };
+}
+
 /** One `keel gate` output line per stage. */
 export const stageLine = (r) =>
   `${r.pass ? 'PASS' : 'FAIL'} ${r.name}${r.flaky ? ' (flaky: failed once, passed on retry)' : ''}${r.baseRedFixed ? ` (base-red-fixed: ${r.baseRedFixed.join(', ')})` : ''}${r.fallback ? ` (fallback reviewer ${r.reviewer}; ${r.fallback.from} ${r.fallback.status})` : ''}${r.effort ? ` (re-review of a small doc change: effort ${r.effort})` : ''}${r.unavailable?.length ? ` (out: ${r.unavailable.map(outLine).join('; ')})` : ''}${r.unparsed?.length ? ` (unparsed: ${r.unparsed.join('; ')})` : ''}${r.problems.length ? ` ${JSON.stringify(r.problems)}` : ''}`;
@@ -494,14 +558,14 @@ function candidateStages(ctx) {
     for (const [name, command] of Object.entries(config.checks)) {
       const r = runHead(command, dir, ctx);
       if (command === config.testCommand) suiteOut = r.out;
-      results.push(headResult(name, r));
+      results.push(command === config.testCommand ? testStepResult(name, r, ctx) : headResult(name, r));
       if (r.code !== 0) break;
     }
     const testedByChecks = Object.values(config.checks).includes(config.testCommand);
     if (results.every((r) => r.pass) && needsProof(card) && !testedByChecks) {
       const r = runHead(config.testCommand, dir, ctx);
       suiteOut = r.out;
-      results.push(headResult('regression-on-head', r, 'regression-fails-on-head'));
+      results.push(testStepResult('regression-on-head', r, ctx, 'regression-fails-on-head'));
     }
     // The red proof runs only the new files on base (REQ-GATE-33) when two things hold on head: testCommand (and CI)
     // really runs each new file, because the whole suite's output names it or a `node --test` glob of testCommand or the
@@ -989,6 +1053,7 @@ export function gate({
     reviewer,
     spendFile,
     clock,
+    receiptDir,
     previous: previousReview(receiptDir, card, head, repo, continues),
     changed: failed() ? [] : changedFiles(from, head, repo),
   };
