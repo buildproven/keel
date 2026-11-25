@@ -360,13 +360,16 @@ function authorOnce({ repo, card, hash, config, baseSha, runId, heldDir, log, de
       git(['add', '-A'], dir);
       const added = git(['diff', '--cached', '--name-only', '--diff-filter=A', '-z', baseSha], dir)
         .split('\0')
-        .filter((p) => p && matchesAny(p, config.testGlobs));
-      if (!added.length) return 'the author wrote no new test file';
+        // A support file under a heldout path is kept too, even where no test glob reaches it (REQ-RUN-66): the tests
+        // that load it fail without it (games BUI-2004, 2026-11-25: `games/lantern-drift/tests/heldout-bui2004/probe.mjs`).
+        .filter((p) => p && (matchesAny(p, config.testGlobs) || p.split('/').some((seg) => /^heldout/i.test(seg))));
+      const tests = added.filter((p) => matchesAny(p, config.testGlobs));
+      if (!tests.length) return 'the author wrote no new test file';
       const r = shell(heldOutTestCommand(config, added), dir, config);
       const out = r.out.slice(-2000);
       if (inconclusive(r)) return `the authored tests did not run (exit ${r.code}):\n${out}`;
       if (r.code === 0) return `the authored tests pass on base, so they prove nothing:\n${out}`;
-      if (!added.some((p) => r.out.includes(basename(p)))) return `the failure on base does not name an authored test file:\n${out}`;
+      if (!tests.some((p) => r.out.includes(basename(p)))) return `the failure on base does not name an authored test file:\n${out}`;
       const kept = keptNames(dir, added, config);
       const collision = collisions(card, kept);
       if (collision.length) return { collision }; // Nothing is written, so a retry never reuses them (REQ-RUN-63).
