@@ -110,3 +110,34 @@ test('REQ-RUN-66 an author that keeps an unmarked fixture twice stops held-out-a
   assert.match(r.failure, /tests\/fixtures\/add\.txt/);
   assert.equal(builderCalls().length, 0);
 });
+
+/** An author that keeps its helper under `pkg/tests/heldout-add/`, a path no default test glob matches (games BUI-2004). */
+const nestedAuthor = {
+  provider: 'exec',
+  model: 'exec-author',
+  effort: 'high',
+  command: [
+    'node',
+    '-e',
+    `const fs = require('fs');
+fs.readFileSync(0, 'utf8');
+fs.mkdirSync('pkg/tests/heldout-add', { recursive: true });
+fs.mkdirSync('tests', { recursive: true });
+fs.writeFileSync('pkg/tests/heldout-add/add.txt', 'a + b');
+fs.writeFileSync('tests/test_add.py', "want = open('pkg/tests/heldout-add/add.txt').read()\\nassert want in open('src/add.js').read(), 'add is wrong'\\n");
+console.log(JSON.stringify({ total_cost_usd: 0.01, usage: { input_tokens: 1, output_tokens: 1 } }));`,
+  ],
+};
+
+test('REQ-RUN-66 a heldout support file outside every test glob is kept with the tests that load it', () => {
+  const { dir } = fixtureRepo();
+  const config = fixtureConfig({ tiers: [builder, nestedAuthor], heldOutAuthorTier: 1, heldOutCommand: HELD_CMD, maxAttempts: 1 });
+  const lines = [];
+  const r = run({ repo: dir, card: card(), config, log: (m) => lines.push(m) });
+  assert.ok(existsSync(join(process.env.KEEL_STATE_DIR, 'heldout')), `${r.failure}\n${lines.join('\n')}`);
+  const [key] = readdirSync(join(process.env.KEEL_STATE_DIR, 'heldout')).filter((n) => !n.endsWith('.card-hash'));
+  assert.ok(existsSync(join(process.env.KEEL_STATE_DIR, 'heldout', key, 'pkg/tests/heldout-add/add.txt')), r.failure);
+  const heldOut = r.receipt?.results.find((x) => x.name === 'held-out');
+  assert.ok(heldOut?.pass, JSON.stringify(heldOut));
+  assert.equal(r.pass, true, r.failure);
+});
