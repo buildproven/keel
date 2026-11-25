@@ -2,6 +2,9 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, 
 import { basename, dirname, join } from 'node:path';
 import { alive } from './slots.js';
 
+/** The `code` of the error a held lock throws, so a caller can tell it from a filesystem failure (REQ-LINEAR-59). */
+export const LOCKED = 'KEEL_LOCKED';
+
 let taken = 0; // tells apart two locks of one process: a run that starts another run of the same card
 
 /** Live entries of a card's run lock, `<lock>.run-<pid>-<n>`; entries of dead processes or with no pid are removed. */
@@ -57,7 +60,8 @@ export function acquireRunLock(lock) {
   const mine = `${lock}.run-${process.pid}-${++taken}`;
   writeFileSync(mine, '');
   const dropEntry = () => rmSync(mine, { force: true });
-  const locked = (pid) => new Error(`card is locked by another keel run in progress (pid ${pid}): ${lock}`);
+  const locked = (pid) =>
+    Object.assign(new Error(`card is locked by another keel run in progress (pid ${pid}): ${lock}`), { code: LOCKED });
   const other = liveEntries(lock).find((e) => e.file !== mine);
   if (other) {
     dropEntry();

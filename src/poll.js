@@ -31,6 +31,7 @@ import { REFINED_HEADING, refineIssue, refineReason } from './refine.js';
 import { networkFailure } from './network.js';
 import { nextReset, ownerPlanLimits, planLine, readPlan, reservedProviders, savePlan } from './plan.js';
 import { run } from './run.js';
+import { LOCKED, acquireRunLock } from './run-lock.js';
 import { locksAny, matchesAny } from './scan.js';
 import { GATE_CONTEXT, gateDescription, gateState, postGateStatus } from './status.js';
 import { UsageError } from './usage.js';
@@ -496,9 +497,35 @@ const DUP_CLOSED_DAYS = 30;
  * unreadable count is a filing error that counts no try. Filed issues are not attempts,
  * so the loop builds them. A Linear error never stops a poll: it returns `{ error }`, and the poll reports it.
  */
-async function fileFollowUps({ repo, project, config, client, log, base = 'HEAD', capacityFn = null, keelRoot = KEEL_ROOT }) {
+async function fileFollowUps(args) {
+  const { repo, config, log } = args;
+  if (!pendingFollowUps(repo, FILE_TRIES).length || !(config.followUpsPerDay > 0)) return {};
+  // Two polls of one repo would each read the open titles before the other files, and file every item twice
+  // (REQ-LINEAR-59): one pass files at a time; the other skips filing, and a later poll files what is left.
+  let release;
+  try {
+    release = acquireRunLock(followUpFilingLock(repo));
+  } catch (e) {
+    if (e.code !== LOCKED) throw e;
+    log(`follow-ups: another poll is filing for ${repo}`);
+    return {};
+  }
+  try {
+    return await fileFollowUpsLocked(args); // reads the queue again under the lock: the other pass may have filed it
+  } finally {
+    release();
+  }
+}
+
+/** The per-repo lock a follow-up filing pass holds (REQ-LINEAR-59), in the run locks dir (REQ-RUN-10). */
+export function followUpFilingLock(repo) {
+  const key = createHash('sha256').update(resolve(repo)).digest('hex').slice(0, 8);
+  return join(stateDir(), 'locks', `follow-ups-${basename(resolve(repo))}-${key}`);
+}
+
+async function fileFollowUpsLocked({ repo, project, config, client, log, base = 'HEAD', capacityFn = null, keelRoot = KEEL_ROOT }) {
   const pending = pendingFollowUps(repo, FILE_TRIES);
-  if (!pending.length || !(config.followUpsPerDay > 0)) return {};
+  if (!pending.length) return {};
   const filed = new Map(); // source → new issue IDs
   const sourceOpen = new Map(); // source → still open, so its follow-up waits for it (REQ-LINEAR-28)
   // A source Linear no longer finds (archived or deleted) is not open: its follow-ups wait for nothing, are filed in the
