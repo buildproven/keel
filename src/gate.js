@@ -836,7 +836,17 @@ function runHeldOut({ repo, head, card, config, onHead }, ref, files) {
 function heldOut(ctx) {
   const { base, head, card, config } = ctx;
   const required = config.heldOutRequired.includes(card.size) && needsProof(card);
-  if (!card.heldOut) return required ? fail('held-out', 'held-out-required', { size: card.size }) : null;
+  if (!card.heldOut) {
+    if (!required) return null;
+    // An issue card gated by `keel gate --card <ISSUE-ID>` names the dir `keel run` writes (REQ-CARD-18).
+    const where = card.heldOutExpected
+      ? {
+          expected: card.heldOutExpected,
+          detail: `no held-out tests: keel run writes them to ${card.heldOutExpected}, which does not exist`,
+        }
+      : {};
+    return fail('held-out', 'held-out-required', { size: card.size, ...where });
+  }
   if (!isAbsolute(card.heldOut) || !existsSync(card.heldOut)) return fail('held-out', 'held-out-missing');
   const files = listFiles(card.heldOut);
   if (!files.length) return fail('held-out', 'held-out-empty');

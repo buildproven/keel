@@ -3,7 +3,7 @@ import { parseArgs } from 'node:util';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { autoClean } from '../src/autoclean.js';
-import { ISSUE_ID, checkCard } from '../src/check-card.js';
+import { ISSUE_ID, checkCard, gateCardForIssue, issueBranchHint } from '../src/check-card.js';
 import { expectedBranch, listParkedWorktrees, removeParkedWorktree } from '../src/clean.js';
 import { CardError, loadConfig, readTrustedCard } from '../src/config.js';
 import { BaseError, branchCard, cardBase, defaultBase, findDefaultBase, policyRef } from '../src/defaults.js';
@@ -40,7 +40,9 @@ const USAGE = `keel — quality gate that picks the model
   keel init [--repo <dir>]                                   detect the project, propose keel.json
   keel gate [--base <ref>] [--card <card.md>] [--author <family>] [--status] [--wait-review <h>] [--repo <dir>]
                                                                verify committed HEAD against base (default: origin's default
-                                                               branch); without --card, a size-S card from the commit types;
+                                                               branch); --card ISSUE-ID: the Linear issue's card (--project)
+                                                               and the held-out dir keel run wrote for it; without --card,
+                                                               a size-S card from the commit types;
                                                                the reviewer is of another family than --author (default:
                                                                KEEL_AUTHOR, else claude inside Claude Code); --status posts
                                                                the keel/gate commit status on HEAD (push it first);
@@ -182,8 +184,17 @@ if (values.version && command) {
       // Rules come from the base commit, never from the change under test (REQ-CFG-1).
       const config = loadConfig(repo, base);
       let card;
-      if (values.card) card = readTrustedCard(repo, base, values.card);
+      if (values.card && ISSUE_ID.test(values.card) && !existsSync(values.card)) {
+        // An issue ID gates with the card `keel run` built it from, and its held-out dir (REQ-CARD-17, REQ-CARD-18).
+        const issues = () => linearHttpClient().listIssues(resolveProject(values.project, config, repo));
+        card = await gateCardForIssue({ repo, id: values.card, issues });
+        log(
+          `card ${card.id} from Linear: kind ${card.kind}, size ${card.size}${card.heldOut ? ', with its held-out tests' : card.heldOutExpected ? `; no held-out dir at ${card.heldOutExpected}` : ''}`,
+        );
+      } else if (values.card) card = readTrustedCard(repo, base, values.card);
       else {
+        const hint = issueBranchHint(repo); // REQ-CARD-19
+        if (hint) log(hint);
         card = branchCard(repo, base);
         log(`no card — ${card.id}: kind ${card.kind}, size S from commit types; pass --card to set scope, size, or held-out tests`);
       }
