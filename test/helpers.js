@@ -7,6 +7,9 @@ import { DEFAULTS } from '../src/config.js';
 // The machine owner's KEEL_LAST_RESORT_REVIEW (REQ-GATE-56) must not change what a test sees: tests that need it set it
 // themselves. Every test that spawns keel imports this file, so this keeps the suite the same on every machine.
 delete process.env.KEEL_LAST_RESORT_REVIEW;
+// The same for the owner's one-off KEEL_PLAN_LIMITS (REQ-PLAN-9): a gate run under it once failed three REQ-PLAN-3 tests
+// on clean code (BUI-2233, 2026-11-25).
+delete process.env.KEEL_PLAN_LIMITS;
 
 // REQ-TRACE-5: every tmp() dir lives in one mkdtemp parent per test process, and the 'exit' hook removes exactly
 // that recorded parent, so `npm test` leaves nothing in TMPDIR (BUI-1214: ~3,500 keel-* dirs had piled up).

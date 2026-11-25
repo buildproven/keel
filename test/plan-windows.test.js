@@ -73,13 +73,13 @@ test('REQ-PLAN-2 a provider at or over a planLimits window is reserved, with the
   assert.match(planLine(plan), /claude 5h 4% · week 81%.*codex 5h 90% · week 6%/);
 });
 
-test('REQ-PLAN-2 planLimits defaults to 5-hour 90 % and week 80 %, accepts null, and rejects a bad value', () => {
+test('REQ-PLAN-2 planLimits defaults to 5-hour 90 % and week 95 %, accepts null, and rejects a bad value', () => {
   const { dir } = fixtureRepo();
   const at = (extra) => {
     commit(dir, { 'keel.json': JSON.stringify({ checks: { t: 'true' }, testCommand: 'true', ...extra }) });
     return loadConfig(dir, 'HEAD');
   };
-  assert.deepEqual(at({}).planLimits, { fiveHour: 90, week: 80 });
+  assert.deepEqual(at({}).planLimits, { fiveHour: 90, week: 95 });
   assert.equal(at({ planLimits: null }).planLimits, null);
   assert.throws(() => at({ planLimits: { fiveHour: 0, week: 80 } }), /planLimits/);
   assert.throws(() => at({ planLimits: { fiveHour: 90 } }), /planLimits/);
@@ -173,7 +173,7 @@ test('REQ-PLAN-4 doctor advice says dailyBudgetUsd is a list-price estimate when
   const tiersSub = [{ provider: 'claude', model: 'm', effort: 'e' }];
   const advice = setupAdvice(fixtureConfig({ testFilesCommand: 'x {files}', dailyBudgetUsd: 5, tiers: tiersSub }));
   assert.equal(advice.length, 1);
-  assert.match(advice[0], /^dailyBudgetUsd 5 counts list-price estimates.*planLimits \(5h 90%, week 80%\)/);
+  assert.match(advice[0], /^dailyBudgetUsd 5 counts list-price estimates.*planLimits \(5h 90%, week 95%\)/);
   assert.deepEqual(
     setupAdvice(fixtureConfig({ testFilesCommand: 'x {files}', dailyBudgetUsd: 5, tiers: [{ provider: 'exec', command: ['x'] }] })),
     [],
