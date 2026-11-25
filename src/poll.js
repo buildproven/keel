@@ -18,8 +18,8 @@ import {
   titleKey,
 } from './linear.js';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
-import { basename, join, resolve } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { builderText, loadConfig } from './config.js';
 import { branchCard } from './defaults.js';
@@ -31,6 +31,7 @@ import { REFINED_HEADING, refineIssue, refineReason } from './refine.js';
 import { networkFailure } from './network.js';
 import { nextReset, ownerPlanLimits, planLine, readPlan, reservedProviders, savePlan } from './plan.js';
 import { run } from './run.js';
+import { alive } from './slots.js';
 import { locksAny, matchesAny } from './scan.js';
 import { GATE_CONTEXT, gateDescription, gateState, postGateStatus } from './status.js';
 import { UsageError } from './usage.js';
@@ -481,6 +482,117 @@ function keelRoute(f, atBase, repo, project, home) {
   return commit && exec('git', ['cat-file', '-e', `${commit}:${c.path}`], repo).status === 0 ? null : h;
 }
 
+/**
+ * How long a follow-up filer waits for another one on the same repo (REQ-LINEAR-22, BUI-2202): filing is a few Linear
+ * calls per item, so ten minutes is far past a live filer; past it this poll's filing fails, visibly, and the queue waits.
+ */
+const FOLLOW_UP_LOCK_WAIT = { pollMs: 200, maxMs: 10 * 60_000 };
+// A lock is written in two steps (create with `wx`, then the PID): one with no PID is in that gap, or left by a filer
+// that died in it. Past this age it is the second. A lock older than STALE_MS is stale even if its PID was reused.
+const LOCK_NO_PID_MS = 10_000;
+const LOCK_STALE_MS = 60 * 60_000;
+let lockSeq = 0; // tells apart two filers in one process, which wait for each other as two processes do
+
+/** The repo's follow-up lock file (BUI-2202): one per checkout, by its real path, so `.` and its full path are one. */
+export function followUpLockFile(repo) {
+  const real = realpathSync(repo);
+  const key = createHash('sha256').update(real).digest('hex').slice(0, 8);
+  return join(stateDir(), 'locks', `follow-ups-${basename(real)}-${key}.lock`);
+}
+
+/** A lock's text, or null when there is no lock. */
+function readLock(lock) {
+  try {
+    return readFileSync(lock, 'utf8');
+  } catch (e) {
+    if (e.code === 'ENOENT') return null; // released while we looked
+    throw e;
+  }
+}
+
+/** The PID in a lock's text (`<pid>-<n>`), or null when it holds none. */
+function lockPid(text) {
+  const pid = Number((text ?? '').split('-')[0]);
+  return Number.isInteger(pid) && pid > 0 ? pid : null;
+}
+
+/** Whether the lock `text` is left by a filer that no longer runs. */
+function lockStale(lock, text) {
+  let age;
+  try {
+    age = Date.now() - statSync(lock).mtimeMs;
+  } catch (e) {
+    if (e.code === 'ENOENT') return false; // released while we looked: the next try takes it
+    throw e;
+  }
+  const pid = lockPid(text);
+  if (age > LOCK_STALE_MS) return true;
+  return pid === null ? age > LOCK_NO_PID_MS : !alive(pid);
+}
+
+/**
+ * Remove a stale lock whose text is `text`, one filer at a time under `<lock>.takeover` (taken with `wx`), and only if it
+ * still holds that text: without it, a filer that saw the lock stale could remove one another filer had just taken, as
+ * gate slots did (BUI-1200). Returns false when another filer is in its takeover, so the caller waits. A takeover left by
+ * a filer that died in it is cleared after LOCK_NO_PID_MS.
+ */
+function removeStaleLock(lock, text, log) {
+  const takeover = `${lock}.takeover`;
+  try {
+    writeFileSync(takeover, String(process.pid), { flag: 'wx' });
+  } catch (e) {
+    if (e.code !== 'EEXIST') throw e;
+    let age;
+    try {
+      age = Date.now() - statSync(takeover).mtimeMs;
+    } catch (err) {
+      if (err.code === 'ENOENT') return true; // that takeover just ended: try again now
+      throw err;
+    }
+    if (age > LOCK_NO_PID_MS) rmSync(takeover, { force: true });
+    return age > LOCK_NO_PID_MS;
+  }
+  try {
+    if (readLock(lock) === text) {
+      unlinkSync(lock);
+      log(`follow-ups: removed stale lock ${lock} (pid ${lockPid(text) ?? 'unknown'} is not running)`);
+    }
+  } finally {
+    unlinkSync(takeover);
+  }
+  return true;
+}
+
+/**
+ * Take the repo's follow-up lock (REQ-LINEAR-22, BUI-2202): a file created with `wx` that holds `<pid>-<n>`. While a
+ * live filer holds it, wait; a lock of a filer that no longer runs is removed and logged. Returns the release, or null
+ * when a live filer still holds it after `maxMs`.
+ */
+async function takeFollowUpLock(lock, { pollMs, maxMs }, log) {
+  mkdirSync(dirname(lock), { recursive: true });
+  const mine = `${process.pid}-${++lockSeq}`;
+  const start = Date.now();
+  let told = false;
+  for (;;) {
+    try {
+      writeFileSync(lock, mine, { flag: 'wx' });
+      return () => {
+        if (readLock(lock) === mine) unlinkSync(lock);
+      };
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+    }
+    const text = readLock(lock);
+    if (text === null) continue;
+    if (lockStale(lock, text)) {
+      if (removeStaleLock(lock, text, log)) continue;
+    } else if (Date.now() - start >= maxMs) return null;
+    if (!told) log(`follow-ups wait: pid ${lockPid(text) ?? 'unknown'} is filing for this repo (${lock})`);
+    told = true;
+    await new Promise((r) => setTimeout(r, pollMs));
+  }
+}
+
 /** Linear's answer to a comment on an archived (or deleted) issue (REQ-LINEAR-49). */
 const ARCHIVED = /\bEntity not found: Issue\b/;
 
@@ -496,7 +608,24 @@ const DUP_CLOSED_DAYS = 30;
  * unreadable count is a filing error that counts no try. Filed issues are not attempts,
  * so the loop builds them. A Linear error never stops a poll: it returns `{ error }`, and the poll reports it.
  */
-async function fileFollowUps({ repo, project, config, client, log, base = 'HEAD', capacityFn = null, keelRoot = KEEL_ROOT }) {
+export async function fileFollowUps({ lockWait = FOLLOW_UP_LOCK_WAIT, ...args }) {
+  // Nothing queued takes no lock, so a poll with nothing to file never waits for another filer.
+  if (!pendingFollowUps(args.repo, FILE_TRIES).length || !(args.config.followUpsPerDay > 0)) return {};
+  const lock = followUpLockFile(args.repo);
+  const release = await takeFollowUpLock(lock, lockWait, args.log);
+  if (!release)
+    return {
+      error: `follow-up lock ${lock} held by pid ${lockPid(readLock(lock)) ?? 'unknown'} for over ${lockWait.maxMs} ms; filing waits for the next poll`,
+    };
+  try {
+    return await fileFollowUpsLocked(args); // the queue is read under the lock, so a waiter sees what the holder filed
+  } finally {
+    release();
+  }
+}
+
+/** One pass over the queue (REQ-LINEAR-22), run only under the repo's follow-up lock (BUI-2202). */
+async function fileFollowUpsLocked({ repo, project, config, client, log, base = 'HEAD', capacityFn = null, keelRoot = KEEL_ROOT }) {
   const pending = pendingFollowUps(repo, FILE_TRIES);
   if (!pending.length || !(config.followUpsPerDay > 0)) return {};
   const filed = new Map(); // source → new issue IDs
