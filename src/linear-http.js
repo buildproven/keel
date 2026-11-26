@@ -1,3 +1,4 @@
+import { BaseError } from './defaults.js';
 import { LINEAR_KEY_NAMES, linearKey } from './env.js';
 
 /** Where a follow-up goes (REQ-LINEAR-22): its source issue's team and project, else the named project and its team. */
@@ -82,12 +83,31 @@ const ISSUE_ID = `query ($id: String!) { issue(id: $id) { id } }`;
 
 const SET_DESCRIPTION = `mutation ($id: String!, $description: String!) { issueUpdate(id: $id, input: { description: $description }) { success } }`;
 
+// `teams` lists only the teams the key can read; `organization.teams` lists the workspace's (REQ-LINEAR-60).
 const CAPACITY = `
   query ($after: String) {
     issues(first: 250, after: $after) { pageInfo { hasNextPage endCursor } nodes { id } }
-    teams { nodes { key autoArchivePeriod } }
+    teams(first: 250) { nodes { key autoArchivePeriod } }
+    organization { teams(first: 250) { pageInfo { hasNextPage } nodes { key } } }
   }
 `;
+
+const TEAM_PAGE = 250;
+
+/**
+ * Throw unless the key reads every team of the workspace (REQ-LINEAR-60): a team-scoped key's `issues` query returns
+ * only its teams' issues, so the count against the workspace-wide 250 would be low and miss the WARN or FAIL.
+ */
+function wholeWorkspace(readable, organization) {
+  if (organization.teams.pageInfo?.hasNextPage)
+    throw new Error(`the workspace has more than ${TEAM_PAGE} teams; Keel cannot check that the key reads them all`);
+  const can = new Set(readable.map((t) => t.key));
+  const hidden = organization.teams.nodes.map((t) => t.key).filter((k) => !can.has(k));
+  if (hidden.length)
+    throw new Error(
+      `the Linear key reaches only team ${[...can].sort().join(', ')} of the workspace's ${organization.teams.nodes.length} teams and cannot read ${hidden.sort().join(', ')}, so its 250-issue count would be low; use a key with access to every team`,
+    );
+}
 
 const CLOSED_ISSUES = `
   query ($filter: IssueFilter, $after: String) {
@@ -110,6 +130,12 @@ const IDLE_ISSUES = `
 // as open: a started issue with one is never canceled as stale.
 const PR_URL = /^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+/;
 
+/**
+ * No Linear key is set (REQ-LINEAR-47). An outside input the command cannot run without, like a base the remote cannot
+ * give, so the CLI prints `<command> stopped: <message>` and exits 4 with no stack trace (REQ-LINEAR-61, REQ-BASE-3).
+ */
+export class LinearKeyError extends BaseError {}
+
 const MOVE_ISSUE = `mutation ($id: String!, $stateId: String!) { issueUpdate(id: $id, input: { stateId: $stateId }) { success } }`;
 
 /**
@@ -120,8 +146,8 @@ export function linearHttpClient() {
   const key = () => {
     const found = linearKey(process.env);
     if (!found) {
-      throw new Error(
-        `${LINEAR_KEY_NAMES.map((n) => `${n} is not set`).join(' and ')}; keel poll needs a Linear personal API key in one of them`,
+      throw new LinearKeyError(
+        `${LINEAR_KEY_NAMES.map((n) => `${n} is not set`).join(' and ')}; Keel needs a Linear personal API key in one of them`,
       );
     }
     return found.value;
@@ -160,7 +186,10 @@ export function linearHttpClient() {
           .map((r) => r.issue.identifier),
       }));
     },
-    /** Unarchived issues in the workspace (the query leaves archived ones out) and each team's auto-archive period (REQ-CLI-16). */
+    /**
+     * Unarchived issues in the workspace (the query leaves archived ones out) and each team's auto-archive period
+     * (REQ-CLI-16); throws when the key cannot read every team, since the count would be low (REQ-LINEAR-60).
+     */
     async capacity() {
       const apiKey = key();
       let open = 0;
@@ -170,6 +199,7 @@ export function linearHttpClient() {
         const data = await gql(apiKey, CAPACITY, after ? { after } : {});
         open += data.issues.nodes.length;
         teams = data.teams.nodes;
+        wholeWorkspace(teams, data.organization);
         after = data.issues.pageInfo.hasNextPage ? data.issues.pageInfo.endCursor : null;
       } while (after);
       return { open, teams };

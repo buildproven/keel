@@ -69,6 +69,8 @@ test('REQ-CLI-16 capacity() counts unarchived issues across every page and retur
     },
     { issues: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ id: 'b0' }, { id: 'b1' }] }, teams: { nodes: teams } },
   ];
+  // A key that reads every team of the workspace (REQ-LINEAR-60).
+  for (const p of pages) p.organization = { teams: { nodes: teams } };
   const bodies = [];
   globalThis.fetch = async (_url, opts) => {
     bodies.push(JSON.parse(opts.body));
