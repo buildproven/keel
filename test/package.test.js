@@ -9,9 +9,26 @@ import { tmp } from './helpers.js';
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
 
+/**
+ * The one package entry from `npm pack --json`. npm ≤ 11 prints an array of entries;
+ * npm 12 prints an object keyed by package name.
+ */
+const packEntry = (json) => {
+  const out = JSON.parse(json);
+  const entries = Array.isArray(out) ? out : Object.values(out);
+  assert.equal(entries.length, 1, `expected one packed package, got ${entries.length}`);
+  return entries[0];
+};
+
 /** `npm pack --dry-run --json`: what an outside user would install. */
-const packed = () =>
-  JSON.parse(execFileSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], { cwd: ROOT, encoding: 'utf8' }))[0];
+const packed = () => packEntry(execFileSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], { cwd: ROOT, encoding: 'utf8' }));
+
+test('REQ-PKG-1 npm pack --json is read in both the npm 11 array shape and the npm 12 object shape', () => {
+  const entry = { name: '@buildproven/keel', filename: 'buildproven-keel-0.2.0.tgz', files: [{ path: 'LICENSE' }] };
+  assert.deepEqual(packEntry(JSON.stringify([entry])), entry);
+  assert.deepEqual(packEntry(JSON.stringify({ [entry.name]: entry })), entry);
+  assert.throws(() => packEntry('[]'), /expected one packed package, got 0/);
+});
 
 test('REQ-PKG-1 the package holds only the CLI, its source, README, LICENSE, and package.json, and nothing from the owner machine', () => {
   const files = packed().files.map((f) => f.path);
@@ -27,7 +44,7 @@ test('REQ-PKG-1 the package holds only the CLI, its source, README, LICENSE, and
 
 test('REQ-PKG-1 the packed tarball installs into an empty directory and its keel runs', () => {
   const dir = tmp('keel-pack-');
-  const [{ filename }] = JSON.parse(
+  const { filename } = packEntry(
     execFileSync('npm', ['pack', '--json', '--ignore-scripts', '--pack-destination', dir], { cwd: ROOT, encoding: 'utf8' }),
   );
   const prefix = join(dir, 'install');
