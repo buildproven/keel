@@ -158,10 +158,13 @@ test('REQ-GATE-44 a deleted assertion, a commented-out assertion, a deleted test
 
 test('REQ-GATE-44 an edited test that passes alone on base stays locked, even when a new test proves the fix', () => {
   const r = reviewer('APPROVE: fine');
-  // Two assertions, same test name, passes on base and head: nothing shows the edit was needed.
-  const loose = src(...HEAD, "it('adds', () => {", '  assert.strictEqual(add(5, 3) * 0, 0);', '  assert.ok(add(0, 0) === 0);', '});');
+  // Two assertions, same test name, passes on base and head, and the base version passes on the fixed head too: nothing
+  // shows the edit was needed. (A replaced line the fix breaks is proved instead, REQ-GATE-75.)
+  const kept = (line) => src(...HEAD, "it('adds', () => {", line, '  assert.ok(add(0, 0) === 0);', '});');
   const sum = src(...HEAD, "it('sums', () => assert.strictEqual(add(2, 3), 5));");
-  const { dir, base, config } = setup({ 'test/add.test.js': loose, 'test/sum.test.js': sum }, { review: true, tiers: [r.tier] });
+  const { dir, base } = fixtureRepo({ ...BUGGY, 'test/add.test.js': kept('  assert.strictEqual(add(5, 0), 5);') });
+  commit(dir, { ...FIXED, 'test/add.test.js': kept('  assert.strictEqual(add(5, 0) * 0, 0);'), 'test/sum.test.js': sum });
+  const config = fixtureConfig({ testFilesCommand: FILES_COMMAND, review: true, tiers: [r.tier] });
   const receipt = gate({ repo: dir, base, card: card(), config, reviewer: r.tier });
   assert.equal(receipt.pass, false);
   assert.equal(receipt.results.find((x) => x.name === 'red-proof').pass, true);
@@ -171,7 +174,7 @@ test('REQ-GATE-44 an edited test that passes alone on base stays locked, even wh
     proof.problems.map((p) => [p.rule, p.path]),
     [['existing-test-changed', 'test/add.test.js']],
   );
-  assert.match(proof.problems[0].why, /passes alone on base/);
+  assert.match(proof.problems[0].why, /the base version of test\/add.test.js passes on head/);
   assert.equal(asked(r), '');
 });
 

@@ -795,25 +795,60 @@ function testEditProof(ctx) {
   }
   // Outside the base callback, so the two shared checkouts are never held together.
   for (const { p, out } of passesOnBase) {
-    if (!oldTestFailsOnHead(ctx, p)) return locked(p, 'passes alone on base, so the change does not need the edit', out);
+    const shape = editShape(ctx, p);
+    if (shape === 'adds' && oldTestFailsOnHead(ctx, p)) continue;
+    if (shape === 'replaces') {
+      if (!oldTestFailsOnHead(ctx, p)) return locked(p, `the base version of ${p} passes on head: the change does not need this edit`, out); // REQ-GATE-76
+      // The base version must have passed before the change, so the change is what breaks it (REQ-GATE-75).
+      const before = oldTestOnBase(ctx, p);
+      if (before.stage) return before.stage;
+      if (before.passes) continue;
+    }
+    return locked(p, 'passes alone on base, so the change does not need the edit', out);
   }
   return { name: 'test-edit-proof', pass: true, problems: [], files };
 }
 
 /**
- * The other proof that an edit is needed (REQ-GATE-44): for an edit that only adds lines, the base version of the test,
- * overlaid alone on head, fails with a real test failure. An edit that only widens an allowlist passes on base (the new entry is harmless there) but
- * breaks the old test once the change adds the file the allowlist must name.
+ * How an edit to an existing test changes its lines (REQ-GATE-44, REQ-GATE-75): `adds` (no line deleted), `replaces` (lines
+ * both added and deleted), or null (only deletions, no diff, or no base version). Only an edit that adds lines, alone or in
+ * place of deleted ones, may be proved by its base version failing on head: an edit that only deletes puts nothing in
+ * place of the lines it drops that the change could need.
+ */
+function editShape(ctx, p) {
+  const { repo, base, head } = ctx;
+  if (!fileMode(base, p, repo)) return null;
+  const diff = git(['diff', '-U0', '--no-textconv', base, head, '--', p], repo)
+    .split('\n')
+    .filter((l) => /^[+-]/.test(l) && !/^(\+\+\+|---) /.test(l));
+  if (!diff.some((l) => l.startsWith('+'))) return null;
+  return diff.some((l) => l.startsWith('-')) ? 'replaces' : 'adds';
+}
+
+/**
+ * Whether the base version of a replaced-line test passes alone on base (REQ-GATE-75): a test that was already red
+ * there fails on head whatever the change does. `stage` is a failed result when the run cannot answer.
+ */
+function oldTestOnBase(ctx, p) {
+  const { config } = ctx;
+  return ctx.onBase((dir, { installed }) => {
+    if (installed) return { stage: installFailed('test-edit-proof', installed) };
+    const r = shell(filesCommand(config, [p]), dir, config);
+    if (inconclusive(r)) return { stage: { ...fail('test-edit-proof', 'inconclusive', { path: p, code: r.code }), output: tail(r.out) } };
+    return { passes: r.code === 0 };
+  });
+}
+
+/**
+ * The other proof that an edit is needed (REQ-GATE-44, REQ-GATE-75): the base version of the test, overlaid alone on
+ * head, fails with a real test failure. An edit that only widens an allowlist passes on base (the new entry is harmless
+ * there) but breaks the old test once the change adds the file the allowlist must name; an edit that replaces a setup
+ * line (a URL, a fixture path) passes on base but is needed once the change moves the behavior the old line reached
+ * (BUI-2048). Whether an edit weakens the test (a `return;` before the broken assertion, a value that makes
+ * `assert.ok(` always pass) is not decidable from text; the static counts bound it and the test-edits review decides it.
  */
 function oldTestFailsOnHead(ctx, p) {
   const { repo, base, config } = ctx;
-  if (!fileMode(base, p, repo)) return false;
-  // Only an edit that deletes nothing. Whether an added line weakens the test (a `return;` before the broken assertion,
-  // a value that makes `assert.ok(` always pass) is not decidable from text; the test-edits review decides it.
-  const diff = git(['diff', '-U0', '--no-textconv', base, ctx.head, '--', p], repo)
-    .split('\n')
-    .filter((l) => /^[+-]/.test(l) && !/^(\+\+\+|---) /.test(l));
-  if (!diff.length || diff.some((l) => l.startsWith('-'))) return false;
   return ctx.onHead((dir) => {
     let saved = null; // the head file, put back after the run
     const err = writeInside(dir, p, (t) => {
