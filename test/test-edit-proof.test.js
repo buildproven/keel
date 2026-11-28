@@ -238,6 +238,9 @@ test('REQ-GATE-44 an added statement that neutralizes the old test is denied by 
 });
 
 test('REQ-GATE-44 an edit that replaces a line never takes the base-version proof', () => {
+  // Since REQ-GATE-75 a replaced line may take the base-version proof, but only when the base version passes on base.
+  // This base version (`length > 1`) is red on base already, so the fix is not what breaks it and the edit stays locked.
+  // The title is older than REQ-GATE-75 and cannot change here: an approved edit keeps every test name (REQ-GATE-44).
   const r = reviewer('APPROVE: fine');
   const body = (n) =>
     src(
